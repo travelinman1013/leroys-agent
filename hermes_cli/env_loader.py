@@ -2,17 +2,38 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from pathlib import Path
 
 from dotenv import load_dotenv
+
+logger = logging.getLogger(__name__)
 
 
 def _load_dotenv_with_fallback(path: Path, *, override: bool) -> None:
     try:
         load_dotenv(dotenv_path=path, override=override, encoding="utf-8")
     except UnicodeDecodeError:
-        load_dotenv(dotenv_path=path, override=override, encoding="latin-1")
+        try:
+            load_dotenv(dotenv_path=path, override=override, encoding="latin-1")
+        except PermissionError:
+            # Phase 4 R4: ~/.hermes/.env may be denied at the kernel level
+            # by ~/.hermes/hermes.sb. The wrapper at
+            # scripts/sandbox/hermes-gateway-sandboxed pre-loads the file
+            # OUTSIDE the sandbox and exports the values into os.environ
+            # before exec'ing into the sandbox, so by the time we get
+            # here the env vars are already populated. Treat the read
+            # failure as expected and continue.
+            logger.debug(
+                "load_dotenv: %s denied by sandbox profile; "
+                "relying on pre-loaded os.environ", path,
+            )
+    except PermissionError:
+        logger.debug(
+            "load_dotenv: %s denied by sandbox profile; "
+            "relying on pre-loaded os.environ", path,
+        )
 
 
 def load_hermes_dotenv(

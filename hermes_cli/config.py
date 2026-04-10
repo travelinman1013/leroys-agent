@@ -2233,21 +2233,33 @@ def save_config(config: Dict[str, Any]):
 
 
 def load_env() -> Dict[str, str]:
-    """Load environment variables from ~/.hermes/.env."""
+    """Load environment variables from ~/.hermes/.env.
+
+    Tolerates PermissionError because the Phase 4 R4 sandbox profile
+    denies kernel-level reads of .env. In that case the wrapper script
+    scripts/sandbox/hermes-gateway-sandboxed pre-loads the file before
+    exec'ing into the sandbox, so the values are already in os.environ
+    — fall back to that mirror.
+    """
     env_path = get_env_path()
-    env_vars = {}
-    
+    env_vars: Dict[str, str] = {}
+
     if env_path.exists():
         # On Windows, open() defaults to the system locale (cp1252) which can
         # fail on UTF-8 .env files. Use explicit UTF-8 only on Windows.
         open_kw = {"encoding": "utf-8", "errors": "replace"} if _IS_WINDOWS else {}
-        with open(env_path, **open_kw) as f:
-            for line in f:
-                line = line.strip()
-                if line and not line.startswith('#') and '=' in line:
-                    key, _, value = line.partition('=')
-                    env_vars[key.strip()] = value.strip().strip('"\'')
-    
+        try:
+            with open(env_path, **open_kw) as f:
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith('#') and '=' in line:
+                        key, _, value = line.partition('=')
+                        env_vars[key.strip()] = value.strip().strip('"\'')
+        except PermissionError:
+            # Sandboxed (R4) — return what's in os.environ instead so callers
+            # like get_env_value() still work.
+            return dict(os.environ)
+
     return env_vars
 
 

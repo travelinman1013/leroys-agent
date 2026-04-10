@@ -16,16 +16,28 @@ PROJECT_ROOT = get_project_root()
 HERMES_HOME = get_hermes_home()
 _DHH = display_hermes_home()  # user-facing display path (e.g. ~/.hermes or ~/.hermes/profiles/coder)
 
-# Load environment variables from ~/.hermes/.env so API key checks work
+# Load environment variables from ~/.hermes/.env so API key checks work.
+# PermissionError is tolerated because Phase 4 R4 sandbox profiles may
+# deny .env reads at the kernel level — the wrapper script
+# scripts/sandbox/hermes-gateway-sandboxed pre-loads the file outside
+# the sandbox before exec'ing into hermes.
 from dotenv import load_dotenv
 _env_path = get_env_path()
 if _env_path.exists():
     try:
         load_dotenv(_env_path, encoding="utf-8")
     except UnicodeDecodeError:
-        load_dotenv(_env_path, encoding="latin-1")
+        try:
+            load_dotenv(_env_path, encoding="latin-1")
+        except PermissionError:
+            pass
+    except PermissionError:
+        pass
 # Also try project .env as dev fallback
-load_dotenv(PROJECT_ROOT / ".env", override=False, encoding="utf-8")
+try:
+    load_dotenv(PROJECT_ROOT / ".env", override=False, encoding="utf-8")
+except PermissionError:
+    pass
 
 from hermes_cli.colors import Colors, color
 from hermes_constants import OPENROUTER_MODELS_URL
@@ -219,9 +231,17 @@ def run_doctor(args):
     env_path = HERMES_HOME / '.env'
     if env_path.exists():
         check_ok(f"{_DHH}/.env file exists")
-        
-        # Check for common issues
-        content = env_path.read_text()
+
+        # Check for common issues. PermissionError can fire when the
+        # Phase 4 R4 sandbox profile denies kernel-level reads of .env;
+        # in that case fall back to checking os.environ which the
+        # wrapper script populated before exec'ing into the sandbox.
+        content = ""
+        try:
+            content = env_path.read_text()
+        except PermissionError:
+            check_info(f"{_DHH}/.env not readable in current process (sandbox?) — checking os.environ instead")
+            content = "\n".join(f"{k}={v}" for k, v in os.environ.items())
         if _has_provider_env_config(content):
             check_ok("API key or custom endpoint configured")
         else:

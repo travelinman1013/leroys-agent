@@ -1,0 +1,129 @@
+#!/usr/bin/env python3
+"""Sandboxed gateway launcher (Phase 4 R4).
+
+The Seatbelt profile (~/.hermes/hermes.sb) denies kernel-level reads of
+~/.hermes/.env so the agent can never exfiltrate API keys via tools.
+But the gateway process itself needs those keys at startup to talk to
+LM Studio, GitHub, Discord, etc. — and the standard launchd entry just
+exec's hermes directly inside the sandbox, so the dotenv loader inside
+the sandbox can't read .env either.
+
+This wrapper resolves the deadlock by:
+  1. Reading ~/.hermes/.env in this (unsandboxed) Python process and
+     putting every key into os.environ.
+  2. exec'ing /usr/bin/sandbox-exec with the hermes.sb profile and the
+     hermes binary. The new (sandboxed) process inherits this process's
+     env vars via execvp, so the API keys are already in process memory
+     before the sandbox is applied.
+
+After that, any subsequent .env read attempts inside the sandbox are
+denied at the kernel level — but env_loader.py is also tolerant of
+PermissionError so the gateway startup doesn't crash on the failed
+re-read.
+
+The wrapper is intentionally minimal and stdlib-only — no dotenv
+dependency, no third-party imports — so it's auditable and has no
+attack surface beyond .env parsing.
+"""
+
+from __future__ import annotations
+
+import os
+import sys
+from pathlib import Path
+
+
+def _parse_dotenv(path: Path) -> dict[str, str]:
+    """Minimal .env parser. Handles KEY=value, quoted values, comments,
+    blank lines, and shell-style export prefixes. Does NOT do variable
+    interpolation — that's intentional, fewer surprises."""
+    out: dict[str, str] = {}
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        print(f"hermes-gateway-sandboxed: failed to read {path}: {exc}", file=sys.stderr)
+        return out
+
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith("export "):
+            line = line[len("export ") :].lstrip()
+        if "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip()
+        if not key:
+            continue
+        value = value.strip()
+        # Strip matching outer quotes (both single and double).
+        if len(value) >= 2 and value[0] == value[-1] and value[0] in ("'", '"'):
+            value = value[1:-1]
+        out[key] = value
+    return out
+
+
+def main() -> int:
+    home = Path(os.environ.get("HERMES_HOME", str(Path.home() / ".hermes")))
+    env_file = home / ".env"
+    profile = home / "hermes.sb"
+
+    # 1. Pre-load .env (unsandboxed; this script is invoked by launchd
+    # OUTSIDE the sandbox).
+    if env_file.exists():
+        loaded = _parse_dotenv(env_file)
+        for key, value in loaded.items():
+            os.environ[key] = value
+        print(
+            f"hermes-gateway-sandboxed: pre-loaded {len(loaded)} env var(s) from {env_file}",
+            file=sys.stderr,
+        )
+    else:
+        print(
+            f"hermes-gateway-sandboxed: no .env at {env_file}; continuing with inherited env",
+            file=sys.stderr,
+        )
+
+    # 2. Locate the hermes binary. Prefer the venv install (matches the
+    # current launchd plist).
+    hermes_bin = Path(__file__).resolve().parent.parent.parent / "venv" / "bin" / "hermes"
+    if not hermes_bin.exists():
+        # Fallback: PATH lookup.
+        from shutil import which
+
+        path_hit = which("hermes")
+        if not path_hit:
+            print(
+                f"hermes-gateway-sandboxed: hermes binary not found at {hermes_bin} or in PATH",
+                file=sys.stderr,
+            )
+            return 127
+        hermes_bin = Path(path_hit)
+
+    if not profile.exists():
+        print(
+            f"hermes-gateway-sandboxed: sandbox profile missing at {profile}; "
+            "deploy it via `cp scripts/sandbox/hermes.sb ~/.hermes/hermes.sb`",
+            file=sys.stderr,
+        )
+        return 71
+
+    # 3. exec into sandbox-exec. The sandboxed hermes inherits our
+    # os.environ via execvp.
+    cmd = [
+        "/usr/bin/sandbox-exec",
+        "-f",
+        str(profile),
+        str(hermes_bin),
+        "gateway",
+        "run",
+    ]
+    print(
+        f"hermes-gateway-sandboxed: exec {cmd}", file=sys.stderr
+    )
+    os.execvp(cmd[0], cmd)
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

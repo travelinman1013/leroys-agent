@@ -206,16 +206,25 @@ def run_dump(args):
     """Output a compact, copy-pasteable setup summary."""
     show_keys = getattr(args, "show_keys", False)
 
-    # Load env from .env file so key checks work
+    # Load env from .env file so key checks work. Tolerates PermissionError
+    # when ~/.hermes/.env is denied at the kernel level by Phase 4 R4.
     from dotenv import load_dotenv
     env_path = get_env_path()
     if env_path.exists():
         try:
             load_dotenv(env_path, encoding="utf-8")
         except UnicodeDecodeError:
-            load_dotenv(env_path, encoding="latin-1")
+            try:
+                load_dotenv(env_path, encoding="latin-1")
+            except PermissionError:
+                pass
+        except PermissionError:
+            pass
     # Also try project .env as dev fallback
-    load_dotenv(get_project_root() / ".env", override=False, encoding="utf-8")
+    try:
+        load_dotenv(get_project_root() / ".env", override=False, encoding="utf-8")
+    except PermissionError:
+        pass
 
     project_root = get_project_root()
     hermes_home = get_hermes_home()

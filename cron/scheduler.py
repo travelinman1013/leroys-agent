@@ -553,12 +553,19 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             if origin.get("chat_name"):
                 os.environ["HERMES_SESSION_CHAT_NAME"] = origin["chat_name"]
         # Re-read .env and config.yaml fresh every run so provider/key
-        # changes take effect without a gateway restart.
+        # changes take effect without a gateway restart. Tolerates
+        # PermissionError when sandboxed (Phase 4 R4) — the wrapper has
+        # already pre-loaded .env into os.environ.
         from dotenv import load_dotenv
         try:
             load_dotenv(str(_hermes_home / ".env"), override=True, encoding="utf-8")
         except UnicodeDecodeError:
-            load_dotenv(str(_hermes_home / ".env"), override=True, encoding="latin-1")
+            try:
+                load_dotenv(str(_hermes_home / ".env"), override=True, encoding="latin-1")
+            except PermissionError:
+                pass
+        except PermissionError:
+            pass
 
         delivery_target = _resolve_delivery_target(job)
         if delivery_target:

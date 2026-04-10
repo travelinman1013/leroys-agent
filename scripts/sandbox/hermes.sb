@@ -62,6 +62,7 @@
   (subpath "/Users/maxwell/Projects")                    ;; scan target
   (subpath "/Users/maxwell/.cache")                      ;; hf, npm
   (subpath "/Users/maxwell/.npm")
+  (subpath "/Users/maxwell/.local/state/hermes")         ;; gateway locks (discord-bot-token, etc.)
   (literal "/Users/maxwell/Library/LaunchAgents/ai.hermes.gateway.plist"))
 
 ;; --- Hard deny: credentials. Overrides the allow above by ordering. ---
@@ -72,6 +73,7 @@
 ;; --- File writes: state, logs, temp ---
 (allow file-write*
   (subpath "/Users/maxwell/.hermes")
+  (subpath "/Users/maxwell/.local/state/hermes")         ;; gateway locks
   (subpath "/Users/maxwell/Projects")
   (subpath "/tmp")
   (subpath "/private/tmp")
@@ -81,15 +83,26 @@
   (literal "/Users/maxwell/.hermes/.env"))               ;; .env is read-only even to hermes
 
 ;; --- Network outbound ---
-;; sandbox-exec only accepts "*" or "localhost" as the host literal in
-;; (remote ip ...) — explicit 127.0.0.1 is rejected at parse time. The
-;; loopback resolver hits the same socket via "localhost:N".
+;; SBPL syntax notes (verified empirically against macOS 25.4):
+;;   (remote ip "host:port")  → host MUST be "*" or "localhost"; explicit
+;;                              127.0.0.1 is rejected at parse time. AND
+;;                              "*" with a numeric port appears to PARSE
+;;                              but not actually MATCH outbound TCP, so
+;;                              connections silently time out.
+;;   (remote tcp "host:port") → the canonical form Apple's own profiles
+;;                              use (see bluetoothuserd.sb, cloudpaird.sb).
+;;                              Use this for any non-localhost destination.
+;;   (remote udp "host:port") → UDP equivalent.
+;; If you change these rules, test with `scripts/sandbox/hermes-gateway-sandboxed`
+;; and verify Discord ACTUALLY connects (not just slash command sync — that
+;; uses HTTP REST and may work even when the WebSocket gateway can't).
 (allow network-outbound
   (remote ip "localhost:1234")      ;; LM Studio
   (remote ip "localhost:9222")      ;; Chrome DevTools Protocol (browser tool)
-  (remote ip "*:443")               ;; HTTPS — Discord, GitHub, HuggingFace, etc.
-  (remote ip "*:80")                ;; HTTP — direct URL fetches
-  (remote ip "*:53"))               ;; DNS
+  (remote tcp "*:443")              ;; HTTPS — Discord, GitHub, HuggingFace, etc.
+  (remote tcp "*:80")               ;; HTTP — direct URL fetches
+  (remote tcp "*:53")               ;; DNS over TCP (rare but supported)
+  (remote udp "*:53"))              ;; DNS over UDP (default)
 
 ;; --- Network bind: OAuth callbacks, API server, WhatsApp bridge ---
 (allow network-bind
