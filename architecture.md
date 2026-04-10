@@ -1,10 +1,12 @@
 # Hermes Agent — System Architecture
 
-> **Snapshot**: 2026-04-10, post Phase 4 sandboxing deployment
-> **Branch**: `enhance/hermes-phase4-sandboxing` (8 commits ahead of `main`)
-> **Live gateway**: PID 95647, running under `sandbox-exec -f ~/.hermes/hermes.sb`
-> **Plan of record**: [`~/.claude/plans/moonlit-moseying-salamander.md`](../../../../.claude/plans/moonlit-moseying-salamander.md)
-> **Recon log**: [`recon-findings.md`](recon-findings.md)
+> **Snapshot**: 2026-04-10, post Phase 5 dashboard deployment
+> **Branch**: `feature/hermes-dashboard` (5 commits ahead of `main`)
+> **Live gateway**: `hermes gateway run` under `sandbox-exec -f ~/.hermes/hermes.sb`
+> **Dashboard**: `http://127.0.0.1:8642/dashboard/` (loopback + bearer token)
+> **Plan of record**: [`~/.claude/plans/tranquil-dreaming-dragonfly.md`](../../../../.claude/plans/tranquil-dreaming-dragonfly.md)
+> **Phase 4 plan**: [`~/.claude/plans/moonlit-moseying-salamander.md`](../../../../.claude/plans/moonlit-moseying-salamander.md)
+> **Recon log**: [`.claude/rules/recon-findings.md`](.claude/rules/recon-findings.md)
 
 This document is a multi-view architecture reference for the Hermes Agent
 deployment running on Maxwell's Mac. It uses the C4 model (Context →
@@ -60,7 +62,7 @@ flowchart TB
     Hermes -->|HTTPS :443<br/>token in env var| GitHub
     Hermes -->|CDP :9222| Browser
     Hermes -.->|HTTPS :443<br/>on-demand model fetches| HF
-    Maxwell -.->|`hermes` CLI commands<br/>(rare; admin-only)| Hermes
+    Maxwell -.->|hermes CLI commands<br/>rare, admin-only| Hermes
 ```
 
 **Key facts the diagram makes visible**:
@@ -96,7 +98,7 @@ flowchart TB
         profile[/"~/.hermes/hermes.sb<br/>Seatbelt profile"/]
 
         subgraph sandbox["KERNEL SANDBOX (Seatbelt MACF, deny default)"]
-            hermes["hermes gateway<br/>Python process<br/>PID 95647"]
+            hermes["hermes gateway<br/>Python process"]
 
             subgraph runtime["Hermes runtime (in-process)"]
                 agent["Agent loop<br/>conversation, tool calling,<br/>compression, memory"]
@@ -104,9 +106,13 @@ flowchart TB
                 approval["Approval gate<br/>tools/approval.py"]
                 jail["Path jail<br/>tools/file_tools.py"]
                 exec["Code execution<br/>RPC over /tmp/hermes_rpc/<br/>tools/code_execution_tool.py"]
+                bus["Event bus (Phase 5 R1)<br/>gateway/event_bus.py<br/>in-process pubsub"]
+                apiserver["API server (Phase 5 R2)<br/>aiohttp @ 127.0.0.1:8642<br/>/v1/* + /api/dashboard/* + /dashboard/"]
                 session[/"~/.hermes/sessions/<br/>SQLite + JSONL"/]
                 memory[/"~/.hermes/memories/<br/>USER.md, MEMORY.md"/]
                 logs[/"~/.hermes/logs/<br/>gateway.log + .error.log"/]
+                events[/"~/.hermes/events.ndjson<br/>(Phase 5 R1 — rotating 50 MB)"/]
+                dashtoken[/"~/.hermes/dashboard_token<br/>(chmod 600 — Phase 5 R2)"/]
                 lock[/"~/.local/state/hermes/<br/>gateway-locks/"/]
             end
 
@@ -114,6 +120,7 @@ flowchart TB
         end
     end
 
+    Browser(("Maxwell's browser<br/>Zen / Safari"))
     LMStudio>"LM Studio<br/>UNSANDBOXED on host<br/>localhost:1234"]
     DiscordWS>"Discord Gateway<br/>wss://gateway.discord.gg"]
     GitHubAPI>"api.github.com"]
@@ -129,12 +136,19 @@ flowchart TB
     tools --> approval
     tools --> jail
     tools --> exec
+    agent -.->|publish turn/llm events| bus
+    tools -.->|publish tool.invoked/completed| bus
+    approval -.->|publish approval.requested/resolved| bus
+    bus -.->|tee rotating NDJSON| events
+    bus -.->|SSE fanout| apiserver
+    apiserver <-.->|bearer| dashtoken
     agent <-->|RW| session
     agent <-->|RW| memory
     hermes -->|append| logs
     hermes <-->|file lock| lock
     tools -.->|stdio JSON-RPC| mcpgh
 
+    Browser -->|HTTP :8642<br/>dashboard UI + SSE| apiserver
     agent -->|HTTP completions| LMStudio
     hermes <-->|WebSocket :443| DiscordWS
     mcpgh -->|HTTPS :443<br/>uses GITHUB_PERSONAL_ACCESS_TOKEN| GitHubAPI
@@ -161,6 +175,20 @@ flowchart TB
   running on the host listening at `localhost:1234`. Hermes reaches it
   via a network rule in the profile (`(remote ip "localhost:1234")`).
   This is the most important non-Hermes trust boundary.
+- **The Phase 5 dashboard runs in the SAME process as the gateway.**
+  There is no second server, no second port beyond :8642, no second
+  auth scheme, no second sandbox. The aiohttp API server that hosts
+  `/v1/*` (OpenAI-compatible) also hosts `/api/dashboard/*` and serves
+  the built React bundle at `/dashboard/`. The event bus is an
+  in-process singleton that fans events from the agent loop to the
+  `/api/dashboard/events` SSE multiplexer. The dashboard's blast
+  radius is identical to the gateway's.
+- **Dashboard auth is a bearer token at `~/.hermes/dashboard_token`
+  (chmod 600)**, SEPARATE from `~/.hermes/.env` so the Seatbelt deny
+  rule on `.env` keeps holding. The token is minted on first
+  `GET /api/dashboard/handshake` from loopback; subsequent requests
+  send `Authorization: Bearer <token>`. It persists across gateway
+  restarts so open browser tabs keep working.
 
 ---
 
@@ -482,11 +510,13 @@ R4 allows them because they're needed by the parent process.
 ```mermaid
 flowchart LR
     subgraph host["macOS host"]
-        subgraph sandbox["Sandboxed gateway process (PID 95647)"]
-            hermes["hermes Python process"]
+        Browser(("Browser<br/>(unsandboxed)"))
+        subgraph sandbox["Sandboxed gateway process"]
+            hermes["hermes Python process<br/>listens :8642 (loopback)"]
         end
         LMS["LM Studio<br/>(unsandboxed)<br/>localhost:1234"]
-        Browser["Chrome/agent-browser<br/>(unsandboxed)<br/>localhost:9222"]
+        BrowserTool["Chrome/agent-browser<br/>(unsandboxed)<br/>localhost:9222"]
+        Phoenix["Arize Phoenix<br/>(optional Docker sidecar)<br/>localhost:6006/4317/4318"]
     end
 
     DiscordGW>"Discord Gateway<br/>wss://gateway.discord.gg<br/>:443"]
@@ -496,8 +526,10 @@ flowchart LR
     DNS>"DNS resolvers<br/>:53 UDP/TCP"]
     Other>"Other HTTPS<br/>(direct URL fetches<br/>via web tools)"]
 
+    Browser -->|":8642 HTTP + SSE<br/>(dashboard + API)"| hermes
     hermes -->|"localhost:1234<br/>(remote ip)"| LMS
-    hermes -->|"localhost:9222<br/>(remote ip)"| Browser
+    hermes -->|"localhost:9222<br/>(remote ip)"| BrowserTool
+    hermes -.->|"localhost:4317<br/>OTLP (R4 opt-in)"| Phoenix
     hermes <-->|":443 WebSocket<br/>(remote tcp)"| DiscordGW
     hermes -->|":443 REST<br/>(remote tcp)"| DiscordAPI
     hermes -->|":443 REST<br/>via MCP<br/>(remote tcp)"| GitHubAPI
@@ -512,21 +544,45 @@ flowchart LR
 (allow network-outbound
   (remote ip "localhost:1234")      ;; LM Studio
   (remote ip "localhost:9222")      ;; Chrome DevTools Protocol
+  (remote ip "localhost:4317")      ;; OTLP gRPC (R4 — opt-in)
+  (remote ip "localhost:4318")      ;; OTLP HTTP (R4 — opt-in)
+  (remote ip "localhost:6006")      ;; Arize Phoenix UI (R4 — opt-in)
+  (remote ip "localhost:8642")      ;; Hermes dashboard (port-conflict check)
   (remote tcp "*:443")              ;; HTTPS — Discord, GitHub, HF, etc.
   (remote tcp "*:80")               ;; HTTP fetches
   (remote tcp "*:53")               ;; DNS over TCP fallback
   (remote udp "*:53"))              ;; DNS over UDP (default)
 
+;; Phase 5 R2 fix: both network-bind AND network-inbound are required
+;; for a TCP LISTENER to actually work. bind() alone is not enough —
+;; listen() + accept() are covered by network-inbound. Discovered when
+;; the dashboard aiohttp server got EPERM at listen() despite a valid
+;; network-bind rule. Use (local tcp ...), NOT (local ip ...), for
+;; TCP — the ip form parses but doesn't match.
 (allow network-bind
-  (local ip "localhost:*"))         ;; OAuth callbacks, API server
+  (local ip "localhost:*")          ;; legacy UDP compat
+  (local tcp "localhost:*")         ;; TCP binds (dashboard + OAuth)
+  (local udp "localhost:*"))
+(allow network-inbound
+  (local ip "localhost:*")
+  (local tcp "localhost:*")         ;; the fix — covers listen() + accept()
+  (local udp "localhost:*"))
 ```
 
-**Key constraint discovered during deployment**: SBPL `(remote ip "*:443")`
-parses without error but does NOT actually match outbound TCP. Connections
-silently time out. Apple's own profiles (`bluetoothuserd.sb`,
-`cloudpaird.sb`) use `(remote tcp "host:port")` for non-localhost
-destinations. `(remote ip ...)` is reserved for `localhost:N` literals.
-Any future profile edits must keep this distinction.
+**Key constraints discovered during deployment** (Phase 4 + Phase 5):
+
+1. **`(remote ip "*:443")` parses but does NOT match outbound TCP.**
+   Apple's own profiles (`bluetoothuserd.sb`, `cloudpaird.sb`) use
+   `(remote tcp "host:port")` for non-localhost. The `ip` form is
+   reserved for `localhost:N` literals. (Phase 4 R4.)
+2. **`network-bind` alone is not enough for a TCP listener.**
+   Seatbelt splits bind() and listen()/accept() into two distinct
+   operations. `network-bind` covers bind(); `network-inbound` covers
+   listen() + accept(). Miss either one and aiohttp's `TCPSite.start()`
+   EPERMs. (Phase 5 R2 fix.)
+3. **Seatbelt rejects IP literals in network addresses** with
+   `"host must be * or localhost"`. Only the `*` and `localhost`
+   hostnames are valid — no `127.0.0.1`, no `[::1]`.
 
 **Trust boundaries**:
 
@@ -541,10 +597,13 @@ Any future profile edits must keep this distinction.
   Defense in depth: Discord channel/user filtering happens at the
   application layer in `gateway/platforms/discord.py`, not via network
   ACLs.
-- **No inbound listeners.** The bind rule only allows binding to
-  `localhost:*` for OAuth callbacks, API server (if enabled), and the
-  WhatsApp bridge (if enabled). Nothing outside the host can initiate
-  a connection to the gateway.
+- **Exactly ONE inbound listener: the dashboard at 127.0.0.1:8642.**
+  Bound to the loopback interface only — nothing outside the host can
+  initiate a connection. Auth is bearer token from
+  `~/.hermes/dashboard_token`. The token bootstraps via a one-shot
+  handshake route that requires the request to come from 127.0.0.1.
+  The WhatsApp bridge and OAuth callback flows use the same bind rules
+  when enabled; they are not enabled on this deployment.
 
 ---
 
@@ -557,15 +616,18 @@ Where state actually lives. Useful for backups, migrations, and
 flowchart LR
     subgraph repo["Source repo (~/os-apps/hermes/)"]
         Code[/"hermes_cli/<br/>tools/<br/>gateway/<br/>cron/<br/>agent/"/]
-        Sandbox[/"scripts/sandbox/<br/>hermes.sb<br/>hermes-gateway-sandboxed<br/>validate-profile.sh<br/>trace-hermes.sh<br/>ai.hermes.gateway.plist.sandboxed"/]
-        Tests[/"tests/tools/<br/>222 unit tests"/]
+        EventBus[/"gateway/event_bus.py<br/>(Phase 5 R1)"/]
+        DashRoutes[/"gateway/platforms/<br/>dashboard_routes.py<br/>(Phase 5 R2)"/]
+        DashUI[/"dashboard/<br/>(Phase 5 R3: React 19 +<br/>TanStack Router + shadcn)"/]
+        Sandbox[/"scripts/sandbox/<br/>hermes.sb<br/>hermes-gateway-sandboxed<br/>validate-profile.sh"/]
+        Tests[/"tests/<br/>event_bus + dashboard_routes<br/>+ otel + ...)"/]
         Plan[/".claude/rules/<br/>recon-findings.md<br/>architecture.md (this file)"/]
         Venv[/"venv/<br/>(uv-managed)"/]
     end
 
     subgraph hermesHome["~/.hermes/ (user state)"]
         Config[/"config.yaml<br/>(non_interactive_policy: guarded,<br/>safe_roots, denied_paths,<br/>max_tool_output, terminal.backend: local)"/]
-        Env[/".env<br/>(secrets — never logged)"/]
+        Env[/".env<br/>(secrets — API_SERVER_ENABLED=true<br/>enables Phase 5 dashboard)"/]
         Profile[/"hermes.sb<br/>(deployed copy of canonical)"/]
         Sessions[/"sessions/<br/>(SQLite + JSONL per chat)"/]
         Logs[/"logs/<br/>(gateway.log, gateway.error.log)"/]
@@ -573,7 +635,12 @@ flowchart LR
         Skills[/"skills/<br/>(custom + bundled skill registry)"/]
         Cache[/"cache/<br/>(images, tts audio, hf models)"/]
         Checkpoints[/"checkpoints/<br/>(git-style snapshots for undo)"/]
-        Backups[/"config.yaml.pre-phase4<br/>(rollback)"/]
+        Events[/"events.ndjson<br/>(Phase 5 R1 — rotating 50 MB)"/]
+        DashToken[/"dashboard_token<br/>(Phase 5 R2 — chmod 600)"/]
+    end
+
+    subgraph staticBundle["gateway/platforms/api_server_static/<br/>(gitignored, populated by npm build)"]
+        DashDist[/"index.html<br/>assets/*.js, *.css"/]
     end
 
     subgraph launchAgents["~/Library/LaunchAgents/"]
@@ -608,21 +675,146 @@ operator (currently Maxwell or the Phase 4 commit description).
 
 ---
 
-## 9. Phase 4 Commit Lineage (appendix)
+## 9. Dashboard & Event Bus (Phase 5) — component view
+
+New in Phase 5: an in-process event bus that fans structured events to
+a local web dashboard. Every layer of the agent runtime emits typed
+events; a single SSE multiplexer pipes them to the browser.
+
+```mermaid
+flowchart LR
+    subgraph runtime["Agent runtime (in-process, sandboxed)"]
+        agent["run_agent.py<br/>turn.started/ended"]
+        dispatch["model_tools.py<br/>tool.invoked/completed"]
+        approval["tools/approval.py<br/>approval.requested/resolved"]
+        compress["agent/context_compressor.py<br/>compaction"]
+        cron["cron/scheduler.py<br/>cron.fired"]
+        session["gateway/session.py<br/>session.started/ended"]
+
+        bus["EventBus singleton<br/>gateway/event_bus.py<br/>(asyncio.Queue fanout,<br/>drop-oldest, fail-silent)"]
+
+        tee[/"~/.hermes/events.ndjson<br/>(50 MB rotation, 3 backups)"/]
+        otel["agent/otel.py<br/>(R4 — opt-in OTel/OpenLLMetry)"]
+    end
+
+    subgraph api["API server (same process)"]
+        sse["GET /api/dashboard/events<br/>SSE multiplexer"]
+        rest["GET /api/dashboard/*<br/>state, sessions, cron,<br/>approvals, tools, skills,<br/>mcp, doctor, config"]
+        handshake["GET /api/dashboard/handshake<br/>(loopback-only bearer bootstrap)"]
+        static["GET /dashboard/*<br/>api_server_static/"]
+    end
+
+    subgraph browser["Browser (unsandboxed)"]
+        ui["React 19 + TanStack Router<br/>Live Console, Sessions, Cron,<br/>Tools, Skills, MCP, Health"]
+    end
+
+    agent -.-> bus
+    dispatch -.-> bus
+    approval -.-> bus
+    compress -.-> bus
+    cron -.-> bus
+    session -.-> bus
+    bus -.->|async writer task| tee
+    bus -.->|per-subscriber queue| sse
+
+    dispatch -.->|start_tool_span<br/>(no-op if disabled)| otel
+    otel -.->|OTLP gRPC :4317| Phoenix>"Arize Phoenix<br/>(optional)"]
+
+    handshake -->|mint/return token| ui
+    ui -->|Authorization: Bearer| rest
+    ui -->|Authorization: Bearer<br/>(streaming fetch)| sse
+    ui -->|GET static| static
+```
+
+**Event schema** (borrowed from OpenHands V1):
+
+```json
+{
+  "type": "tool.invoked | tool.completed | turn.started | turn.ended |
+           llm.call | approval.requested | approval.resolved |
+           compaction | cron.fired | session.started | session.ended |
+           gateway.started",
+  "ts": "2026-04-10T14:36:13.527901+00:00",
+  "session_id": "20260410_143613_abc12345",
+  "data": { "…": "per-type payload" }
+}
+```
+
+**Key invariants**:
+
+- `EventBus.publish()` is fail-silent and non-blocking. The agent
+  loop MUST continue even if the dashboard is disconnected, the
+  NDJSON file is full, or every subscriber has hung.
+- Slow subscribers drop the oldest events rather than backpressuring.
+  A frozen browser tab cannot stall the agent.
+- The NDJSON tee lives under `~/.hermes/` (already R/W in the Seatbelt
+  profile), so R1 required zero sandbox changes.
+- The dashboard bearer token lives at `~/.hermes/dashboard_token`,
+  SEPARATE from `.env`. This preserves the Phase 4 hard-deny on
+  `.env` reads.
+- `/api/dashboard/handshake` is the only route that bypasses auth,
+  and only when the request comes from 127.0.0.1 / ::1. Every other
+  route requires the bearer.
+- LangGraph Agent Inbox's `accept | edit | response | ignore` schema
+  is translated on the approval resolution endpoint:
+  `accept → once`, `ignore → deny`. Edit/response are deferred.
+- Dashboard failures are non-fatal to the gateway. Route registration
+  is wrapped in try/except; if aiohttp is missing or the static
+  bundle is absent, the gateway still boots with a warning and
+  Discord keeps working.
+
+**How to enable the dashboard** (one-time):
+
+```bash
+# 1. Enable the API server platform
+echo 'API_SERVER_ENABLED=true' >> ~/.hermes/.env
+
+# 2. Build the frontend bundle
+make dashboard-build
+
+# 3. Restart the gateway
+make gateway-restart
+
+# 4. Open the UI
+open http://127.0.0.1:8642/dashboard/
+```
+
+**Optional observability (R4)** — opt-in only:
+
+```bash
+pip install -e .[observability]
+export HERMES_OTLP_ENDPOINT=http://localhost:4317
+make phoenix-up                    # docker compose up phoenix :6006
+make gateway-restart
+open http://localhost:6006
+```
+
+---
+
+## 10. Phase 4 + Phase 5 Commit Lineage (appendix)
 
 For historical reference. The branch state as of this snapshot:
 
 ```
+# Phase 5 — dashboard (feature/hermes-dashboard, this snapshot)
+* db2a514d Phase 5 R2 fix: add network-inbound + (local tcp) to sandbox profile
+* c870648d Phase 5 R4: optional OpenLLMetry + Phoenix sidecar observability
+* 0de2f95d Phase 5 R3: dashboard frontend (TanStack Router + React 19 + shadcn/ui)
+* 3666dc62 Phase 5 R2: dashboard backend routes on the existing aiohttp server
+* 329ded2a Phase 5 R1: event-stream backbone for the dashboard
+
+# Phase 4 — sandboxing (merged to main)
+* f8e21c21 Phase 4 fix: allow sandbox writes to ~/.npm for GitHub MCP startup
 * 5737bdd9 Phase 4 R4: live deployment under sandbox-exec via launchd
 * cd23bd8e Phase 4 R4 (deploy): wrapper + .env-tolerant loaders + profile fixes
 * f96e40a1 Phase 4 R2 (recon doc): correct scope — cron ticks hit gateway branch
 * da9c8505 Phase 4 R3 (fix): extract bare / and ~/ from terminal commands
-* 1480474c Phase 4 R4 (artifacts): Seatbelt profile + trace/validate scripts + recon doc
+* 1480474c Phase 4 R4 (artifacts): Seatbelt profile + trace/validate scripts
 * 783c891d Phase 4 R5 (code): per-tool-call output cap + docker doctor
 * b0d5a46f Phase 4 R3: inline path jail in handle_function_call
 * 8ea3142e Phase 4 R2: non-interactive approval policy (allow|guarded)
 * ba3902e5 Phase 4 R1: close force=True RPC bypass in terminal tool
-* c4985957 Phase 3 recon: capability breadth survey + compression tuning  ← merge base with main
+* c4985957 Phase 3 recon: capability breadth survey + compression tuning
 ```
 
 Historical detail (probe results, recon findings, decision trade-offs)
@@ -632,7 +824,7 @@ optimizer/validator pass that shaped the plan lives in
 
 ---
 
-## 10. Glossary
+## 11. Glossary
 
 | Term | Meaning |
 |---|---|
