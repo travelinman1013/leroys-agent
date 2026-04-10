@@ -36,6 +36,7 @@ import logging
 import os
 import platform
 import re
+import sys
 import time
 import threading
 import atexit
@@ -1165,6 +1166,29 @@ def terminal_tool(
                 "error": f"Invalid command: expected string, got {type(command).__name__}",
                 "status": "error",
             }, ensure_ascii=False)
+
+        # Defense in depth: force=True should only ever come from CLI interactive
+        # flows (after a human confirms a dangerous command). It should never
+        # arrive from execute_code RPC — that path strips `force` via
+        # _TERMINAL_BLOCKED_PARAMS (tools/code_execution_tool.py). Log loudly if
+        # we see it from an unexpected caller so any future regression in the
+        # filter is visible.
+        if force:
+            try:
+                caller_frame = sys._getframe(1)
+                caller_info = "%s:%s (%s)" % (
+                    caller_frame.f_code.co_filename,
+                    caller_frame.f_lineno,
+                    caller_frame.f_code.co_name,
+                )
+            except Exception:
+                caller_info = "<unknown>"
+            logger.warning(
+                "terminal_tool called with force=True from %s — should only "
+                "come from CLI interactive flows (command preview: %s)",
+                caller_info,
+                _safe_command_preview(command),
+            )
 
         # Get configuration
         config = _get_env_config()

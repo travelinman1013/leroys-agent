@@ -299,8 +299,18 @@ def _call(tool_name, args):
 # RPC server (runs in a thread inside the parent process)
 # ---------------------------------------------------------------------------
 
-# Terminal parameters that must not be used from ephemeral sandbox scripts
-_TERMINAL_BLOCKED_PARAMS = {"background", "check_interval", "pty", "notify_on_complete"}
+# Terminal parameters that must not be used from ephemeral sandbox scripts.
+# `force` is blocked because it skips the dangerous-command approval gate in
+# terminal_tool (see tools/terminal_tool.py:~1287). Only CLI interactive flows
+# should ever pass force=True; anything reaching us over RPC from execute_code
+# is either smuggled or a mistake.
+_TERMINAL_BLOCKED_PARAMS = {
+    "background",
+    "check_interval",
+    "pty",
+    "notify_on_complete",
+    "force",
+}
 
 
 def _rpc_server_loop(
