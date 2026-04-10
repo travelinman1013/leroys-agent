@@ -3,19 +3,25 @@
 ## What This Is
 
 NousResearch Hermes Agent v0.8.0 — autonomous AI agent running locally.
-Upstream repo cloned to `hermes-agent/`. Do not modify upstream source files
-unless intentionally patching — prefer config, skills, and env vars.
+Forked from NousResearch/hermes-agent. Upstream source is tracked via `upstream` remote.
+Prefer config, skills, and env vars over modifying source files directly.
 
 ## Runtime Layout
 
-- **Upstream code**: `hermes-agent/` (git-tracked, do not modify casually)
+- **Source + venv**: `~/os-apps/hermes/` (this repo — fork of NousResearch/hermes-agent)
 - **Config**: `~/.hermes/config.yaml`
 - **Secrets**: `~/.hermes/.env` (chmod 600 — never log, never commit)
 - **Skills**: `~/.hermes/skills/`
 - **Sessions/logs**: `~/.hermes/sessions/`, `~/.hermes/logs/`
 - **Memories**: `~/.hermes/memories/`
-- **Archived plists**: `_archive/`
-- **Venv**: `hermes-agent/venv/` (Python 3.11, managed by uv)
+- **Venv**: `venv/` (Python 3.11, managed by uv)
+
+## Git Remotes
+
+- `origin` → `travelinman1013/hermes-agent` (private fork)
+- `upstream` → `NousResearch/hermes-agent` (upstream source)
+
+Pull upstream updates: `git fetch upstream && git merge upstream/main`
 
 ## Services
 
@@ -48,7 +54,7 @@ hermes model              # Switch model interactively
 hermes cron list          # List scheduled jobs
 
 # Update upstream
-cd hermes-agent && git pull && uv pip install -e ".[all]"
+git fetch upstream && git merge upstream/main && uv pip install -e ".[all]"
 
 # Restart gateway after config changes
 launchctl kickstart -k gui/$(id -u)/ai.hermes.gateway
