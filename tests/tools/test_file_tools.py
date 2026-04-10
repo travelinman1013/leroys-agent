@@ -311,4 +311,247 @@ class TestSearchHints:
         assert "offset=100" in raw
 
 
+class TestPathJailValidate:
+    """Phase 4 R3: validate_path_operation must clamp paths to safe_roots
+    and respect the denied_paths override.
+    """
+
+    def test_no_safe_roots_means_no_jail(self):
+        from tools.file_tools import validate_path_operation
+        ok, reason = validate_path_operation("/etc/passwd", "read", [], [])
+        assert ok is True
+        assert reason == ""
+
+    def test_path_inside_safe_root_allowed(self, tmp_path):
+        from tools.file_tools import validate_path_operation
+        target = tmp_path / "subdir" / "file.txt"
+        target.parent.mkdir()
+        target.write_text("hello")
+        ok, _ = validate_path_operation(str(target), "read", [str(tmp_path)], [])
+        assert ok is True
+
+    def test_path_outside_safe_root_denied(self, tmp_path):
+        from tools.file_tools import validate_path_operation
+        ok, reason = validate_path_operation(
+            "/etc/passwd", "read", [str(tmp_path)], [],
+        )
+        assert ok is False
+        assert "safe_roots" in reason
+
+    def test_denied_path_overrides_allow(self, tmp_path):
+        from tools.file_tools import validate_path_operation
+        env_file = tmp_path / ".env"
+        env_file.write_text("SECRET=1")
+        ok, reason = validate_path_operation(
+            str(env_file), "read", [str(tmp_path)], [str(env_file)],
+        )
+        assert ok is False
+        assert "denied" in reason
+
+    def test_subpath_of_denied_root_denied(self, tmp_path):
+        from tools.file_tools import validate_path_operation
+        ssh_dir = tmp_path / "secrets"
+        ssh_dir.mkdir()
+        nested = ssh_dir / "id_rsa"
+        nested.write_text("KEY")
+        ok, _ = validate_path_operation(
+            str(nested), "read", [str(tmp_path)], [str(ssh_dir)],
+        )
+        assert ok is False
+
+    def test_write_to_nonexistent_file_in_safe_root_allowed(self, tmp_path):
+        """write-before-create: parent exists and is in safe roots → allow."""
+        from tools.file_tools import validate_path_operation
+        target = tmp_path / "newfile.txt"  # does not exist yet
+        ok, _ = validate_path_operation(str(target), "write", [str(tmp_path)], [])
+        assert ok is True
+
+    def test_write_to_deeply_nonexistent_walks_up(self, tmp_path):
+        """nonexistent ancestors: walk up to nearest existing dir."""
+        from tools.file_tools import validate_path_operation
+        target = tmp_path / "a" / "b" / "c" / "newfile.txt"
+        ok, _ = validate_path_operation(str(target), "write", [str(tmp_path)], [])
+        assert ok is True
+
+    def test_dot_dot_traversal_resolved(self, tmp_path):
+        """`..` segments must be resolved before checking the safe root."""
+        from tools.file_tools import validate_path_operation
+        inside = tmp_path / "sub"
+        inside.mkdir()
+        # Path that traverses out: tmp_path/sub/../../etc/passwd
+        traversal = str(inside / ".." / ".." / "etc" / "passwd")
+        ok, _ = validate_path_operation(traversal, "read", [str(tmp_path)], [])
+        assert ok is False, f"traversal {traversal} should escape safe root"
+
+    def test_symlink_pointing_outside_safe_root_denied(self, tmp_path, monkeypatch):
+        """A symlink under safe_roots that points OUTSIDE must be denied
+        because canonicalization resolves through the link."""
+        from tools.file_tools import validate_path_operation
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        outside_target = outside / "secret.txt"
+        outside_target.write_text("nope")
+
+        inside = tmp_path / "inside"
+        inside.mkdir()
+        link = inside / "link_to_secret"
+        link.symlink_to(outside_target)
+
+        # Safe root is `inside` only — but the symlink resolves to `outside`.
+        ok, _ = validate_path_operation(str(link), "read", [str(inside)], [])
+        assert ok is False, "symlink pivot from inside→outside must be denied"
+
+
+class TestPathJailExtractor:
+    """Verify extract_tool_call_paths produces the right (path, op) pairs
+    for each LLM-callable tool the path-jail should clamp.
+    """
+
+    def test_read_file_extracts_path(self):
+        from tools.file_tools import extract_tool_call_paths
+        out = extract_tool_call_paths("read_file", {"path": "/foo/bar"})
+        assert ("/foo/bar", "read") in out
+
+    def test_write_file_extracts_path(self):
+        from tools.file_tools import extract_tool_call_paths
+        out = extract_tool_call_paths("write_file", {"path": "/foo/bar", "content": "x"})
+        assert ("/foo/bar", "write") in out
+
+    def test_patch_extracts_path(self):
+        from tools.file_tools import extract_tool_call_paths
+        out = extract_tool_call_paths(
+            "patch",
+            {"path": "/foo/bar", "old_string": "a", "new_string": "b"},
+        )
+        assert ("/foo/bar", "write") in out
+
+    def test_search_files_extracts_path_default_dot(self):
+        from tools.file_tools import extract_tool_call_paths
+        out = extract_tool_call_paths("search_files", {"pattern": "foo"})
+        assert (".", "read") in out
+
+    def test_terminal_extracts_workdir_and_command_paths(self):
+        from tools.file_tools import extract_tool_call_paths
+        out = extract_tool_call_paths(
+            "terminal",
+            {"command": "cat /etc/passwd && ls /usr/bin", "workdir": "/tmp"},
+        )
+        ops = {(p, op) for p, op in out}
+        assert ("/tmp", "exec") in ops
+        assert ("/etc/passwd", "read") in ops
+        assert ("/usr/bin", "read") in ops
+
+    def test_terminal_extracts_tilde_path(self):
+        from tools.file_tools import extract_tool_call_paths
+        out = extract_tool_call_paths(
+            "terminal",
+            {"command": "cat ~/.ssh/config"},
+        )
+        paths = [p for p, _ in out]
+        assert "~/.ssh/config" in paths
+
+    def test_unknown_tool_returns_empty(self):
+        from tools.file_tools import extract_tool_call_paths
+        assert extract_tool_call_paths("vision_analyze", {"image": "foo.png"}) == []
+
+    def test_non_dict_args_returns_empty(self):
+        from tools.file_tools import extract_tool_call_paths
+        assert extract_tool_call_paths("read_file", None) == []
+
+
+class TestPathJailIntegration:
+    """End-to-end through model_tools.handle_function_call: a denied path
+    must NEVER reach the registered tool handler."""
+
+    def test_read_file_to_denied_path_blocked(self, tmp_path, monkeypatch):
+        """read_file targeting a denied path returns the jail error and
+        does not invoke registry.dispatch."""
+        from hermes_cli import config as cfg_mod
+        cfg_mod.reset_path_jail_cache()
+        monkeypatch.setattr(cfg_mod, "get_safe_roots", lambda: [str(tmp_path)])
+        monkeypatch.setattr(cfg_mod, "get_denied_paths", lambda: ["/etc/passwd"])
+
+        called = {}
+        def fake_dispatch(*args, **kwargs):
+            called["yes"] = True
+            return json.dumps({"ok": True})
+
+        import model_tools
+        monkeypatch.setattr(model_tools.registry, "dispatch", fake_dispatch)
+
+        result = model_tools.handle_function_call(
+            "read_file",
+            {"path": "/etc/passwd"},
+            task_id="t1",
+        )
+        parsed = json.loads(result)
+        assert "error" in parsed
+        assert "Path jail denied" in parsed["error"]
+        assert "yes" not in called, "dispatch was called even though jail denied"
+
+    def test_read_file_inside_safe_root_passes(self, tmp_path, monkeypatch):
+        from hermes_cli import config as cfg_mod
+        cfg_mod.reset_path_jail_cache()
+        monkeypatch.setattr(cfg_mod, "get_safe_roots", lambda: [str(tmp_path)])
+        monkeypatch.setattr(cfg_mod, "get_denied_paths", lambda: [])
+
+        target = tmp_path / "ok.txt"
+        target.write_text("hello")
+
+        def fake_dispatch(*args, **kwargs):
+            return json.dumps({"content": "hello", "total_lines": 1})
+
+        import model_tools
+        monkeypatch.setattr(model_tools.registry, "dispatch", fake_dispatch)
+
+        result = model_tools.handle_function_call(
+            "read_file",
+            {"path": str(target)},
+            task_id="t1",
+        )
+        parsed = json.loads(result)
+        assert parsed.get("content") == "hello"
+
+    def test_terminal_workdir_outside_safe_root_blocked(self, tmp_path, monkeypatch):
+        from hermes_cli import config as cfg_mod
+        cfg_mod.reset_path_jail_cache()
+        monkeypatch.setattr(cfg_mod, "get_safe_roots", lambda: [str(tmp_path)])
+        monkeypatch.setattr(cfg_mod, "get_denied_paths", lambda: [])
+
+        def fake_dispatch(*args, **kwargs):
+            return json.dumps({"output": "should not run", "exit_code": 0})
+
+        import model_tools
+        monkeypatch.setattr(model_tools.registry, "dispatch", fake_dispatch)
+
+        result = model_tools.handle_function_call(
+            "terminal",
+            {"command": "ls", "workdir": "/"},
+            task_id="t1",
+        )
+        parsed = json.loads(result)
+        assert "error" in parsed
+        assert "Path jail" in parsed["error"]
+
+    def test_jail_no_op_when_safe_roots_empty(self, tmp_path, monkeypatch):
+        """Empty safe_roots = no jail; the tool dispatches normally."""
+        from hermes_cli import config as cfg_mod
+        cfg_mod.reset_path_jail_cache()
+        monkeypatch.setattr(cfg_mod, "get_safe_roots", lambda: [])
+        monkeypatch.setattr(cfg_mod, "get_denied_paths", lambda: [])
+
+        def fake_dispatch(*args, **kwargs):
+            return json.dumps({"content": "anything"})
+
+        import model_tools
+        monkeypatch.setattr(model_tools.registry, "dispatch", fake_dispatch)
+
+        result = model_tools.handle_function_call(
+            "read_file",
+            {"path": "/etc/passwd"},
+            task_id="t1",
+        )
+        parsed = json.loads(result)
+        assert parsed.get("content") == "anything"
+
 

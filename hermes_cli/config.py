@@ -592,6 +592,13 @@ DEFAULT_CONFIG = {
             "domains": [],
             "shared_files": [],
         },
+        # Path jail (Phase 4 R3) — empty by default = no jail.
+        # When safe_roots is non-empty, the inline path-jail in
+        # model_tools.handle_function_call clamps file/terminal tool args
+        # to the listed subtrees. denied_paths overrides safe_roots.
+        # See ~/.claude/plans/moonlit-moseying-salamander.md.
+        "safe_roots": [],
+        "denied_paths": [],
     },
 
     "cron": {
@@ -2036,8 +2043,59 @@ def load_config() -> Dict[str, Any]:
             config = _deep_merge(config, user_config)
         except Exception as e:
             print(f"Warning: Failed to load config: {e}")
-    
+
     return _expand_env_vars(_normalize_root_model_keys(_normalize_max_turns_config(config)))
+
+
+# ---------------------------------------------------------------------------
+# Path-jail config readers (Phase 4 R3)
+# ---------------------------------------------------------------------------
+
+# Cache so the inline pre-dispatch hook doesn't reload config.yaml on every
+# tool call. Reset by clearing this dict (e.g. in tests).
+_path_jail_cache: dict[str, list[str]] = {}
+
+
+def _expand_path_list(raw) -> list[str]:
+    """Normalize a list of path entries from config (expanduser only)."""
+    if not isinstance(raw, list):
+        return []
+    out: list[str] = []
+    for entry in raw:
+        if isinstance(entry, str) and entry.strip():
+            out.append(os.path.expanduser(entry.strip()))
+    return out
+
+
+def get_safe_roots() -> list[str]:
+    """Return security.safe_roots from config (expanded). Empty = no jail."""
+    if "safe_roots" in _path_jail_cache:
+        return _path_jail_cache["safe_roots"]
+    try:
+        cfg = load_config()
+        roots = _expand_path_list((cfg.get("security") or {}).get("safe_roots"))
+    except Exception:
+        roots = []
+    _path_jail_cache["safe_roots"] = roots
+    return roots
+
+
+def get_denied_paths() -> list[str]:
+    """Return security.denied_paths from config (expanded)."""
+    if "denied_paths" in _path_jail_cache:
+        return _path_jail_cache["denied_paths"]
+    try:
+        cfg = load_config()
+        denied = _expand_path_list((cfg.get("security") or {}).get("denied_paths"))
+    except Exception:
+        denied = []
+    _path_jail_cache["denied_paths"] = denied
+    return denied
+
+
+def reset_path_jail_cache() -> None:
+    """Drop the cached safe_roots/denied_paths (used by tests)."""
+    _path_jail_cache.clear()
 
 
 _SECURITY_COMMENT = """

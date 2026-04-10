@@ -116,6 +116,174 @@ def _check_sensitive_path(filepath: str) -> str | None:
     return None
 
 
+# ---------------------------------------------------------------------------
+# Path jail (Phase 4 R3) — generalized allow/deny check used by the inline
+# pre-dispatch hook in model_tools.handle_function_call. The hook calls
+# `validate_path_operation` against `security.safe_roots` and
+# `security.denied_paths` from config.yaml.
+#
+# TOCTOU WARNING: realpath()/Path.resolve() is not atomic with respect to
+# subsequent filesystem access. Symlink manipulation between the check and
+# the actual operation can defeat this layer. Seatbelt (R4) is the true
+# kernel-level boundary — this module is detection-only / defense-in-depth
+# and MUST NOT be relied on as the sole gate for autonomous Phase 4
+# operation. See ~/.claude/plans/moonlit-moseying-salamander.md.
+# ---------------------------------------------------------------------------
+
+
+def _canonicalize_for_jail(filepath: str) -> str:
+    """Canonicalize a (possibly non-existent) path for jail comparison.
+
+    Behavior:
+      - Expands ~ via os.path.expanduser
+      - If the path exists, returns os.path.realpath of it
+      - If the path does not exist, walks up to the nearest existing
+        ancestor, realpaths that, then re-joins the missing tail. This
+        lets write-before-create operations (e.g. write_file to a new
+        file in /tmp) work correctly.
+    """
+    expanded = os.path.expanduser(filepath)
+    abs_path = os.path.abspath(expanded)
+    if os.path.exists(abs_path):
+        try:
+            return os.path.realpath(abs_path)
+        except (OSError, ValueError):
+            return abs_path
+    # Walk up to the nearest existing ancestor and realpath it.
+    parent = abs_path
+    missing_parts: list[str] = []
+    while parent and parent != os.path.dirname(parent):
+        parent_dir = os.path.dirname(parent)
+        if os.path.exists(parent_dir):
+            try:
+                resolved_parent = os.path.realpath(parent_dir)
+            except (OSError, ValueError):
+                resolved_parent = parent_dir
+            return os.path.join(resolved_parent, os.path.basename(parent), *reversed(missing_parts))
+        missing_parts.append(os.path.basename(parent))
+        parent = parent_dir
+    # No existing ancestor found — return the abs path as-is.
+    return abs_path
+
+
+def _path_under(child: str, parent: str) -> bool:
+    """Return True if `child` is the same as or a descendant of `parent`.
+
+    Both must be absolute, canonicalized paths.
+    """
+    try:
+        rel = os.path.relpath(child, parent)
+    except ValueError:
+        return False
+    return rel == "." or not rel.startswith("..")
+
+
+def validate_path_operation(
+    filepath: str,
+    operation: str,
+    allowed_roots: list[str],
+    denied_paths: list[str],
+) -> tuple[bool, str]:
+    """Check whether a path operation is permitted by the path-jail config.
+
+    Args:
+        filepath: The path the tool wants to read/write/exec on.
+        operation: One of "read", "write", "exec". Currently treated
+            uniformly — operation is reserved for future per-op rules.
+        allowed_roots: Whitelist of subtree roots (already expanded).
+            A path is allowed if its canonical form is under any root.
+        denied_paths: Blacklist that overrides allowed_roots. Each entry
+            can be an exact path or a subtree root.
+
+    Returns:
+        (True, "") if allowed, (False, reason) if denied.
+
+    Empty allowed_roots means "no jail configured" → allow everything.
+    """
+    if not filepath:
+        return True, ""
+    if not allowed_roots:
+        # Path-jail not configured — preserve legacy behavior.
+        return True, ""
+
+    canonical = _canonicalize_for_jail(filepath)
+
+    # Deny list takes precedence — also canonicalize each entry so the
+    # comparison handles symlinks consistently.
+    for denied in denied_paths or []:
+        canonical_denied = _canonicalize_for_jail(denied)
+        if _path_under(canonical, canonical_denied):
+            return False, (
+                f"path is under denied path '{denied}' "
+                f"(resolved {filepath} → {canonical}, denied → {canonical_denied})"
+            )
+
+    # Allow if under any safe root.
+    for root in allowed_roots:
+        canonical_root = _canonicalize_for_jail(root)
+        if _path_under(canonical, canonical_root):
+            return True, ""
+
+    return False, (
+        f"path is not under any configured security.safe_roots "
+        f"(resolved {filepath} → {canonical}; operation={operation})"
+    )
+
+
+def extract_tool_call_paths(
+    tool_name: str,
+    args: dict,
+) -> list[tuple[str, str]]:
+    """Map a tool call to the (path, operation) pairs the path-jail should check.
+
+    Returns a list of (path, op) tuples where op is one of "read", "write",
+    "exec". Empty list means "no filesystem-typed args" — the jail is a
+    no-op for those calls.
+
+    Best-effort for terminal: parses obvious file paths out of the
+    command string. This is intentionally low-fidelity — quoted args,
+    pipes, heredocs, and ENV-var expansion will be missed. Seatbelt
+    (Phase 4 R4) is the true defense; this is a detection layer only.
+    """
+    if not isinstance(args, dict):
+        return []
+
+    out: list[tuple[str, str]] = []
+
+    if tool_name == "read_file":
+        p = args.get("path")
+        if isinstance(p, str):
+            out.append((p, "read"))
+    elif tool_name in ("write_file",):
+        p = args.get("path")
+        if isinstance(p, str):
+            out.append((p, "write"))
+    elif tool_name == "patch":
+        # patch supports targeted edits (path) or multi-file V4A patches
+        # (the V4A path-extraction is handled inside the tool itself; we
+        # only see the top-level path arg here).
+        p = args.get("path")
+        if isinstance(p, str):
+            out.append((p, "write"))
+    elif tool_name == "search_files":
+        p = args.get("path", ".")
+        if isinstance(p, str):
+            out.append((p, "read"))
+    elif tool_name == "terminal":
+        workdir = args.get("workdir")
+        if isinstance(workdir, str) and workdir:
+            out.append((workdir, "exec"))
+        cmd = args.get("command")
+        if isinstance(cmd, str):
+            # Best-effort: pull out absolute and ~/ paths from the command.
+            # See module-level TOCTOU warning — Seatbelt is the real defense.
+            import re as _re
+            for match in _re.findall(r'(?<![\w./])(/[\w./~\-]+|~/[\w./~\-]+)', cmd):
+                out.append((match, "read"))
+
+    return out
+
+
 def _is_expected_write_exception(exc: Exception) -> bool:
     """Return True for expected write denials that should not hit error logs."""
     if isinstance(exc, PermissionError):

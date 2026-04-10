@@ -497,6 +497,38 @@ def handle_function_call(
         if function_name in _AGENT_LOOP_TOOLS:
             return json.dumps({"error": f"{function_name} must be handled by the agent loop"})
 
+        # Path jail (Phase 4 R3): pre-dispatch validation of any filesystem
+        # paths in tool args against security.safe_roots / security.denied_paths
+        # in config.yaml. Empty safe_roots = no jail (legacy behavior).
+        # See tools/file_tools.validate_path_operation for the algorithm and
+        # the TOCTOU caveat — this is a detection layer, Seatbelt (R4) is
+        # the kernel-level boundary.
+        try:
+            from tools.file_tools import (
+                extract_tool_call_paths,
+                validate_path_operation,
+            )
+            from hermes_cli.config import get_safe_roots, get_denied_paths
+
+            safe_roots = get_safe_roots()
+            if safe_roots:  # Only enforce when configured
+                denied_paths = get_denied_paths()
+                for _path, _op in extract_tool_call_paths(function_name, function_args):
+                    allowed, reason = validate_path_operation(
+                        _path, _op, safe_roots, denied_paths,
+                    )
+                    if not allowed:
+                        logger.warning(
+                            "Path jail denied %s arg %s (%s): %s",
+                            function_name, _path, _op, reason,
+                        )
+                        return json.dumps({
+                            "error": f"Path jail denied {function_name}: {reason}",
+                        }, ensure_ascii=False)
+        except Exception as exc:
+            # Defensive: a bug in the jail must not break tool dispatch.
+            logger.error("Path jail check raised: %s", exc, exc_info=True)
+
         try:
             from hermes_cli.plugins import invoke_hook
             invoke_hook(
