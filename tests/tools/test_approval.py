@@ -29,6 +29,94 @@ class TestApprovalModeParsing:
             assert _get_approval_mode() == "off"
 
 
+class TestNonInteractivePolicy:
+    """R2: cron / delegated / background contexts must consult
+    approvals.non_interactive_policy instead of unconditionally auto-approving.
+    """
+
+    def _clean_env(self, monkeypatch):
+        # Strip the three env vars that mark "interactive" contexts so the
+        # gate falls into the non-interactive branch.
+        monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
+        monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
+        monkeypatch.delenv("HERMES_EXEC_ASK", raising=False)
+        monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)
+        # Also reset the one-time warning flag so policy reads are clean.
+        approval_module._non_interactive_warning_emitted = False
+
+    def test_policy_default_is_allow(self):
+        from tools.approval import _get_non_interactive_policy
+        with mock_patch("hermes_cli.config.load_config", return_value={"approvals": {}}):
+            assert _get_non_interactive_policy() == "allow"
+
+    def test_policy_guarded_recognized(self):
+        from tools.approval import _get_non_interactive_policy
+        with mock_patch("hermes_cli.config.load_config",
+                        return_value={"approvals": {"non_interactive_policy": "guarded"}}):
+            assert _get_non_interactive_policy() == "guarded"
+
+    def test_policy_unknown_value_falls_back_to_allow(self):
+        from tools.approval import _get_non_interactive_policy
+        with mock_patch("hermes_cli.config.load_config",
+                        return_value={"approvals": {"non_interactive_policy": "STRICT"}}):
+            assert _get_non_interactive_policy() == "allow"
+
+    def test_allow_policy_auto_approves_in_non_interactive(self, monkeypatch):
+        """Legacy behavior preserved: allow policy short-circuits to approved."""
+        self._clean_env(monkeypatch)
+        with mock_patch("hermes_cli.config.load_config", return_value={
+            "approvals": {"mode": "manual", "non_interactive_policy": "allow"},
+        }):
+            result = approval_module.check_all_command_guards("cat /etc/passwd", "local")
+        assert result["approved"] is True
+        assert result.get("message") is None
+
+    def test_guarded_policy_falls_through_to_gate(self, monkeypatch):
+        """guarded policy must NOT short-circuit; the gate runs and the
+        dangerous-pattern check decides."""
+        self._clean_env(monkeypatch)
+        # Patch out the auxiliary smart-approval path so the test doesn't
+        # need a live LLM. With mode=manual and no interactive prompter, the
+        # fall-through path will try to prompt and EOF/deny.
+        with mock_patch("hermes_cli.config.load_config", return_value={
+            "approvals": {"mode": "manual", "non_interactive_policy": "guarded"},
+        }):
+            # `cat /etc/passwd` is NOT in the dangerous-pattern list (no rm,
+            # no curl|sh, etc.), so under guarded+manual it falls through and
+            # is allowed because there are no warnings to raise.
+            result_safe = approval_module.check_all_command_guards("cat /etc/passwd", "local")
+            assert result_safe["approved"] is True
+
+            # `rm -rf /` IS dangerous → fall-through reaches the prompt path
+            # which has no TTY (background context) → input() raises and
+            # returns "deny".
+            result_dangerous = approval_module.check_all_command_guards("rm -rf /home/user/scratch", "local")
+            assert result_dangerous["approved"] is False, (
+                f"guarded+manual must deny dangerous commands in background, got: {result_dangerous}"
+            )
+
+    def test_guarded_smart_approves_via_aux_llm(self, monkeypatch):
+        """guarded + mode=smart: the aux LLM gets to decide. Mock the LLM to
+        return 'approve' and verify the command is allowed."""
+        self._clean_env(monkeypatch)
+        with mock_patch("hermes_cli.config.load_config", return_value={
+            "approvals": {"mode": "smart", "non_interactive_policy": "guarded"},
+        }), mock_patch("tools.approval._smart_approve", return_value="approve"):
+            result = approval_module.check_all_command_guards("rm -rf /tmp/scratch", "local")
+        assert result["approved"] is True
+        assert result.get("smart_approved") is True
+
+    def test_guarded_smart_denies_via_aux_llm(self, monkeypatch):
+        """guarded + mode=smart + aux LLM says deny → BLOCKED."""
+        self._clean_env(monkeypatch)
+        with mock_patch("hermes_cli.config.load_config", return_value={
+            "approvals": {"mode": "smart", "non_interactive_policy": "guarded"},
+        }), mock_patch("tools.approval._smart_approve", return_value="deny"):
+            result = approval_module.check_all_command_guards("rm -rf /tmp/scratch", "local")
+        assert result["approved"] is False
+        assert result.get("smart_denied") is True
+
+
 class TestDetectDangerousRm:
     def test_rm_rf_detected(self):
         is_dangerous, key, desc = detect_dangerous_command("rm -rf /home/user")

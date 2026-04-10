@@ -476,6 +476,57 @@ def _get_approval_mode() -> str:
     return _normalize_approval_mode(mode)
 
 
+# Valid values for approvals.non_interactive_policy. See _get_non_interactive_policy.
+_NON_INTERACTIVE_POLICIES = {"allow", "guarded"}
+
+# Log the "allow" warning once per process to avoid flooding logs every turn.
+_non_interactive_warning_emitted = False
+
+
+def _get_non_interactive_policy() -> str:
+    """Read the non-interactive approval policy from config.
+
+    Controls what happens when the approval gate is reached without any of
+    HERMES_INTERACTIVE / HERMES_GATEWAY_SESSION / HERMES_EXEC_ASK set — i.e.
+    cron ticks, delegated sub-agents that don't inherit gateway env, and
+    other background flows.
+
+    Values:
+      - "allow" (legacy default): auto-approve everything in non-interactive
+        contexts. Matches pre-R2 behavior. Preserves backward compat for
+        existing installs that depend on unattended scripts just running.
+      - "guarded": fall through to the normal dangerous-pattern + tirith +
+        (optionally) smart-approval decision path. With approvals.mode=smart
+        this gives LLM-gated cron; with mode=manual it hard-denies flagged
+        commands because there's no interactive prompter to ask.
+
+    Missing config field defaults to "allow" for backward compat; new
+    installs generated after R2 of Phase 4 Sandboxing get "guarded".
+    """
+    global _non_interactive_warning_emitted
+    raw = _get_approval_config().get("non_interactive_policy", "allow")
+    policy = "allow"
+    if isinstance(raw, str):
+        normalized = raw.strip().lower()
+        if normalized in _NON_INTERACTIVE_POLICIES:
+            policy = normalized
+    # One-time notice in gateway contexts so operators see the status at
+    # startup. Non-gateway CLI flows stay quiet.
+    if (
+        not _non_interactive_warning_emitted
+        and policy == "allow"
+        and os.getenv("HERMES_GATEWAY_SESSION")
+    ):
+        logger.warning(
+            "approvals.non_interactive_policy is 'allow' — autonomous "
+            "contexts (cron, delegated sub-agents, background jobs) will "
+            "auto-approve all commands. Set to 'guarded' for Phase 4 "
+            "autonomous operation."
+        )
+        _non_interactive_warning_emitted = True
+    return policy
+
+
 def _get_approval_timeout() -> int:
     """Read the approval timeout from config. Defaults to 60 seconds."""
     try:
@@ -664,10 +715,21 @@ def check_all_command_guards(command: str, env_type: str,
     is_gateway = os.getenv("HERMES_GATEWAY_SESSION")
     is_ask = os.getenv("HERMES_EXEC_ASK")
 
-    # Preserve the existing non-interactive behavior: outside CLI/gateway/ask
-    # flows, we do not block on approvals and we skip external guard work.
+    # Non-interactive contexts (cron, delegated sub-agents without gateway env,
+    # other background flows) consult approvals.non_interactive_policy.
+    #
+    # "allow"   = legacy behavior — auto-approve and skip guard work entirely.
+    # "guarded" = fall through to the normal dangerous-pattern / tirith /
+    #             smart-approval decision tree below. With approvals.mode=smart
+    #             this yields LLM-gated cron; with mode=manual it hard-denies
+    #             flagged commands (no interactive prompter to ask).
+    #
+    # This is the Phase 4 fix for Hermes cron/delegated contexts skipping the
+    # gate entirely. See recon-findings.md "Critical Findings" for context.
     if not is_cli and not is_gateway and not is_ask:
-        return {"approved": True, "message": None}
+        if _get_non_interactive_policy() == "allow":
+            return {"approved": True, "message": None}
+        # "guarded" — fall through to the guard pipeline below.
 
     # --- Phase 1: Gather findings from both checks ---
 

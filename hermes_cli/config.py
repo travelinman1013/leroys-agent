@@ -556,9 +556,19 @@ DEFAULT_CONFIG = {
     #   manual — always prompt the user (default)
     #   smart  — use auxiliary LLM to auto-approve low-risk commands, prompt for high-risk
     #   off    — skip all approval prompts (equivalent to --yolo)
+    #
+    # non_interactive_policy controls what happens when HERMES_INTERACTIVE /
+    # HERMES_GATEWAY_SESSION / HERMES_EXEC_ASK are all unset (cron, delegated
+    # sub-agents without gateway env, background jobs):
+    #   allow   — legacy behavior, auto-approve everything (backward compat default)
+    #   guarded — fall through to the dangerous-pattern + smart-approval pipeline.
+    #             With mode=smart this gives LLM-gated cron; with mode=manual this
+    #             hard-denies flagged commands (no interactive prompter to ask).
+    #             Recommended for Phase 4 autonomous operation.
     "approvals": {
         "mode": "manual",
         "timeout": 60,
+        "non_interactive_policy": "allow",
     },
 
     # Permanently allowed dangerous command patterns (added via "always" approval)
