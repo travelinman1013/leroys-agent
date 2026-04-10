@@ -14,6 +14,48 @@
 | Web search (Google) | ❌ Fail | 10.2s | 2 | CAPTCHA blocked headless browser |
 | Context awareness | ❌ Fail | — | — | Cannot self-report token usage |
 
+## LM Studio Configuration (as of 2026-04-09)
+
+**Server settings:**
+- Port: 1234
+- Serve on Local Network: OFF
+- Allow per-request MCPs: ON
+- Enable CORS: ON
+- Just-in-Time Model Loading: ON
+- Auto unload unused JIT models: ON (60 min idle TTL)
+- Only Keep Last JIT Loaded Model: ON
+
+**Model load settings (Gemma 4 26B A4B, Q8_0, 25.00 GiB):**
+- Context Length: 65,000 tokens (model native: 262,144) — tested at 65K, manually reloaded to 262K after testing
+- GPU Offload: 30 layers (all on GPU, 25.6 GiB GPU + 748 MiB CPU spillover)
+- CPU Thread Pool Size: 24
+- Evaluation Batch Size: 512
+- Max Concurrency: 4 (experimental)
+- Unified KV Cache: ON
+- Offload KV Cache to GPU Memory: ON
+- Keep Model in Memory: ON
+- Flash Attention: ON (auto-detected)
+- Number of Experts: 8 (of 128 total — MoE architecture)
+- RoPE Frequency Base/Scale: Auto
+
+**Hardware (from logs):**
+- GPU: Apple M3 Ultra, MTLGPUFamilyApple9, Metal 4
+- Unified memory: YES, BFloat16: YES
+- Recommended max working set: ~233 GiB
+
+**Inference performance (observed at 65K context):**
+- Prompt processing: 640 tokens/sec (prefill)
+- Token generation: 74 tokens/sec
+- System prompt (n_keep): 17,007 tokens — 26% of 65K context consumed before any conversation
+- 28 messages = 28,803 total tokens (11,796 tokens of actual conversation)
+
+**Architecture details (from GGUF metadata):**
+- 30 layers, 128 experts (8 active per token), 25.23B total params
+- Sliding window attention: 1024 tokens, every 6th layer is global (non-SWA)
+- Vision encoder: gemma4v projector loaded (1,139 MiB) — multimodal capable
+- `<|tool_response>` is an EOG token — model natively supports tool calling format
+- Cache reuse and KV cache shifting both NOT supported for gemma4 architecture
+
 ## Key Findings
 
 ### What Works Well
@@ -24,12 +66,13 @@
 
 ### Critical Limitations
 
-1. **Context window is severely constrained**
-   - LM Studio caps at 65K tokens (model supports 262K)
+1. **Context window was severely constrained at 65K**
+   - Tested at 65K context (model supports 262K, manually reloaded to 262K after testing)
+   - System prompt alone is 17,007 tokens (26% of 65K budget)
    - Session compaction triggered after just 6 exchanges
    - The skills listing alone (19K chars) consumed a massive chunk
    - Post-compaction: 85% to next compaction immediately
-   - **Recommendation**: Increase LM Studio context to 131072 or 196608 if RAM allows
+   - **Status**: Model reloaded to 262K — needs retesting to confirm improvement
 
 2. **Post-compaction accuracy degrades**
    - Confused issue #2 (created in session) with issue #1 (pre-existing)
@@ -59,15 +102,14 @@
 ## Phase 4 Readiness Assessment
 
 **Not ready yet.** Key blockers:
-- Context window too small for scanning repos (file contents + analysis will compact fast)
+- Context at 65K was too small — now reloaded to 262K, needs retesting
 - No web search for researching issues/PRs
-- Need to increase LM Studio context length significantly
 - Consider adding `max_tool_output` config to truncate large tool results
-- May need a model with native 128K+ context that doesn't require capping
+- 17K system prompt needs auditing — can it be trimmed?
 
 ## Recommendations
 
-1. **Increase context in LM Studio**: 65K → 131K minimum for autonomous workflows
+1. **Retest at 262K context**: Model reloaded — verify compaction behavior improves and KV cache fits in RAM
 2. **Add search API**: Configure Brave Search or SearXNG for web tool
 3. **Tune compression**: Increase `compression.threshold` from 50% to reduce compaction frequency
 4. **Reduce skill noise**: Disable unused skill categories (red-teaming, ML training, etc.) for Discord gateway
