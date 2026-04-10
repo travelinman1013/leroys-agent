@@ -109,9 +109,28 @@
   (remote tcp "*:53")               ;; DNS over TCP (rare but supported)
   (remote udp "*:53"))              ;; DNS over UDP (default)
 
-;; --- Network bind: OAuth callbacks, API server, WhatsApp bridge ---
+;; --- Network bind + inbound: OAuth, API server (R2 :8642), WhatsApp bridge ---
+;; Three rules are needed for a TCP listener to actually work:
+;;   - (allow network-bind ...)     covers bind()
+;;   - (allow network-inbound ...)  covers listen() + accept()
+;;   - (allow network* ...)         catches any darwin-specific op we missed
+;;
+;; Symptom if network-inbound is missing: bind() succeeds, listen() fails
+;; with EPERM → aiohttp.TCPSite.start() raises "[Errno 1] Operation not
+;; permitted". Discovered during R2 dashboard deploy 2026-04-10.
+;;
+;; Also: use (local tcp ...) NOT (local ip ...). The ip form parses
+;; without error but does NOT match bind/listen on TCP sockets, same
+;; way (remote ip ...) fails to match outbound TCP. Seatbelt rejects IP
+;; literals in this position — "host must be * or localhost".
 (allow network-bind
-  (local ip "localhost:*"))
+  (local ip "localhost:*")            ;; legacy UDP compat
+  (local tcp "localhost:*")
+  (local udp "localhost:*"))
+(allow network-inbound
+  (local ip "localhost:*")
+  (local tcp "localhost:*")
+  (local udp "localhost:*"))
 
 ;; --- AF_UNIX for the code-execution RPC socket and other unix sockets ---
 ;; The code-execution RPC creates /tmp/hermes_rpc_<uuid>.sock, covered by
