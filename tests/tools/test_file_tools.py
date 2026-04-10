@@ -450,6 +450,49 @@ class TestPathJailExtractor:
         paths = [p for p, _ in out]
         assert "~/.ssh/config" in paths
 
+    def test_terminal_extracts_bare_root_slash(self):
+        """Regression: `ls /` (or `cd /`, `find /`) must extract `/` so the
+        path-jail can deny it. Verified live in the Phase 4 R3 deployment
+        Discord probe — `ls /` slipped through entirely because the original
+        regex required at least one character after `/`.
+        """
+        from tools.file_tools import extract_tool_call_paths
+        for cmd in ("ls /", "cd /", "find / -name foo", "ls -la /"):
+            out = extract_tool_call_paths("terminal", {"command": cmd})
+            paths = [p for p, _ in out]
+            assert "/" in paths, (
+                f"command {cmd!r} did not extract bare root — extractor "
+                f"returned {out}"
+            )
+
+    def test_terminal_extracts_bare_tilde_slash(self):
+        """`cd ~/` and similar bare-tilde forms must also extract."""
+        from tools.file_tools import extract_tool_call_paths
+        out = extract_tool_call_paths("terminal", {"command": "ls ~/"})
+        paths = [p for p, _ in out]
+        assert "~/" in paths or any(p.startswith("~/") for p in paths)
+
+    def test_bare_slash_denied_by_jail(self, tmp_path):
+        """End-to-end: `terminal ls /` must be denied because `/` is not
+        under any safe_root."""
+        from tools.file_tools import (
+            extract_tool_call_paths,
+            validate_path_operation,
+        )
+        safe_roots = [str(tmp_path)]
+        out = extract_tool_call_paths("terminal", {"command": "ls /"})
+        # At least one extracted path should fail the safe-root check.
+        any_denied = False
+        for path, op in out:
+            ok, _ = validate_path_operation(path, op, safe_roots, [])
+            if not ok:
+                any_denied = True
+                break
+        assert any_denied, (
+            f"`ls /` did not produce any denied paths under safe_roots="
+            f"{safe_roots}; extractor returned {out}"
+        )
+
     def test_unknown_tool_returns_empty(self):
         from tools.file_tools import extract_tool_call_paths
         assert extract_tool_call_paths("vision_analyze", {"image": "foo.png"}) == []

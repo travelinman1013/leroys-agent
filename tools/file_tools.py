@@ -276,9 +276,12 @@ def extract_tool_call_paths(
         cmd = args.get("command")
         if isinstance(cmd, str):
             # Best-effort: pull out absolute and ~/ paths from the command.
-            # See module-level TOCTOU warning — Seatbelt is the real defense.
+            # The trailing character class is `*` (not `+`) so bare `/` and
+            # bare `~/` also match — without that, `ls /`, `cd /`, etc. would
+            # slip through entirely. See module-level TOCTOU warning —
+            # Seatbelt is the real defense.
             import re as _re
-            for match in _re.findall(r'(?<![\w./])(/[\w./~\-]+|~/[\w./~\-]+)', cmd):
+            for match in _re.findall(r'(?<![\w./])(/[\w./~\-]*|~/[\w./~\-]*)', cmd):
                 out.append((match, "read"))
 
     return out
