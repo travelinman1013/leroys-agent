@@ -86,9 +86,15 @@ Custom skills go in `~/.hermes/skills/<skill-name>/SKILL.md`.
 Use YAML frontmatter: name, description, version, metadata.hermes (tags, category, requires_toolsets).
 Test via CLI (`hermes chat`) before deploying to gateway.
 
+## GitHub Integration
+
+GitHub MCP server configured in `~/.hermes/config.yaml` under `mcp_servers.github`.
+PAT stored as `GITHUB_PERSONAL_ACCESS_TOKEN` in `~/.hermes/.env`.
+Tools are lazy-loaded — connect on first use per session.
+Verify: `hermes mcp list` should show github as enabled.
+
 ## Planned Phases (not yet implemented)
 
-- Phase 3: GitHub MCP integration (needs PAT from Maxwell)
 - Phase 4: Autonomous repo scanning pipeline
 - Phase 5: Issue-to-PR automation
 - Phase 6: Model fine-tuning with trajectory export
