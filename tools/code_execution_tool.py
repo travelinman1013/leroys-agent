@@ -313,6 +313,74 @@ _TERMINAL_BLOCKED_PARAMS = {
 }
 
 
+# ---------------------------------------------------------------------------
+# Per-tool-call output cap (Phase 4 R5)
+# ---------------------------------------------------------------------------
+# Phase 3 noted that with compression.threshold = 0.75, Hermes stops reading
+# huge files partway and summarizes (miscounted async def 18 vs actual 36
+# in a 2864-line file read). The fix is to truncate any individual tool
+# result that exceeds the configured token budget so the LLM is forced into
+# chunked iteration via offset/limit instead of one greedy read that the
+# compression layer then summarizes lossily.
+#
+# Heuristic: 4 chars per token (close enough for English+code without a
+# tokenizer dependency).
+_DEFAULT_MAX_TOOL_OUTPUT_TOKENS = 4000
+_max_tool_output_chars_cached: int | None = None
+
+
+def _get_max_tool_output_chars() -> int:
+    """Read code_execution.max_tool_output from config and convert to chars."""
+    global _max_tool_output_chars_cached
+    if _max_tool_output_chars_cached is not None:
+        return _max_tool_output_chars_cached
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config()
+        ce = cfg.get("code_execution", {}) or {}
+        tokens = ce.get("max_tool_output", _DEFAULT_MAX_TOOL_OUTPUT_TOKENS)
+        if isinstance(tokens, (int, float)) and tokens > 0:
+            _max_tool_output_chars_cached = int(tokens) * 4
+            return _max_tool_output_chars_cached
+    except Exception:
+        pass
+    _max_tool_output_chars_cached = _DEFAULT_MAX_TOOL_OUTPUT_TOKENS * 4
+    return _max_tool_output_chars_cached
+
+
+def _truncate_tool_result(result) -> object:
+    """Cap a tool dispatch result string at max_tool_output tokens.
+
+    Returns the result unchanged if it's not a string or if it's already
+    under the cap. Otherwise returns a string with a truncation marker
+    that tells the LLM to use offset/limit for chunked reads.
+
+    NOTE: many tool results are JSON-serialized — we cap the raw string
+    rather than re-serialize because the LLM's compression layer counts
+    raw chars, not parsed structure.
+    """
+    if not isinstance(result, str):
+        return result
+    max_chars = _get_max_tool_output_chars()
+    if max_chars <= 0 or len(result) <= max_chars:
+        return result
+    max_tokens = max_chars // 4
+    head = result[:max_chars]
+    return (
+        head
+        + f"\n...[truncated at ~{max_tokens} tokens. "
+        + "Use offset/limit (read_file, search_files) or chunked reads to "
+        + "continue. Configure code_execution.max_tool_output in "
+        + "config.yaml to change this cap.]"
+    )
+
+
+def _reset_max_tool_output_cache() -> None:
+    """Drop the cached cap (used by tests)."""
+    global _max_tool_output_chars_cached
+    _max_tool_output_chars_cached = None
+
+
 def _rpc_server_loop(
     server_sock: socket.socket,
     task_id: str,
@@ -407,6 +475,11 @@ def _rpc_server_loop(
                 except Exception as exc:
                     logger.error("Tool call failed in sandbox: %s", exc, exc_info=True)
                     result = tool_error(str(exc))
+
+                # Phase 4 R5: cap individual tool outputs so chunked
+                # iteration is forced for huge reads (avoids the Phase 3
+                # "summarize partway through a 2864-line file" failure).
+                result = _truncate_tool_result(result)
 
                 tool_call_counter[0] += 1
                 call_duration = time.monotonic() - call_start
@@ -659,6 +732,9 @@ def _rpc_poll_loop(
                         logger.error("Tool call failed in remote sandbox: %s",
                                      exc, exc_info=True)
                         tool_result = tool_error(str(exc))
+
+                    # Phase 4 R5: cap tool outputs (file-transport path).
+                    tool_result = _truncate_tool_result(tool_result)
 
                     tool_call_counter[0] += 1
                     call_duration = time.monotonic() - call_start

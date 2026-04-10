@@ -505,9 +505,20 @@ def run_doctor(args):
         check_warn("ripgrep (rg) not found", "(file search uses grep fallback)")
         check_info("Install for faster search: sudo apt install ripgrep")
     
-    # Docker (optional)
+    # Docker (optional). Read both the runtime env var and the config.yaml
+    # value so we catch the case where the user flipped terminal.backend in
+    # config.yaml (Phase 4 R5) but the gateway hasn't been restarted yet to
+    # pick up the new TERMINAL_ENV.
     terminal_env = os.getenv("TERMINAL_ENV", "local")
-    if terminal_env == "docker":
+    config_backend = "local"
+    try:
+        from hermes_cli.config import load_config as _load_cfg
+        config_backend = (_load_cfg().get("terminal", {}) or {}).get("backend", "local")
+    except Exception:
+        pass
+
+    docker_required = terminal_env == "docker" or config_backend == "docker"
+    if docker_required:
         if shutil.which("docker"):
             # Check if docker daemon is running
             try:
@@ -518,10 +529,15 @@ def run_doctor(args):
                 check_ok("docker", "(daemon running)")
             else:
                 check_fail("docker daemon not running")
-                issues.append("Start Docker daemon")
+                issues.append("Start Docker daemon (terminal.backend = docker)")
         else:
-            check_fail("docker not found", "(required for TERMINAL_ENV=docker)")
-            issues.append("Install Docker or change TERMINAL_ENV")
+            check_fail("docker not found", "(required for terminal.backend=docker)")
+            issues.append("Install Docker or change terminal.backend")
+        if config_backend == "docker" and terminal_env != "docker":
+            check_warn(
+                "TERMINAL_ENV does not match terminal.backend=docker",
+                "(restart the gateway with `launchctl kickstart -k gui/$(id -u)/ai.hermes.gateway` so the new backend takes effect)",
+            )
     else:
         if shutil.which("docker"):
             check_ok("docker", "(optional)")

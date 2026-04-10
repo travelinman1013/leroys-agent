@@ -382,6 +382,62 @@ print(result.get("output", ""))
         self.assertEqual(received_args.get("args", {}).get("command"), "echo hi")
 
 
+class TestToolOutputTruncation(unittest.TestCase):
+    """Phase 4 R5: individual tool results must be capped so the LLM is
+    forced to use offset/limit chunked reads instead of greedy summarization.
+    """
+
+    def setUp(self):
+        from tools.code_execution_tool import _reset_max_tool_output_cache
+        _reset_max_tool_output_cache()
+
+    def tearDown(self):
+        from tools.code_execution_tool import _reset_max_tool_output_cache
+        _reset_max_tool_output_cache()
+
+    def test_short_result_unchanged(self):
+        from tools.code_execution_tool import _truncate_tool_result
+        out = _truncate_tool_result("short string")
+        self.assertEqual(out, "short string")
+
+    def test_non_string_result_unchanged(self):
+        from tools.code_execution_tool import _truncate_tool_result
+        # dicts/lists/None/ints are passed through unchanged.
+        for val in ({"a": 1}, [1, 2, 3], 42, None):
+            self.assertIs(_truncate_tool_result(val), val)
+
+    def test_long_result_truncated_with_marker(self):
+        """Output longer than the cap is sliced and gets a hint marker."""
+        from tools.code_execution_tool import _truncate_tool_result
+        # Default cap = 4000 tokens * 4 chars = 16000 chars
+        big = "x" * 50000
+        out = _truncate_tool_result(big)
+        self.assertLess(len(out), len(big))
+        self.assertIn("truncated", out)
+        self.assertIn("offset/limit", out)
+        self.assertIn("max_tool_output", out)
+
+    def test_truncation_respects_config_value(self):
+        """Setting code_execution.max_tool_output in config changes the cap."""
+        from tools.code_execution_tool import (
+            _truncate_tool_result,
+            _reset_max_tool_output_cache,
+        )
+        _reset_max_tool_output_cache()
+        # 100 tokens * 4 chars = 400 chars cap
+        with patch(
+            "hermes_cli.config.load_config",
+            return_value={"code_execution": {"max_tool_output": 100}},
+        ):
+            # Trigger cache load with the patched config
+            big = "y" * 1000
+            out = _truncate_tool_result(big)
+        self.assertLess(len(out), len(big))
+        # Head should be ~400 chars + the marker text
+        self.assertTrue(out.startswith("y" * 400))
+        self.assertIn("truncated", out)
+
+
 class TestStubSchemaDrift(unittest.TestCase):
     """Verify that _TOOL_STUBS in code_execution_tool.py stay in sync with
     the real tool schemas registered in tools/registry.py.

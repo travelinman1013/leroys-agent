@@ -580,6 +580,16 @@ DEFAULT_CONFIG = {
     # Or dict format: {"name": {"description": "...", "system_prompt": "...", "tone": "...", "style": "..."}}
     "personalities": {},
 
+    # Programmatic tool calling sandbox (execute_code).
+    # max_tool_output truncates individual tool results so the LLM is forced
+    # into chunked iteration via offset/limit instead of one greedy read that
+    # the compression layer then summarizes lossily (Phase 3 finding).
+    "code_execution": {
+        "timeout": 300,
+        "max_tool_calls": 50,
+        "max_tool_output": 4000,  # tokens; ~16000 chars at the 4-char heuristic
+    },
+
     # Pre-exec security scanning via tirith
     "security": {
         "redact_secrets": True,
