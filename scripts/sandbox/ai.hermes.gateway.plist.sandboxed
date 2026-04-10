@@ -1,0 +1,68 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Phase 4 R4 sandboxed launchd plist for the Hermes gateway.
+  Reference template — the live file lives at
+  ~/Library/LaunchAgents/ai.hermes.gateway.plist.
+
+  Deployment:
+    cp ~/Library/LaunchAgents/ai.hermes.gateway.plist \
+       ~/Library/LaunchAgents/ai.hermes.gateway.plist.pre-sandbox
+    cp scripts/sandbox/ai.hermes.gateway.plist.sandboxed \
+       ~/Library/LaunchAgents/ai.hermes.gateway.plist
+    plutil -lint ~/Library/LaunchAgents/ai.hermes.gateway.plist
+    launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/ai.hermes.gateway.plist
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/ai.hermes.gateway.plist
+
+  Rollback:
+    cp ~/Library/LaunchAgents/ai.hermes.gateway.plist.pre-sandbox \
+       ~/Library/LaunchAgents/ai.hermes.gateway.plist
+    launchctl bootout gui/$(id -u) ~/Library/LaunchAgents/ai.hermes.gateway.plist
+    launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/ai.hermes.gateway.plist
+
+  ProgramArguments points to the wrapper script (not sandbox-exec
+  directly) because the wrapper pre-loads ~/.hermes/.env into os.environ
+  BEFORE entering the sandbox — the sandbox profile denies kernel-level
+  reads of .env so the agent can never exfiltrate creds via tools, but
+  the gateway process itself needs the API keys at startup.
+-->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>ai.hermes.gateway</string>
+
+	<key>ProgramArguments</key>
+	<array>
+		<string>/Users/maxwell/os-apps/hermes/venv/bin/python3</string>
+		<string>/Users/maxwell/os-apps/hermes/scripts/sandbox/hermes-gateway-sandboxed</string>
+	</array>
+
+	<key>WorkingDirectory</key>
+	<string>/Users/maxwell/os-apps/hermes</string>
+
+	<key>EnvironmentVariables</key>
+	<dict>
+		<key>HERMES_HOME</key>
+		<string>/Users/maxwell/.hermes</string>
+		<key>PATH</key>
+		<string>/Users/maxwell/.local/bin:/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin</string>
+		<key>HOME</key>
+		<string>/Users/maxwell</string>
+	</dict>
+
+	<key>RunAtLoad</key>
+	<true/>
+
+	<key>KeepAlive</key>
+	<true/>
+
+	<key>StandardOutPath</key>
+	<string>/Users/maxwell/.hermes/logs/gateway.log</string>
+
+	<key>StandardErrorPath</key>
+	<string>/Users/maxwell/.hermes/logs/gateway.error.log</string>
+
+	<key>ThrottleInterval</key>
+	<integer>10</integer>
+</dict>
+</plist>

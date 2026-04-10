@@ -358,34 +358,95 @@ Branch: `enhance/hermes-phase4-sandboxing`
 
 ### Wave 2 — OS-level kernel MACF (in progress)
 
-- **R4 artifacts** (this commit): canonical Seatbelt profile at
+- **R4 artifacts** (commit `1480474c`): canonical Seatbelt profile at
   `scripts/sandbox/hermes.sb`, plus discovery + validation scripts at
   `scripts/sandbox/{trace-hermes.sh, validate-profile.sh}`. Profile uses
   `(deny default)` with explicit `(allow file-read* (subpath ...))` for
   needed paths and explicit `(deny file-read* ...)` for `~/.ssh` and
-  `~/.hermes/.env`. Network is clamped to `localhost:1234` (LM Studio),
+  `~/.hermes/.env`. Network clamped to `localhost:1234` (LM Studio),
   `localhost:9222` (browser tool CDP), `*:443` and `*:80` (HTTPS/HTTP
-  outbound), and DNS. Generic `network-outbound (remote unix-socket)` for
-  the code-execution RPC at `/tmp/hermes_rpc_<uuid>.sock`.
-  
-  **Iteration log** (append entries here as new denials surface):
-  - (no entries yet — first deployment pending)
-  
-  Deployment is gated to user confirmation: copy
-  `scripts/sandbox/hermes.sb` to `~/.hermes/hermes.sb`, run
-  `scripts/sandbox/validate-profile.sh`, iterate the profile in CLI mode
-  via `sandbox-exec -f ~/.hermes/hermes.sb hermes chat` until all probes
-  pass, then wrap the launchd plist with
-  `/usr/bin/sandbox-exec -f /Users/maxwell/.hermes/hermes.sb` ahead of the
-  existing python invocation.
+  outbound), and DNS via `(remote tcp/udp ...)`. Generic
+  `network-outbound (remote unix-socket)` for the code-execution RPC at
+  `/tmp/hermes_rpc_<uuid>.sock`.
+
+- **R4 deployment** (commit `cd23bd8e`): wrapper + .env-tolerant loaders +
+  three profile fixes discovered during CLI-mode iteration:
+
+  1. **Wrapper script** (`scripts/sandbox/hermes-gateway-sandboxed`):
+     resolves the .env chicken-and-egg — reads `~/.hermes/.env` in this
+     unsandboxed Python process and puts every key into `os.environ`,
+     then `execvp`s into `/usr/bin/sandbox-exec` with the hermes binary.
+     The new (sandboxed) process inherits the env vars before the
+     sandbox is applied.
+
+  2. **`.env` PermissionError tolerance** in `hermes_cli/env_loader.py`,
+     `hermes_cli/doctor.py` (module-level + run), `hermes_cli/dump.py`,
+     `hermes_cli/config.load_env` (falls back to `dict(os.environ)`),
+     and `cron/scheduler.py`. With the wrapper pre-loading, every
+     subsequent re-read inside the sandbox can fail silently because
+     the env vars are already in process memory.
+
+  3. **Profile patches**:
+     - Added `~/.local/state/hermes` to file-read* and file-write*
+       (Discord platform writes a bot-token lock file there at startup).
+     - **CRITICAL**: switched non-localhost network rules from
+       `(remote ip "*:443")` to `(remote tcp "*:443")`. The `(remote ip ...)`
+       form parses without error but does NOT match outbound TCP — Discord
+       WebSocket would silently time out at the 30s `_ready_event.wait()`
+       even though slash-command sync (HTTP REST to discord.com) still
+       worked. Apple's own profiles (`bluetoothuserd.sb`, `cloudpaird.sb`)
+       use `(remote tcp ...)` for non-localhost destinations. Documented
+       inline in the profile so future iterations don't repeat the
+       mistake.
+
+- **R4 plist swap** (this section): `~/Library/LaunchAgents/ai.hermes.gateway.plist`
+  `ProgramArguments` now invokes `/Users/maxwell/os-apps/hermes/venv/bin/python3
+  /Users/maxwell/os-apps/hermes/scripts/sandbox/hermes-gateway-sandboxed`
+  instead of `hermes gateway run` directly. The wrapper handles the env
+  pre-load and exec into sandbox-exec. Reference template lives in-repo at
+  `scripts/sandbox/ai.hermes.gateway.plist.sandboxed`. Pre-sandbox plist
+  backed up to `~/Library/LaunchAgents/ai.hermes.gateway.plist.pre-sandbox`
+  for one-line rollback.
+
+  **Verification at deploy** (2026-04-10 10:03):
+  - `plutil -lint` → OK
+  - `launchctl bootout` + `bootstrap` → PID 95647 came up clean
+  - Wrapper logged `pre-loaded 9 env var(s) from ~/.hermes/.env`
+  - Discord WebSocket connected at 10:03:17 (~3s after start)
+  - Slash commands synced (100/104, expected drop)
+  - Cron ticker started
+  - No errors in `gateway.error.log` after the boot sequence
+  - Independent negative tests against the deployed profile:
+    - `cat /Users/maxwell/.ssh/config` → `Operation not permitted`
+    - `cat /Users/maxwell/.hermes/.env` → `Operation not permitted`
+    - `ls /Users/maxwell/Documents` → `Operation not permitted`
+    - `cat /Users/maxwell/os-apps/hermes/CLAUDE.md` → readable
+
+  **Iteration log** (append entries here as new denials surface in
+  production):
+  - 2026-04-10 09:50 — added `/Users/maxwell/.local/state/hermes` (R/W)
+    for the Discord bot-token lock at `~/.local/state/hermes/gateway-locks/`
+  - 2026-04-10 09:55 — switched `(remote ip "*:443")` →
+    `(remote tcp "*:443")` after Discord WebSocket timeouts
+  - 2026-04-10 09:55 — added `(remote tcp "*:80")`, `(remote tcp "*:53")`,
+    `(remote udp "*:53")` with the same TCP/UDP correction
 
 ### Phase 3 → Phase 4 status delta
 
 | Phase 3 finding | Phase 4 status |
 |---|---|
-| force=True RPC bypass | ✅ closed (R1 commit ba3902e5) |
-| Non-interactive auto-approval | ✅ closed (R2 commit 8ea3142e); deploy `non_interactive_policy: guarded` to activate |
-| No path jail | ✅ closed at app level (R3 commit b0d5a46f); kernel level pending R4 deploy |
-| max_tool_output not set | ✅ closed at code level (R5 commit 783c891d); deploy config to activate |
+| force=True RPC bypass | ✅ closed (R1 ba3902e5) |
+| Non-interactive auto-approval | ✅ closed (R2 8ea3142e), `non_interactive_policy: guarded` deployed to live config 2026-04-10 |
+| No path jail | ✅ closed at BOTH layers — app level (R3 b0d5a46f + da9c8505 fix) AND kernel level (R4 cd23bd8e + plist swap 2026-04-10 10:03) |
+| max_tool_output not set | ✅ closed at code level (R5 783c891d), `code_execution.max_tool_output: 4000` deployed to live config 2026-04-10 |
 | Web search still broken | ⏸ deferred to Phase 4b |
 | Compaction drops active task | ⏸ partial — R5 truncation reduces accumulation pressure |
+
+### Phase 4 — readiness for autonomous operation
+
+All Phase 3 security blockers are now closed at BOTH the app layer (R1, R2, R3, R5) and the kernel layer (R4 Seatbelt). The gateway is running under `sandbox-exec -f ~/.hermes/hermes.sb` via the wrapper script — verified live at 2026-04-10 10:03. Cron, delegated sub-agents, and any in-process autonomous flow inherit the sandbox automatically because the parent gateway process IS the sandboxed process.
+
+**Cleared for autonomous Phase 4 operation as of 2026-04-10 10:03.** Open follow-ups:
+- Phase 4b: Colima VM layer (when Phase 4 needs to execute untrusted code from scanned repos, not just read it)
+- Phase 4b: GitHub App installation-token credential broker (interim mitigation: R3 + R4 both deny `.env` reads)
+- Phase 4b: SearXNG / Brave Search API for web search
