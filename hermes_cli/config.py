@@ -2108,6 +2108,75 @@ def reset_path_jail_cache() -> None:
     _path_jail_cache.clear()
 
 
+# ---------------------------------------------------------------------------
+# Dashboard bearer token
+# ---------------------------------------------------------------------------
+
+_DASHBOARD_TOKEN_FILENAME = "dashboard_token"
+_dashboard_token_cache: Optional[str] = None
+
+
+def get_dashboard_token(mint_if_missing: bool = True) -> Optional[str]:
+    """Return the dashboard bearer token, minting a new one if absent.
+
+    The token is stored at ``~/.hermes/dashboard_token`` (chmod 600) and is
+    intentionally SEPARATE from ``~/.hermes/.env`` so the Phase 4 Seatbelt
+    profile (which hard-denies ``.env`` reads) can still read the token.
+
+    The token rotates on every gateway restart if the file is deleted;
+    otherwise it persists across restarts so open browser tabs keep
+    working. Callers that want rotation should ``path.unlink()`` before
+    calling this.
+
+    Returns the token string, or None if ``mint_if_missing`` is False and
+    no token exists yet.
+    """
+    global _dashboard_token_cache
+    if _dashboard_token_cache:
+        return _dashboard_token_cache
+
+    try:
+        token_path = get_hermes_home() / _DASHBOARD_TOKEN_FILENAME
+        if token_path.exists():
+            try:
+                token = token_path.read_text(encoding="utf-8").strip()
+                if token:
+                    _dashboard_token_cache = token
+                    return token
+            except Exception as exc:
+                logger.debug("dashboard_token: read failed: %s", exc)
+
+        if not mint_if_missing:
+            return None
+
+        # Mint a new token — 32 random bytes, base64url (URL-safe, no padding)
+        import base64
+        import secrets
+        token = base64.urlsafe_b64encode(secrets.token_bytes(32)).rstrip(b"=").decode("ascii")
+
+        try:
+            token_path.parent.mkdir(parents=True, exist_ok=True)
+            token_path.write_text(token, encoding="utf-8")
+            try:
+                os.chmod(token_path, 0o600)
+            except Exception:
+                pass
+        except Exception as exc:
+            logger.warning("dashboard_token: write failed (token will not persist): %s", exc)
+
+        _dashboard_token_cache = token
+        return token
+    except Exception as exc:
+        logger.warning("dashboard_token: unexpected error: %s", exc)
+        return None
+
+
+def reset_dashboard_token_cache() -> None:
+    """Drop the in-memory dashboard token cache (tests only)."""
+    global _dashboard_token_cache
+    _dashboard_token_cache = None
+
+
 _SECURITY_COMMENT = """
 # ── Security ──────────────────────────────────────────────────────────
 # API keys, tokens, and passwords are redacted from tool output by default.

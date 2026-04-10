@@ -1626,6 +1626,32 @@ class APIServerAdapter(BasePlatformAdapter):
             # Structured event streaming
             self._app.router.add_post("/v1/runs", self._handle_runs)
             self._app.router.add_get("/v1/runs/{run_id}/events", self._handle_run_events)
+
+            # Dashboard routes (R2) — REST + SSE on the same aiohttp app.
+            # Failure to register must NOT prevent the gateway from booting:
+            # the dashboard is optional infrastructure.
+            try:
+                from gateway.platforms.dashboard_routes import (
+                    register_dashboard_routes,
+                    DASHBOARD_ROUTES_AVAILABLE,
+                )
+                if DASHBOARD_ROUTES_AVAILABLE:
+                    # Static bundle lives alongside this module, populated by
+                    # `make dashboard-build` (R3).
+                    _static_dir = os.path.join(
+                        os.path.dirname(__file__), "api_server_static"
+                    )
+                    from pathlib import Path as _Path
+                    register_dashboard_routes(
+                        self._app,
+                        adapter=self,
+                        static_dir=_Path(_static_dir),
+                    )
+            except Exception as _dash_exc:
+                logger.warning(
+                    "[%s] Dashboard routes failed to register: %s",
+                    self.name, _dash_exc,
+                )
             # Start background sweep to clean up orphaned (unconsumed) run streams
             sweep_task = asyncio.create_task(self._sweep_orphaned_runs())
             try:
