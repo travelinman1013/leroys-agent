@@ -245,11 +245,36 @@ What's solid for Phase 4:
 - ✅ Context-awareness bars are reliable
 
 Blockers (do these BEFORE running Phase 4 unattended):
-1. **🔒 SECURITY: `hermes_tools.terminal` bypasses approvals.** `approvals.mode: manual` only gates the legacy direct-shell path — Python tool calls run unrestricted. Audit `gateway/agent/tools/` to find where the gate is missing and wire it into the hermes_tools call path. Until fixed, never run `agent.max_turns` autonomously without a human in the loop.
-2. **🔒 SECURITY: Terminal is not jailed to `~/Projects`.** `terminal.cwd` is just the starting directory; Hermes can `cd ~` and read `.ssh/`, `.hermes/.env`, etc. Either chroot/jail the shell, sandbox via Docker (already configured but `backend: local` is selected), or block path traversal in `hermes_tools.terminal`. This is the most direct way to prevent Phase 4 from accidentally exfiltrating the OpenAI key from `.hermes/.env`.
-3. **⚠️ Compaction mid-tool-chain drops the active task** (not just facts). When 4 sequential MCP calls hit the threshold, post-compression Hermes answered an *older* question. The 0.75 threshold reduces frequency but doesn't prevent this. Workaround: add `max_tool_output` truncation, or implement per-turn task pinning in the compression summary template.
-4. **⚠️ Web search still broken.** No CAPTCHA bypass and no native web tool — Hermes writes urllib from scratch every time. SearXNG or Brave Search API is the fix.
-5. **(soft) Accuracy under high-threshold one-shot reads.** With threshold 0.75 and a huge file, Hermes stops reading partway and summarizes — got the class name right but miscounted methods by 50%. Add `max_tool_output: 4000` to force chunked iteration.
+
+1. **🔒 SECURITY: Approval gate has an allowlist gap and no path jail (probes 4 + 10) — CORRECTED.**
+   The Phase 3 writeup originally called this an "approval bypass" — that framing was wrong.
+   A follow-up source read in the Phase 4 Sandboxing planning session traced the actual call
+   path and found the gate IS reached: `execute_code → hermes_tools.terminal → RPC →
+   registry.dispatch → terminal_tool → check_all_command_guards` at `tools/approval.py:645`.
+   The real findings are:
+   - **The gate is a dangerous-pattern detector, not a per-command prompt.** Commands like
+     `cat /etc/passwd`, `ls /`, `cd ~` don't match any pattern in `DANGEROUS_PATTERNS`, so
+     they auto-approve. The fix is path-jail (R3 below), not a fix to the approval gate.
+   - **A real latent kwarg bypass:** `terminal_tool` accepted `force=True` at
+     `tools/terminal_tool.py:1287` which skipped `_check_all_guards` entirely, and
+     `_TERMINAL_BLOCKED_PARAMS` at `tools/code_execution_tool.py:303` did not include
+     `force` until Phase 4 R1 of the Sandboxing plan added it. An LLM that learned to call
+     `hermes_tools._call("terminal", {"command": "...", "force": True})` got unrestricted
+     shell. Not actively exploited in probes. Closed by R1.
+   - **A non-interactive auto-approval class:** `tools/approval.py:669` short-circuited to
+     `{approved: True}` whenever `HERMES_INTERACTIVE` / `HERMES_GATEWAY_SESSION` /
+     `HERMES_EXEC_ASK` were all unset. Cron ticks, delegated sub-agents that don't inherit
+     gateway env, and any background invocation skipped the gate entirely. Closed by R2
+     via the new `approvals.non_interactive_policy: guarded` setting.
+   - **No path jail anywhere in the codebase.** `terminal.cwd` is a starting directory,
+     not a clamp. `tools/file_tools.py:99-116` blocks sensitive *writes* via realpath but
+     no equivalent for reads. Closed by R3 via the inline path-jail in
+     `model_tools.handle_function_call` reading `security.safe_roots` and
+     `security.denied_paths` from config.yaml.
+
+2. **⚠️ Compaction mid-tool-chain drops the active task** (not just facts). When 4 sequential MCP calls hit the threshold, post-compression Hermes answered an *older* question. The 0.75 threshold reduces frequency but doesn't prevent this. Workaround: add `max_tool_output` truncation (R5 — done in Phase 4 plan), or implement per-turn task pinning in the compression summary template.
+3. **⚠️ Web search still broken.** No CAPTCHA bypass and no native web tool — Hermes writes urllib from scratch every time. SearXNG or Brave Search API is the fix. Deferred to Phase 4b.
+4. **(soft) Accuracy under high-threshold one-shot reads.** With threshold 0.75 and a huge file, Hermes stops reading partway and summarizes — got the class name right but miscounted methods by 50%. Closed by R5 (`code_execution.max_tool_output: 4000`) which forces chunked iteration via offset/limit.
 
 ### Phase 3 Recommendations (in order)
 
@@ -258,3 +283,94 @@ Blockers (do these BEFORE running Phase 4 unattended):
 3. **Add `max_tool_output: 4000`** to truncate large reads — addresses both finding #5 and helps with finding #3 (smaller chunks = less per-turn pressure).
 4. **Add SearXNG or Brave Search API** for web search.
 5. **Don't change models yet.** All other variables locked, prove the security path first, then A/B Qwen 3.5 27B vs Gemma 4 26B.
+
+---
+
+## Phase 4 — Sandboxing Implementation Log (2026-04-10)
+
+Plan: `~/.claude/plans/moonlit-moseying-salamander.md`
+Branch: `enhance/hermes-phase4-sandboxing`
+
+### Wave 0 — Pre-sandboxing defensive patches (landed)
+
+- **R1 — `force=True` RPC bypass closed** (commit `ba3902e5`).
+  Added `force` to `_TERMINAL_BLOCKED_PARAMS` at `tools/code_execution_tool.py:303`.
+  Both RPC dispatch sites now strip the kwarg before `handle_function_call`. A
+  warning log fires in `terminal_tool` if `force=True` ever arrives anyway, so
+  any future regression is visible. Audit of other `force`/`skip`/`unsafe`
+  bool params turned up only `tools/skills_guard.py:642` which is reachable
+  only from CLI `hermes_cli/skills_hub.py` (interactive flow), not LLM tools.
+  Tests: `tests/tools/test_code_execution.py::TestTerminalBlockedParams` (2 cases).
+
+### Wave 1 — App-level gate (landed)
+
+- **R2 — Non-interactive approval policy** (commit `8ea3142e`).
+  New `approvals.non_interactive_policy: allow|guarded` in config schema.
+  Default `allow` preserves backward compat; `guarded` falls through to the
+  existing dangerous-pattern + smart-approval pipeline so cron / delegated /
+  background contexts no longer skip the gate. Cost: with `mode=smart` every
+  flagged command in a non-interactive context calls the auxiliary LLM
+  (~200-500ms). Failure mode: aux LLM unavailable → smart_approve escalates →
+  command BLOCKED (fail-closed). One-time WARNING at gateway startup when the
+  policy is `allow` so operators see the status.
+  Tests: `tests/tools/test_approval.py::TestNonInteractivePolicy` (7 cases).
+
+- **R3 — Inline path jail in `handle_function_call`** (commit `b0d5a46f`).
+  New `validate_path_operation` + `extract_tool_call_paths` in
+  `tools/file_tools.py` reusing the realpath pattern from
+  `_check_sensitive_path`. New `get_safe_roots()` / `get_denied_paths()` /
+  `reset_path_jail_cache()` in `hermes_cli/config.py`. Pre-dispatch hook in
+  `model_tools.handle_function_call` runs the check ONLY when
+  `security.safe_roots` is non-empty (so existing installs without opt-in
+  preserve legacy behavior). Handles non-existent paths by walking up to the
+  nearest existing ancestor. TOCTOU caveat documented in code: this is a
+  detection layer, NOT a kernel boundary — Wave 2 (Seatbelt) is the real
+  defense. Terminal command-string parsing is intentionally low-fidelity
+  (catches absolute and `~/` paths via regex; misses quoted args inside
+  `bash -c`, pipes, heredocs).
+  Tests: `tests/tools/test_file_tools.py::TestPathJail*` (21 cases — validate,
+  extractor, integration through `handle_function_call`).
+
+- **R5 (code) — `max_tool_output` truncation + Docker doctor warning** (commit
+  `783c891d`). New `_get_max_tool_output_chars()` / `_truncate_tool_result()`
+  applied at both RPC dispatch sites. Default 4000 tokens (~16000 chars).
+  When a tool result exceeds the cap, the head is sliced and a marker is
+  appended pointing the LLM at offset/limit chunked reads. Doctor warns if
+  `terminal.backend == docker` in config.yaml but `TERMINAL_ENV` is stale or
+  the daemon is unreachable. Config flip + cap setting in `~/.hermes/config.yaml`
+  is deferred to the user-confirmed deployment step.
+  Tests: `tests/tools/test_code_execution.py::TestToolOutputTruncation` (4 cases).
+
+### Wave 2 — OS-level kernel MACF (in progress)
+
+- **R4 artifacts** (this commit): canonical Seatbelt profile at
+  `scripts/sandbox/hermes.sb`, plus discovery + validation scripts at
+  `scripts/sandbox/{trace-hermes.sh, validate-profile.sh}`. Profile uses
+  `(deny default)` with explicit `(allow file-read* (subpath ...))` for
+  needed paths and explicit `(deny file-read* ...)` for `~/.ssh` and
+  `~/.hermes/.env`. Network is clamped to `localhost:1234` (LM Studio),
+  `localhost:9222` (browser tool CDP), `*:443` and `*:80` (HTTPS/HTTP
+  outbound), and DNS. Generic `network-outbound (remote unix-socket)` for
+  the code-execution RPC at `/tmp/hermes_rpc_<uuid>.sock`.
+  
+  **Iteration log** (append entries here as new denials surface):
+  - (no entries yet — first deployment pending)
+  
+  Deployment is gated to user confirmation: copy
+  `scripts/sandbox/hermes.sb` to `~/.hermes/hermes.sb`, run
+  `scripts/sandbox/validate-profile.sh`, iterate the profile in CLI mode
+  via `sandbox-exec -f ~/.hermes/hermes.sb hermes chat` until all probes
+  pass, then wrap the launchd plist with
+  `/usr/bin/sandbox-exec -f /Users/maxwell/.hermes/hermes.sb` ahead of the
+  existing python invocation.
+
+### Phase 3 → Phase 4 status delta
+
+| Phase 3 finding | Phase 4 status |
+|---|---|
+| force=True RPC bypass | ✅ closed (R1 commit ba3902e5) |
+| Non-interactive auto-approval | ✅ closed (R2 commit 8ea3142e); deploy `non_interactive_policy: guarded` to activate |
+| No path jail | ✅ closed at app level (R3 commit b0d5a46f); kernel level pending R4 deploy |
+| max_tool_output not set | ✅ closed at code level (R5 commit 783c891d); deploy config to activate |
+| Web search still broken | ⏸ deferred to Phase 4b |
+| Compaction drops active task | ⏸ partial — R5 truncation reduces accumulation pressure |

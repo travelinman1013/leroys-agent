@@ -1,0 +1,106 @@
+;; Hermes gateway sandbox profile — Phase 4 R4 (Layer 2: kernel MACF via Seatbelt)
+;;
+;; Goal: clamp filesystem to needed paths; clamp network to LM Studio +
+;; HTTPS outbound. User-specific (hardcoded paths for Maxwell's machine);
+;; do not ship to other users without a path audit.
+;;
+;; Must be kept in sync with security.safe_roots in ~/.hermes/config.yaml
+;; (the R3 inline path-jail is the app-level mirror of this profile).
+;;
+;; Deploy:
+;;   cp scripts/sandbox/hermes.sb ~/.hermes/hermes.sb
+;;   scripts/sandbox/validate-profile.sh
+;;   # then wrap launchd plist (see plan)
+;;
+;; Iterate:
+;;   sandbox-exec -f ~/.hermes/hermes.sb hermes chat
+;;   # add allow rules for any denial that surfaces
+
+(version 1)
+(deny default)
+(debug deny)
+
+;; --- macOS runtime plumbing ---
+;; Import Apple's stock system.sb so dyld closure mapping, framework
+;; loading, and the long tail of XNU plumbing that Python+venv need just
+;; works. This is a private interface (Apple may change its contents
+;; between macOS releases) — validate-profile.sh re-runs the syntax probe
+;; before each deploy so we catch breakage early. If a future macOS
+;; removes this file, replace with explicit (allow file-map-executable
+;; ...) + (allow mach-lookup ...) rules; the bare-minimum equivalent
+;; turned out to be more than 20 lines and still missed dyld closure
+;; reads on darwin 25.x.
+(import "/System/Library/Sandbox/Profiles/system.sb")
+
+;; Process + IPC essentials still spelled explicitly so they're auditable
+;; even if system.sb's defaults shift.
+(allow process-fork)
+(allow process-exec)
+(allow signal (target self))
+(allow sysctl-read)
+(allow mach-lookup)        ;; macOS IPC (XPC, libdispatch)
+(allow iokit-open)         ;; libdispatch / CoreFoundation
+(allow file-ioctl)
+(allow file-read-metadata) ;; stat(), fstat()
+(allow system-socket)      ;; DNS resolution, generic socket ops
+
+;; --- File reads: broad system paths + explicit user paths ---
+(allow file-read*
+  (subpath "/System")
+  (subpath "/Library")
+  (subpath "/usr")
+  (subpath "/bin")
+  (subpath "/sbin")
+  (subpath "/opt/homebrew")
+  (subpath "/var/folders")
+  (subpath "/private/var/folders")
+  (subpath "/private/etc")                               ;; resolv.conf, hosts, ssl
+  (subpath "/etc")
+  (subpath "/Users/maxwell/os-apps/hermes/venv")         ;; Python runtime
+  (subpath "/Users/maxwell/os-apps/hermes")              ;; source tree
+  (subpath "/Users/maxwell/.hermes")                     ;; agent state
+  (subpath "/Users/maxwell/Projects")                    ;; scan target
+  (subpath "/Users/maxwell/.cache")                      ;; hf, npm
+  (subpath "/Users/maxwell/.npm")
+  (literal "/Users/maxwell/Library/LaunchAgents/ai.hermes.gateway.plist"))
+
+;; --- Hard deny: credentials. Overrides the allow above by ordering. ---
+(deny file-read*
+  (subpath "/Users/maxwell/.ssh")
+  (literal "/Users/maxwell/.hermes/.env"))
+
+;; --- File writes: state, logs, temp ---
+(allow file-write*
+  (subpath "/Users/maxwell/.hermes")
+  (subpath "/Users/maxwell/Projects")
+  (subpath "/tmp")
+  (subpath "/private/tmp")
+  (subpath "/var/folders")
+  (subpath "/private/var/folders"))
+(deny file-write*
+  (literal "/Users/maxwell/.hermes/.env"))               ;; .env is read-only even to hermes
+
+;; --- Network outbound ---
+;; sandbox-exec only accepts "*" or "localhost" as the host literal in
+;; (remote ip ...) — explicit 127.0.0.1 is rejected at parse time. The
+;; loopback resolver hits the same socket via "localhost:N".
+(allow network-outbound
+  (remote ip "localhost:1234")      ;; LM Studio
+  (remote ip "localhost:9222")      ;; Chrome DevTools Protocol (browser tool)
+  (remote ip "*:443")               ;; HTTPS — Discord, GitHub, HuggingFace, etc.
+  (remote ip "*:80")                ;; HTTP — direct URL fetches
+  (remote ip "*:53"))               ;; DNS
+
+;; --- Network bind: OAuth callbacks, API server, WhatsApp bridge ---
+(allow network-bind
+  (local ip "localhost:*"))
+
+;; --- AF_UNIX for the code-execution RPC socket and other unix sockets ---
+;; The code-execution RPC creates /tmp/hermes_rpc_<uuid>.sock, covered by
+;; the (subpath "/tmp") file rules above. Add the network rules:
+(allow network-outbound (remote unix-socket))
+(allow network-bind (local unix-socket))
+
+;; --- Iteration log (append entries here as new denials surface) ---
+;; Format: ;; YYYY-MM-DD: added <rule> because <symptom> in <context>
+;; (Empty until first run.)
