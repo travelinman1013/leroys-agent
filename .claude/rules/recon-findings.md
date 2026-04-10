@@ -307,13 +307,28 @@ Branch: `enhance/hermes-phase4-sandboxing`
 - **R2 — Non-interactive approval policy** (commit `8ea3142e`).
   New `approvals.non_interactive_policy: allow|guarded` in config schema.
   Default `allow` preserves backward compat; `guarded` falls through to the
-  existing dangerous-pattern + smart-approval pipeline so cron / delegated /
-  background contexts no longer skip the gate. Cost: with `mode=smart` every
-  flagged command in a non-interactive context calls the auxiliary LLM
-  (~200-500ms). Failure mode: aux LLM unavailable → smart_approve escalates →
-  command BLOCKED (fail-closed). One-time WARNING at gateway startup when the
-  policy is `allow` so operators see the status.
+  existing dangerous-pattern + smart-approval pipeline so background contexts
+  that lack `HERMES_INTERACTIVE` / `HERMES_GATEWAY_SESSION` / `HERMES_EXEC_ASK`
+  no longer skip the gate. Cost: with `mode=smart` every flagged command in a
+  non-interactive context calls the auxiliary LLM (~200-500ms). Failure mode:
+  aux LLM unavailable → smart_approve escalates → command BLOCKED (fail-closed).
+  One-time WARNING at gateway startup when the policy is `allow` so operators
+  see the status.
   Tests: `tests/tools/test_approval.py::TestNonInteractivePolicy` (7 cases).
+
+  **Scope correction (verified during Phase 4 deployment):** Hermes cron is an
+  in-process scheduler — when a cron tick fires, it runs inside the same
+  gateway process and inherits `HERMES_GATEWAY_SESSION=1`. That means cron
+  ticks hit the **gateway approval branch**, NOT R2's non-interactive branch.
+  R2 closes the genuine non-interactive class (e.g. `hermes` CLI run from a
+  cron-launched shell that lacks the gateway env, sub-agents that explicitly
+  drop env vars, true `cron(8)` jobs invoking `hermes` directly). For
+  in-process cron ticks the load-bearing defenses are R3 (path jail) and the
+  gateway approval flow (which itself fails closed when no human is online to
+  /approve via Discord). Verified end-to-end on 2026-04-10 with cron job
+  `91666a905cd8` running `find / -name passwd`: the command was caught by R3
+  before the approval flow ran, with the path-jail error returned to the
+  agent and the delivery report made it to the cron session log.
 
 - **R3 — Inline path jail in `handle_function_call`** (commit `b0d5a46f`).
   New `validate_path_operation` + `extract_tool_call_paths` in
