@@ -72,6 +72,17 @@ rl = [
   "uvicorn[standard]>=0.24.0,<1",
   "wandb>=0.15.0,<1",
 ]
+# R4: Optional LLM observability via OpenTelemetry GenAI semantic conventions.
+# The dashboard's own event bus covers live use cases; this extras group
+# adds historical trace UI support when users opt in (e.g. with Arize Phoenix
+# via docker-compose.observability.yml). Zero behavior change when not
+# installed — agent/otel.py no-ops without the env var HERMES_OTLP_ENDPOINT.
+observability = [
+  "opentelemetry-api>=1.27.0,<2",
+  "opentelemetry-sdk>=1.27.0,<2",
+  "opentelemetry-exporter-otlp>=1.27.0,<2",
+  "traceloop-sdk>=0.40.0,<1",
+]
 yc-bench = ["yc-bench @ git+https://github.com/collinear-ai/yc-bench.git ; python_version >= '3.12'"]
 all = [
   "hermes-agent[modal]",

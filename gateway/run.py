@@ -1065,6 +1065,16 @@ class GatewayRunner:
             )
         except Exception as _exc:
             logger.debug("event_bus: startup attach failed: %s", _exc)
+
+        # R4: optional OpenTelemetry / OpenLLMetry initialization. Only
+        # does anything when HERMES_OTLP_ENDPOINT is set AND the
+        # [observability] extras are installed. Fail-silent.
+        try:
+            from agent.otel import init_if_configured as _otel_init
+            if _otel_init():
+                logger.info("Gateway: OpenTelemetry tracing enabled")
+        except Exception as _exc:
+            logger.debug("agent.otel: init_if_configured raised: %s", _exc)
         try:
             from hermes_cli.profiles import get_active_profile_name
             _profile = get_active_profile_name()

@@ -100,6 +100,10 @@
 (allow network-outbound
   (remote ip "localhost:1234")      ;; LM Studio
   (remote ip "localhost:9222")      ;; Chrome DevTools Protocol (browser tool)
+  (remote ip "localhost:4317")      ;; OpenTelemetry OTLP gRPC (R4 — opt-in)
+  (remote ip "localhost:4318")      ;; OpenTelemetry OTLP HTTP (R4 — opt-in)
+  (remote ip "localhost:6006")      ;; Arize Phoenix UI (R4 — opt-in)
+  (remote ip "localhost:8642")      ;; Hermes dashboard API (R2/R3)
   (remote tcp "*:443")              ;; HTTPS — Discord, GitHub, HuggingFace, etc.
   (remote tcp "*:80")               ;; HTTP — direct URL fetches
   (remote tcp "*:53")               ;; DNS over TCP (rare but supported)

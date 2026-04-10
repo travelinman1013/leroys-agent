@@ -1,0 +1,57 @@
+# Optional observability sidecar for Hermes (R4).
+#
+# Spins up Arize Phoenix as a local OpenTelemetry backend. Phoenix is the
+# cleanest Python-first agent-trace UI: single container, SQLite-backed,
+# native OTel GenAI semantic convention support, out-of-the-box Claude
+# Agent SDK + LangGraph + OpenAI instrumentation.
+#
+# Usage:
+#   docker compose -f docker-compose.observability.yml up -d
+#   export HERMES_OTLP_ENDPOINT=http://localhost:4317
+#   launchctl kickstart -k gui/$(id -u)/ai.hermes.gateway
+#
+# Then open http://localhost:6006 in a browser. Hermes tool calls, LLM
+# calls, and agent turns will appear as traces grouped by session.
+#
+# To stop:
+#   docker compose -f docker-compose.observability.yml down
+#
+# Phoenix data persists to a Docker volume. To reset:
+#   docker compose -f docker-compose.observability.yml down -v
+#
+# Sandbox compatibility:
+#   The Hermes Seatbelt profile (scripts/sandbox/hermes.sb) already
+#   allows outbound to localhost:* — so the gateway can talk to Phoenix
+#   at :4317 (OTLP gRPC) and :4318 (OTLP HTTP) without any profile
+#   changes.
+
+services:
+  phoenix:
+    image: arizephoenix/phoenix:latest
+    container_name: hermes-phoenix
+    restart: unless-stopped
+    ports:
+      # Phoenix UI (React + FastAPI)
+      - "127.0.0.1:6006:6006"
+      # OTLP gRPC receiver
+      - "127.0.0.1:4317:4317"
+      # OTLP HTTP receiver
+      - "127.0.0.1:4318:4318"
+    environment:
+      PHOENIX_WORKING_DIR: /mnt/data
+      PHOENIX_ENABLE_AUTH: "false"
+      # Storage backend — SQLite is the default and the simplest choice
+      # for a single-user local deployment.
+      PHOENIX_SQL_DATABASE_URL: sqlite:///mnt/data/phoenix.db
+    volumes:
+      - phoenix-data:/mnt/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:6006/health || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s
+
+volumes:
+  phoenix-data:
+    driver: local

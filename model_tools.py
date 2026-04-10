@@ -590,6 +590,20 @@ def handle_function_call(
         except Exception:
             pass
 
+        # R4: optional OpenTelemetry GenAI tool-invoke span (no-op if
+        # traceloop-sdk is not installed or HERMES_OTLP_ENDPOINT is unset).
+        _otel_span_cm = None
+        try:
+            from agent.otel import start_tool_span as _start_tool_span
+            _otel_span_cm = _start_tool_span(
+                function_name,
+                session_id=session_id,
+                tool_call_id=tool_call_id,
+            )
+            _otel_span_cm.__enter__()
+        except Exception:
+            _otel_span_cm = None
+
         if function_name == "execute_code":
             # Prefer the caller-provided list so subagents can't overwrite
             # the parent's tool set via the process-global.
@@ -638,6 +652,13 @@ def handle_function_call(
         except Exception:
             pass
 
+        # R4: close the optional OTel span (success path)
+        if _otel_span_cm is not None:
+            try:
+                _otel_span_cm.__exit__(None, None, None)
+            except Exception:
+                pass
+
         return result
 
     except Exception as e:
@@ -661,6 +682,12 @@ def handle_function_call(
             )
         except Exception:
             pass
+        # R4: close the optional OTel span (error path)
+        if "_otel_span_cm" in locals() and _otel_span_cm is not None:
+            try:
+                _otel_span_cm.__exit__(type(e), e, e.__traceback__)
+            except Exception:
+                pass
         return json.dumps({"error": error_msg}, ensure_ascii=False)
 
 
