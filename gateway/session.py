@@ -763,12 +763,38 @@ class SessionStore:
                 self._db.end_session(db_end_session_id, "session_reset")
             except Exception as e:
                 logger.debug("Session DB operation failed: %s", e)
+            # Dashboard event bus — fail-silent
+            try:
+                from gateway.event_bus import publish as _publish_event
+                _publish_event(
+                    "session.ended",
+                    session_id=db_end_session_id,
+                    data={"reason": auto_reset_reason or "reset"},
+                )
+            except Exception:
+                pass
 
         if self._db and db_create_kwargs:
             try:
                 self._db.create_session(**db_create_kwargs)
             except Exception as e:
                 print(f"[gateway] Warning: Failed to create SQLite session: {e}")
+            # Dashboard event bus — fail-silent
+            try:
+                from gateway.event_bus import publish as _publish_event
+                _publish_event(
+                    "session.started",
+                    session_id=entry.session_id,
+                    data={
+                        "session_key": session_key,
+                        "platform": source.platform.value if hasattr(source.platform, "value") else str(source.platform),
+                        "chat_type": source.chat_type,
+                        "was_auto_reset": was_auto_reset,
+                        "auto_reset_reason": auto_reset_reason,
+                    },
+                )
+            except Exception:
+                pass
 
         # Seed new DM thread sessions with parent DM session history.
         # When a bot reply creates a Slack thread and the user responds in it,

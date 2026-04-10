@@ -9,6 +9,7 @@ runs at a time if multiple processes overlap.
 """
 
 import asyncio
+import time
 import concurrent.futures
 import json
 import logging
@@ -544,6 +545,23 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
     logger.info("Running job '%s' (ID: %s)", job_name, job_id)
     logger.info("Prompt: %s", prompt[:100])
 
+    # Dashboard event bus — fail-silent
+    _cron_job_start = time.monotonic()
+    try:
+        from gateway.event_bus import publish as _publish_event
+        _publish_event(
+            "cron.fired",
+            session_id=_cron_session_id,
+            data={
+                "phase": "started",
+                "job_id": job_id,
+                "job_name": job_name,
+                "schedule": job.get("schedule_display") or job.get("schedule"),
+            },
+        )
+    except Exception:
+        pass
+
     try:
         # Inject origin context so the agent's send_message tool knows the chat.
         # Must be INSIDE the try block so the finally cleanup always runs.
@@ -770,11 +788,42 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
 """
         
         logger.info("Job '%s' completed successfully", job_name)
+        try:
+            from gateway.event_bus import publish as _publish_event
+            _publish_event(
+                "cron.fired",
+                session_id=_cron_session_id,
+                data={
+                    "phase": "completed",
+                    "job_id": job_id,
+                    "job_name": job_name,
+                    "duration_ms": int((time.monotonic() - _cron_job_start) * 1000),
+                    "ok": True,
+                },
+            )
+        except Exception:
+            pass
         return True, output, final_response, None
-        
+
     except Exception as e:
         error_msg = f"{type(e).__name__}: {str(e)}"
         logger.exception("Job '%s' failed: %s", job_name, error_msg)
+        try:
+            from gateway.event_bus import publish as _publish_event
+            _publish_event(
+                "cron.fired",
+                session_id=_cron_session_id,
+                data={
+                    "phase": "failed",
+                    "job_id": job_id,
+                    "job_name": job_name,
+                    "duration_ms": int((time.monotonic() - _cron_job_start) * 1000),
+                    "ok": False,
+                    "error": error_msg,
+                },
+            )
+        except Exception:
+            pass
         
         output = f"""# Cron Job: {job_name} (FAILED)
 

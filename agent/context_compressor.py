@@ -622,6 +622,23 @@ Write only the summary body. Do not include any preamble or prefix."""
         After compression, orphaned tool_call / tool_result pairs are cleaned
         up so the API never receives mismatched IDs.
         """
+        # Dashboard event bus — fail-silent
+        _tokens_before = current_tokens or self.last_prompt_tokens
+        try:
+            from gateway.event_bus import publish as _publish_event
+            _publish_event(
+                "compaction",
+                session_id=getattr(self, "session_id", None),
+                data={
+                    "phase": "started",
+                    "tokens_before": _tokens_before,
+                    "threshold_tokens": getattr(self, "threshold_tokens", None),
+                    "n_messages_before": len(messages),
+                },
+            )
+        except Exception:
+            pass
+
         n_messages = len(messages)
         # Only need head + 3 tail messages minimum (token budget decides the real tail size)
         _min_for_compress = self.protect_first_n + 3 + 1
@@ -751,5 +768,23 @@ Write only the summary body. Do not include any preamble or prefix."""
                 saved_estimate,
             )
             logger.info("Compression #%d complete", self.compression_count)
+
+        # Dashboard event bus — fail-silent
+        try:
+            from gateway.event_bus import publish as _publish_event
+            _publish_event(
+                "compaction",
+                session_id=getattr(self, "session_id", None),
+                data={
+                    "phase": "completed",
+                    "tokens_before": _tokens_before,
+                    "tokens_after": estimate_messages_tokens_rough(compressed),
+                    "n_messages_before": n_messages,
+                    "n_messages_after": len(compressed),
+                    "compression_count": self.compression_count,
+                },
+            )
+        except Exception:
+            pass
 
         return compressed

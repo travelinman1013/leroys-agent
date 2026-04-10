@@ -7100,6 +7100,24 @@ class AIAgent:
             _msg_preview,
         )
 
+        # Dashboard event bus — fail-silent
+        _turn_start_monotonic = time.monotonic()
+        try:
+            from gateway.event_bus import publish as _publish_event
+            _publish_event(
+                "turn.started",
+                session_id=self.session_id,
+                data={
+                    "model": self.model,
+                    "provider": self.provider or "unknown",
+                    "platform": getattr(self, "platform", None) or "unknown",
+                    "history_length": len(conversation_history or []),
+                    "message_preview": _msg_preview,
+                },
+            )
+        except Exception:
+            pass
+
         # Initialize conversation (copy to avoid mutating the caller's list)
         messages = list(conversation_history) if conversation_history else []
 
@@ -9486,6 +9504,23 @@ class AIAgent:
             )
         except Exception as exc:
             logger.warning("on_session_end hook failed: %s", exc)
+
+        # Dashboard event bus — fail-silent
+        try:
+            from gateway.event_bus import publish as _publish_event
+            _publish_event(
+                "turn.ended",
+                session_id=self.session_id,
+                data={
+                    "duration_ms": int((time.monotonic() - _turn_start_monotonic) * 1000)
+                                    if "_turn_start_monotonic" in locals() else None,
+                    "completed": completed,
+                    "interrupted": interrupted,
+                    "iterations": getattr(self.iteration_budget, "used", None),
+                },
+            )
+        except Exception:
+            pass
 
         return result
 
