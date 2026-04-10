@@ -99,19 +99,63 @@
 1. `~/.hermes/.env`: Added `DISCORD_ALLOW_BOTS=mentions`
 2. `~/.hermes/.env`: Added Claude Code bot ID (`1491945715893796934`) to `DISCORD_ALLOWED_USERS`
 
-## Phase 4 Readiness Assessment
+## Phase 2 Results — 262K Context Retest (2026-04-10)
 
-**Not ready yet.** Key blockers:
-- Context at 65K was too small — now reloaded to 262K, needs retesting
-- No web search for researching issues/PRs
-- Consider adding `max_tool_output` config to truncate large tool results
-- 17K system prompt needs auditing — can it be trimmed?
+LM Studio context length bumped from 65,000 → 262,144 in the GUI; gateway restarted clean. Same 7-test stress sequence run in a fresh #sandbox thread, plus 1 additional large-file/chained-ops test.
 
-## Recommendations
+### Test Results — 65K vs 262K side-by-side
 
-1. **Retest at 262K context**: Model reloaded — verify compaction behavior improves and KV cache fits in RAM
-2. **Add search API**: Configure Brave Search or SearXNG for web tool
-3. **Tune compression**: Increase `compression.threshold` from 50% to reduce compaction frequency
-4. **Reduce skill noise**: Disable unused skill categories (red-teaming, ML training, etc.) for Discord gateway
-5. **Consider model upgrade**: Qwen 3.5 27B or a larger model with better context handling for Phase 4
-6. **Add tool output limits**: Cap MCP/terminal output to prevent context bombs
+| Test | 65K (Phase 1) | 262K (Phase 2) | Notes |
+|------|---------------|----------------|-------|
+| Baseline tools listing | 15.0s, 1 call | 14.4s, 1 call | identical |
+| Terminal `ls ~/Projects` | 13.9s, 2 calls | 12.0s, 2 calls | 28 entries both runs |
+| File read CLAUDE.md | 17.5s, 2 calls | 9.7s, 2 calls | 262K is **44% faster** |
+| GitHub list issues | 10.2s, 2 calls | 10.6s, 2 calls | identical |
+| Multi-step (read README + create issue) | 10.8s, 3 calls | 10.2s, 3 calls | identical, both succeeded |
+| **Skills bomb** (full catalog) | 68.9s, 2 calls, 19,276 chars → triggered compaction | 39.7s, 2 calls, 10,099 chars → **no immediate compaction** | self-truncated this run |
+| Memory check (post-bomb) | 53.2s, 4 calls → confused issue # | 69.8s, 1 call → **exact verbatim recall + correct issue #** | compaction triggered HERE at 262K, but recall is now lossless |
+| **Large file read** (`discord.py` 2864 lines) | not tested at 65K | 203.6s, 12 calls, paginated → 1 compaction mid-task | quality preserved: correct class, method count, summary |
+| Chained GitHub ops (list + get + comment) | not tested at 65K | 78.4s, 3 calls → 1 more compaction | quality preserved: correct issue body, comment added, count correct |
+
+**Total compactions in Phase 2 run**: 3 (after memory check, during large file read, during chained ops)
+**Total compactions in Phase 1 run**: 1 (after skills bomb / memory check)
+
+### Key Findings
+
+1. **The real bottleneck is `compression.threshold: 0.5`, not LM Studio context size.**
+   Hermes self-reported it: `⚠️ Context: 100% to compaction — threshold: 50% of window`. The 4× context bump from 65K → 262K linearly quadruples the working budget (32.5K → 131K) but the trigger pattern is identical. Heavy turns (large file read, full skills dump) still hit the threshold.
+
+2. **Post-compaction recall is now lossless.** Phase 1 confused issue numbers post-split. Phase 2 recalled the user's first message *verbatim* (including the "262K" detail) AND the correct issue number AND the full body of an issue created earlier in the thread. Either the larger summary budget (52K target vs 13K) or the deeper context preserves more detail through compression.
+
+3. **Context-awareness is now working.** Phase 1 said "context awareness FAIL — cannot self-report token usage". Phase 2: Hermes proactively prints `⚠️ Context: ▰...▰ N% to compaction` bars before tool-heavy responses. This is new and useful for debugging.
+
+4. **Speed is comparable or better.** No 262K-related slowdown observed despite the larger KV cache. CLAUDE.md read was 44% faster. Simple tool tasks unchanged.
+
+5. **Large tool outputs cause compaction storms.** The 2864-line file read paginated into 12 sub-calls and triggered TWO consecutive compression cycles (06:07, 06:08) before completing. Each chained tool result accumulates against the 50% threshold with no per-call cap.
+
+6. **Skills bomb was 47% smaller this time** (10,099 vs 19,276 chars). Hermes self-truncated, possibly due to clearer prompt phrasing. Still substantial — and on top of accumulated context, still contributed to compaction.
+
+## Phase 4 Readiness Assessment (Updated 2026-04-10)
+
+**Closer, but still has 2 blockers.** What changed:
+- ✅ Context at 262K provides 4× the working budget (32.5K → 131K before compaction)
+- ✅ Post-compaction memory is lossless — autonomous tasks won't lose work
+- ✅ Context-awareness self-reporting works — easier to debug long runs
+- ✅ Multi-step chains and chained GitHub ops still succeed under compression pressure
+
+Remaining blockers:
+1. **Compression frequency under heavy tool use.** Reading a 2864-line file triggered 2 compactions in 200 seconds. Phase 4 (autonomous repo scanning) will read MANY large files. The fix is `compression.threshold: 0.7-0.8` AND/OR `max_tool_output` truncation.
+2. **Web search still broken** (Google CAPTCHA). Phase 4 issue triage may need to look up upstream context. Needs SearXNG or Brave Search API.
+
+Non-blockers but worth doing:
+- 17K system prompt audit — reducing this would buy back working budget below the threshold
+- Skill registry trimming — disable unused categories to reduce skills-list size
+
+## Recommendations (Updated)
+
+1. ✅ ~~Retest at 262K context~~ — done. 262K works, KV cache fits comfortably (M3 Ultra, ~31 GiB total vs 233 GiB available).
+2. **TUNE COMPRESSION FIRST**: Edit `~/.hermes/config.yaml` → `compression.threshold: 0.75` (from 0.5). With 262K, this gives ~196K of working budget before compaction — large enough for full repo scans without storms. Also consider `target_ratio: 0.3` to preserve more state per compression.
+3. **Add `max_tool_output`**: Cap individual tool results to ~4000 tokens to prevent any single read from blowing the budget. Especially important for `read_file` on large source files.
+4. **Add search API**: Configure Brave Search or SearXNG before Phase 4. Web search blocker hasn't moved.
+5. **Audit/trim system prompt**: 17K is 6.5% of 262K — not catastrophic, but could be 5K with skill category pruning. Lower-value win compared to the threshold fix.
+6. **Consider model upgrade later**: Qwen 3.5 27B is in the lineup (`qwen3.5-27b-unsloth-mlx` is loaded in LM Studio) — worth A/B testing once compression is tuned. Don't switch models AND tune compression in the same change.
