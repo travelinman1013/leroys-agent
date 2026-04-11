@@ -386,6 +386,8 @@ any of these, it should be rejected:
 | 2026-04-11 | Brain renders as star chart with deterministic seeded layout | Killed the d3-force "blob wiggle." Star chart is legible at 153+ nodes and earns the "what is THAT" reaction by itself. Cost: less drama on new-node-joined animation. |
 | 2026-04-11 | Editorial transcripts, not chat bubbles or raw logs | Sessions/$id renders as a lab notebook with margin gutter timestamps + speaker, Söhne body, oxide-edged tool callouts. The Sessions route stops looking like every other LLM chat UI on earth. |
 | 2026-04-11 | One big number per viewport | Subagent's idea. Every primary route resolves attention to one answer (pending approvals, next cron, node count). Adopted unanimously. |
+| 2026-04-11 | Migrated dashboard to Operator's Desk via PR #3 | Steps 1–9 of §11 shipped. Dark + light both ship. Brain is the deterministic star chart. `react-force-graph-2d` removed entirely. |
+| 2026-04-11 | **Paid font stack deferred indefinitely** | Söhne + Söhne Breit + MD IO will not be licensed. The free fallback stack (Switzer + JetBrains Mono + Instrument Serif) is now the production stack. Step 10 of §11 is parked, not pending. The DESIGN.md type spec keeps the paid faces as the documented ideal but treats them as aspirational. |
 
 ## 11. Implementation order (suggested)
 
@@ -400,7 +402,7 @@ Not part of the spec — just a hint for the next session that picks this up:
 7. **Brain** — `BrainGraph.tsx` deterministic layout, oxide crosshair nodes, RA/Dec chrome.
 8. **Editorial transcript** — `routes/sessions.$id.tsx` margin-gutter layout.
 9. **Light mode** — `data-theme` toggle in `__root.tsx`, persist to localStorage.
-10. **Self-host paid faces** — drop Söhne + MD IO into `public/fonts/`, swap font stacks.
+10. ~~**Self-host paid faces** — drop Söhne + MD IO into `public/fonts/`, swap font stacks.~~ **DEFERRED INDEFINITELY** (2026-04-11). The free fallback stack is the production stack. Do not revisit unless Maxwell explicitly licenses the paid faces.
 
 The preview file `~/.hermes/operator-desk-preview.html` is the visual
 reference for every step above. Open it in two browser tabs (one
