@@ -174,3 +174,28 @@ Verify: `hermes mcp list` should show github as enabled.
   opens a PR for review.
 - **Phase 8 — Model fine-tuning with trajectory export**: serialize
   gateway sessions into a training corpus.
+
+## Design System
+
+The dashboard (`dashboard/`) follows the **Operator's Desk** design
+system, defined in `DESIGN.md` at the repo root. Always read
+`DESIGN.md` before making any visual, typography, color, layout, or
+component change to the dashboard. It defines:
+
+- The full Bone & Iron Oxide palette (dark + light, both ship as
+  separate instruments — not as accessibility options)
+- The production type stack (Söhne / Söhne Breit / MD IO / Instrument
+  Serif) and the free fallback stack (Switzer / JetBrains Mono /
+  Instrument Serif)
+- Density rules (comfortable on read-routes, dense on scan-routes)
+- Motion tokens (custom easing, 120/180/240/320/600ms)
+- Route-by-route layout philosophy
+- The migration delta from the current shadcn-default state
+- An anti-slop pledge listing patterns the dashboard refuses to ship
+  (purple gradients, glassmorphism, rainbow event categories,
+  rounded-2xl + shadow cards, chat-bubble transcripts, Inter, Geist,
+  Berkeley Mono, etc.)
+
+Do not deviate from `DESIGN.md` without explicit user approval. The
+visual reference preview file is `/tmp/d-c-preview-1775912565.html` —
+keep it in sync if `DESIGN.md` changes.
