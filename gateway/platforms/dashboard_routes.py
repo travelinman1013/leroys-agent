@@ -111,6 +111,12 @@ def _redact_secrets(obj: Any) -> Any:
     return obj
 
 
+# Free-form text redactor (regex-based) — applied to message content,
+# tool args, system prompts before they leave the gateway process.
+# Companion to ``_redact_secrets`` (which handles dict-key heuristics).
+from tools.redaction import redact_text  # noqa: E402
+
+
 class DashboardRoutes:
     """Route handler bundle for the dashboard surface.
 
@@ -301,6 +307,17 @@ class DashboardRoutes:
                 offset=offset,
                 include_children=include_children,
             )
+            # Scrub free-form text fields in the preview rows. Titles can
+            # contain pasted user input; first_user_message + last_assistant
+            # are by definition transcript bodies.
+            _PREVIEW_TEXT_FIELDS = (
+                "title", "first_user_message", "last_assistant_message",
+                "preview", "summary",
+            )
+            for r in rows:
+                for col in _PREVIEW_TEXT_FIELDS:
+                    if r.get(col):
+                        r[col] = redact_text(r[col])
             return web.json_response({"sessions": rows, "limit": limit, "offset": offset})
         except Exception as exc:
             logger.exception("dashboard: sessions listing failed")
@@ -325,7 +342,30 @@ class DashboardRoutes:
             meta = db.get_session(session_id)
             if not meta:
                 return web.json_response({"error": "session not found"}, status=404)
-            messages = db.get_messages(session_id)
+
+            # Scrub free-form text columns on the session row. Phase 4
+            # security requirement: nothing leaves this process unredacted.
+            _META_TEXT_FIELDS = (
+                "system_prompt", "model_config", "billing_base_url",
+                "title", "first_user_message", "last_assistant_message",
+            )
+            for col in _META_TEXT_FIELDS:
+                if meta.get(col):
+                    meta[col] = redact_text(meta[col])
+
+            # Scrub every message body, reasoning trace, and tool_calls
+            # JSON blob in place. Defensive copy of each row before mutation
+            # so we don't poison whatever else holds the SessionDB cursor.
+            messages = []
+            for raw in db.get_messages(session_id):
+                m = dict(raw)
+                if m.get("content"):
+                    m["content"] = redact_text(m["content"])
+                if m.get("reasoning"):
+                    m["reasoning"] = redact_text(m["reasoning"])
+                if m.get("tool_calls") and isinstance(m["tool_calls"], str):
+                    m["tool_calls"] = redact_text(m["tool_calls"])
+                messages.append(m)
             return web.json_response({"session": meta, "messages": messages})
         except Exception as exc:
             logger.exception("dashboard: session detail failed")
