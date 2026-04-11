@@ -15,7 +15,7 @@ import { Button } from "@/components/ui/button";
 import { ApprovalCard } from "@/components/ApprovalCard";
 import { useApiMutation } from "@/lib/mutations";
 import { useNotify } from "@/lib/notifications";
-import { relTimeFromUnix } from "@/lib/utils";
+import { compactRelTimeFromUnix } from "@/lib/utils";
 
 export const Route = createFileRoute("/approvals")({
   component: ApprovalsPage,
@@ -271,7 +271,7 @@ function ApprovalHistoryTable({ rows }: { rows: ApprovalHistoryRow[] }) {
         {rows.map((r) => (
           <tr key={r.id} className="border-b border-rule hover:bg-oxide-wash">
             <td className="px-4 py-2 text-ink-faint">
-              {relTimeFromUnix(r.resolved_at)}
+              {compactRelTimeFromUnix(r.resolved_at)}
             </td>
             <td className="px-4 py-2 text-ink">{r.pattern_key ?? "—"}</td>
             <td className="max-w-[420px] truncate px-4 py-2 text-ink-2">

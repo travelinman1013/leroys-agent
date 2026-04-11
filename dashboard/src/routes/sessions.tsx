@@ -14,7 +14,11 @@ import {
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
 import { api } from "@/lib/api";
-import { compactNumber, formatCost, relTimeFromUnix } from "@/lib/utils";
+import {
+  compactNumber,
+  compactRelTimeFromUnix,
+  formatCost,
+} from "@/lib/utils";
 import { useApiMutation } from "@/lib/mutations";
 import { useConfirm } from "@/lib/confirm";
 import { useNotify } from "@/lib/notifications";
@@ -294,7 +298,9 @@ function SessionsList() {
                       {formatCost(s.estimated_cost_usd)}
                     </td>
                     <td className="px-3 py-2.5 text-right text-ink-faint">
-                      {relTimeFromUnix(s.last_active ?? s.started_at)}
+                      {compactRelTimeFromUnix(
+                        s.last_active ?? s.started_at,
+                      )}
                     </td>
                     <td
                       className="px-3 py-2.5 text-right"

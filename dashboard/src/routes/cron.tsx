@@ -10,7 +10,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Play, Pause, Trash2 } from "lucide-react";
-import { relTimeFromUnix } from "@/lib/utils";
+import { compactRelTimeFromUnix, relTimeFromUnix } from "@/lib/utils";
 
 export const Route = createFileRoute("/cron")({
   component: CronPage,
@@ -110,10 +110,10 @@ function CronPage() {
                     {j.schedule_display || JSON.stringify(j.schedule)}
                   </Td>
                   <Td className="text-ink-2">
-                    {j.next_run_at ? relTimeFromUnix(j.next_run_at) : "—"}
+                    {j.next_run_at ? compactRelTimeFromUnix(j.next_run_at) : "—"}
                   </Td>
                   <Td className="text-ink-2">
-                    {j.last_run_at ? relTimeFromUnix(j.last_run_at) : "—"}
+                    {j.last_run_at ? compactRelTimeFromUnix(j.last_run_at) : "—"}
                     {j.last_status && (
                       <span className="ml-2 text-ink-faint">
                         · {j.last_status}
