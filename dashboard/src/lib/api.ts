@@ -454,6 +454,75 @@ export const api = {
       method: "POST",
       body: JSON.stringify({ session_keys: sessionKeys, choice }),
     }),
+
+  // F4 — Interactive Ops
+  parseCronSchedule: (expr: string) =>
+    apiFetch<{ parsed: Record<string, unknown> }>(
+      `/api/dashboard/jobs/parse-schedule?expr=${encodeURIComponent(expr)}`,
+    ),
+
+  cronDryRun: (body: {
+    prompt: string;
+    schedule: string;
+    deliver?: string;
+    skill?: string;
+  }) =>
+    apiFetch<{ spec: Record<string, unknown>; persisted: boolean }>(
+      "/api/dashboard/jobs/dry-run",
+      { method: "POST", body: JSON.stringify(body) },
+    ),
+
+  toggleTool: (name: string, platform: string, enabled: boolean) =>
+    apiFetch<{ applied: string[]; restart_required: string[] }>(
+      `/api/dashboard/tools/${encodeURIComponent(name)}/toggle`,
+      { method: "POST", body: JSON.stringify({ platform, enabled }) },
+    ),
+
+  toolSchema: (name: string) =>
+    apiFetch<{ name: string; spec: Record<string, unknown> }>(
+      `/api/dashboard/tools/${encodeURIComponent(name)}/schema`,
+    ),
+
+  invokeTool: (name: string, args: Record<string, unknown>, sessionId?: string) =>
+    apiFetch<{
+      result?: string;
+      tool?: string;
+      needs_approval?: boolean;
+      pattern_key?: string;
+      description?: string;
+      command?: string;
+    }>(
+      `/api/dashboard/tools/${encodeURIComponent(name)}/invoke`,
+      {
+        method: "POST",
+        body: JSON.stringify({ args, session_id: sessionId }),
+      },
+    ),
+
+  reloadSkill: (name: string) =>
+    apiFetch<{ reloaded: boolean; name: string }>(
+      `/api/dashboard/skills/${encodeURIComponent(name)}/reload`,
+      { method: "POST" },
+    ),
+
+  skillFull: (name: string) =>
+    apiFetch<{ name: string; content: string }>(
+      `/api/dashboard/skills/${encodeURIComponent(name)}/full`,
+    ),
+
+  toggleMcp: (name: string, enabled: boolean) =>
+    apiFetch<{ applied: string[]; restart_required: string[] }>(
+      `/api/dashboard/mcp/${encodeURIComponent(name)}/toggle`,
+      { method: "POST", body: JSON.stringify({ enabled }) },
+    ),
+
+  mcpHealth: (name: string) =>
+    apiFetch<{
+      name: string;
+      configured: boolean;
+      enabled: boolean;
+      command: string | null;
+    }>(`/api/dashboard/mcp/${encodeURIComponent(name)}/health`),
 };
 
 // --------------------------------------------------------------------------

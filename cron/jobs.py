@@ -464,6 +464,44 @@ def create_job(
     return job
 
 
+def dry_run_spec(
+    prompt: str,
+    schedule: str,
+    *,
+    name: Optional[str] = None,
+    deliver: Optional[str] = None,
+    skill: Optional[str] = None,
+    skills: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    """Build a non-persistent job dict for one-shot dashboard dry-runs.
+
+    Mirrors create_job but with ``persistent=False`` and a synthetic
+    ``dry-XXXX`` id. The dashboard route can hand this to the same
+    delivery path as a normal cron tick without polluting jobs.json.
+    """
+    parsed = parse_schedule(schedule) if schedule else {"kind": "once", "display": "dry-run"}
+    job_id = f"dry-{uuid.uuid4().hex[:8]}"
+    normalized_skills = _normalize_skill_list(skill, skills)
+    return {
+        "id": job_id,
+        "persistent": False,
+        "dry_run": True,
+        "name": name or (prompt[:50] if prompt else "dry-run"),
+        "prompt": prompt,
+        "skills": normalized_skills,
+        "skill": normalized_skills[0] if normalized_skills else None,
+        "schedule": parsed,
+        "schedule_display": parsed.get("display", schedule),
+        "deliver": deliver or "local",
+        "origin": None,
+        "enabled": True,
+        "state": "scheduled",
+        "created_at": _hermes_now().isoformat(),
+        "next_run_at": _hermes_now().isoformat(),
+        "repeat": {"times": 1, "completed": 0},
+    }
+
+
 def get_job(job_id: str) -> Optional[Dict[str, Any]]:
     """Get a job by ID."""
     jobs = load_jobs()

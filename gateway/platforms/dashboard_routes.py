@@ -1030,6 +1030,274 @@ class DashboardRoutes:
     # ==================================================================
 
     # ==================================================================
+    # F4 — Interactive Ops (Cron / Tools / Skills / MCP) — Dashboard v2
+    # ==================================================================
+
+    @require_dashboard_auth
+    async def handle_cron_parse_schedule(self, request: "web.Request") -> "web.Response":
+        expr = request.query.get("expr", "").strip()
+        if not expr:
+            return _json_err(ValueError("expr query required"), 400)
+        try:
+            from cron.jobs import parse_schedule
+            return _json_ok({"parsed": parse_schedule(expr)})
+        except Exception as exc:
+            return _json_err(exc, 400)
+
+    @require_dashboard_auth
+    async def handle_cron_dry_run(self, request: "web.Request") -> "web.Response":
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        prompt = (body.get("prompt") or "").strip()
+        schedule = (body.get("schedule") or "30m").strip()
+        if not prompt:
+            return _json_err(ValueError("prompt required"), 400)
+        try:
+            from cron.jobs import dry_run_spec
+            spec = dry_run_spec(
+                prompt,
+                schedule,
+                name=body.get("name"),
+                deliver=body.get("deliver"),
+                skill=body.get("skill"),
+                skills=body.get("skills"),
+            )
+            try:
+                from gateway.event_bus import publish as _publish_event
+                _publish_event(
+                    "cron.fired",
+                    session_id=f"dry_run_{spec['id']}",
+                    data={
+                        "phase": "dry-run",
+                        "job_id": spec["id"],
+                        "job_name": spec["name"],
+                        "dry_run": True,
+                    },
+                )
+            except Exception:
+                pass
+            return _json_ok({"spec": spec, "persisted": False})
+        except Exception as exc:
+            return _json_err(exc, 400)
+
+    @require_dashboard_auth
+    async def handle_tool_toggle(self, request: "web.Request") -> "web.Response":
+        name = request.match_info.get("name", "")
+        if not name:
+            return _json_err(ValueError("tool name required"), 400)
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        platform = body.get("platform", "")
+        enabled = bool(body.get("enabled", True))
+        if not platform:
+            return _json_err(ValueError("platform field required"), 400)
+        try:
+            from hermes_cli.config import apply_config_mutations
+            result = apply_config_mutations({
+                f"platform_toolsets.{platform}.{name}": enabled,
+            })
+            return _json_ok(result)
+        except PermissionError as exc:
+            return _json_err(exc, 403)
+        except Exception as exc:
+            return _json_err(exc)
+
+    @require_dashboard_auth
+    async def handle_tool_schema(self, request: "web.Request") -> "web.Response":
+        name = request.match_info.get("name", "")
+        if not name:
+            return _json_err(ValueError("tool name required"), 400)
+        try:
+            from model_tools import registry as _tool_registry
+            spec = None
+            try:
+                tool_specs = _tool_registry.get_tool_specs()
+                for s in tool_specs:
+                    fn = s.get("function") or {}
+                    if fn.get("name") == name:
+                        spec = s
+                        break
+            except Exception:
+                pass
+            if spec is None:
+                return _json_err(LookupError("tool not found"), 404)
+            return _json_ok({"name": name, "spec": spec})
+        except Exception as exc:
+            return _json_err(exc)
+
+    @require_dashboard_auth
+    async def handle_tool_invoke(self, request: "web.Request") -> "web.Response":
+        """SECURITY-CRITICAL: dashboard-initiated tool invocation.
+
+        EVERY invocation funnels through ``handle_function_call`` which
+        applies path jail (R3) before dispatch and the standard
+        approval gate via the ``hermes_tools.terminal`` RPC for shell
+        commands. The handler ALSO scans args for the ``force`` smuggle
+        and known dangerous params, and pre-checks dangerous command
+        patterns before invoking the dispatcher.
+
+        Test coverage:
+            tests/gateway/test_tool_invoke_security.py
+        """
+        name = request.match_info.get("name", "")
+        if not name:
+            return _json_err(ValueError("tool name required"), 400)
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        args = body.get("args") or {}
+        if not isinstance(args, dict):
+            return _json_err(ValueError("args must be a dict"), 400)
+        session_id = body.get("session_id") or f"dashboard-invoke-{int(time.time())}"
+
+        # ── Strip the ``force`` smuggle at every level. Phase 4 R1 closed
+        # the kwarg path; the dashboard route applies its own scrub so a
+        # later regression in execute_code's blocked-param list cannot
+        # leak via the dashboard.
+        def _scrub_force(obj: Any) -> Any:
+            if isinstance(obj, dict):
+                return {
+                    k: _scrub_force(v)
+                    for k, v in obj.items()
+                    if k not in ("force", "skip_approval", "unsafe", "bypass")
+                }
+            if isinstance(obj, list):
+                return [_scrub_force(v) for v in obj]
+            return obj
+
+        scrubbed_args = _scrub_force(args)
+
+        # ── Pre-check for dangerous shell commands so we surface a 202
+        # needs_approval response BEFORE we hand the call to
+        # handle_function_call. This makes the gate visible from the UI
+        # without weakening the existing in-process gate that runs
+        # underneath at hermes_tools.terminal.
+        try:
+            from tools.approval import detect_dangerous_command
+            command_str = ""
+            if name in ("execute_code", "terminal", "shell"):
+                command_str = str(scrubbed_args.get("command", ""))
+            if command_str:
+                is_dangerous, pattern_key, description = detect_dangerous_command(command_str)
+                if is_dangerous:
+                    return _json_ok({
+                        "needs_approval": True,
+                        "pattern_key": pattern_key,
+                        "description": description,
+                        "command": command_str,
+                    }, status=202)
+        except Exception:
+            pass
+
+        # ── Dispatch through the normal pipeline. Path jail (R3) runs
+        # inside handle_function_call before any tool code executes.
+        try:
+            from model_tools import handle_function_call
+            os_env_marker = os.environ.get("HERMES_GATEWAY_SESSION")
+            os.environ["HERMES_GATEWAY_SESSION"] = "1"
+            try:
+                result = handle_function_call(
+                    name,
+                    scrubbed_args,
+                    session_id=session_id,
+                )
+            finally:
+                if os_env_marker is None:
+                    os.environ.pop("HERMES_GATEWAY_SESSION", None)
+                else:
+                    os.environ["HERMES_GATEWAY_SESSION"] = os_env_marker
+            return _json_ok({"result": result, "tool": name})
+        except Exception as exc:
+            return _json_err(exc)
+
+    @require_dashboard_auth
+    async def handle_skill_reload(self, request: "web.Request") -> "web.Response":
+        name = request.match_info.get("name", "")
+        if not name:
+            return _json_err(ValueError("skill name required"), 400)
+        try:
+            from hermes_cli.config import get_hermes_home
+            skill_dir = Path(get_hermes_home()) / "skills" / name
+            if not skill_dir.is_dir():
+                return _json_err(LookupError("skill not found"), 404)
+            try:
+                from gateway.event_bus import publish as _publish_event
+                _publish_event(
+                    "skill.reloaded",
+                    session_id=None,
+                    data={"skill": name, "resolver": "dashboard"},
+                )
+            except Exception:
+                pass
+            return _json_ok({"reloaded": True, "name": name})
+        except Exception as exc:
+            return _json_err(exc)
+
+    @require_dashboard_auth
+    async def handle_skill_full(self, request: "web.Request") -> "web.Response":
+        name = request.match_info.get("name", "")
+        if not name:
+            return _json_err(ValueError("skill name required"), 400)
+        try:
+            from hermes_cli.config import get_hermes_home
+            skill_dir = Path(get_hermes_home()) / "skills" / name
+            md_path = skill_dir / "SKILL.md"
+            if not md_path.exists():
+                return _json_err(LookupError("SKILL.md not found"), 404)
+            text = md_path.read_text(encoding="utf-8", errors="replace")
+            return _json_ok({"name": name, "content": text})
+        except Exception as exc:
+            return _json_err(exc)
+
+    @require_dashboard_auth
+    async def handle_mcp_toggle(self, request: "web.Request") -> "web.Response":
+        name = request.match_info.get("name", "")
+        if not name:
+            return _json_err(ValueError("server name required"), 400)
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        enabled = bool(body.get("enabled", True))
+        try:
+            from hermes_cli.config import apply_config_mutations
+            # ``disabled`` is the inverse — store both for clarity.
+            result = apply_config_mutations({
+                f"mcp_servers.{name}.disabled": not enabled,
+            })
+            return _json_ok(result)
+        except PermissionError as exc:
+            return _json_err(exc, 403)
+        except Exception as exc:
+            return _json_err(exc)
+
+    @require_dashboard_auth
+    async def handle_mcp_health(self, request: "web.Request") -> "web.Response":
+        name = request.match_info.get("name", "")
+        if not name:
+            return _json_err(ValueError("server name required"), 400)
+        try:
+            from hermes_cli.config import load_config
+            cfg = load_config() or {}
+            servers = cfg.get("mcp_servers") or {}
+            entry = servers.get(name) if isinstance(servers, dict) else None
+            if entry is None:
+                return _json_err(LookupError("mcp server not configured"), 404)
+            return _json_ok({
+                "name": name,
+                "configured": True,
+                "enabled": not entry.get("disabled", False),
+                "command": entry.get("command"),
+            })
+        except Exception as exc:
+            return _json_err(exc)
+
+    # ==================================================================
     # F3 — Live Console v2 + Approval Command Center (Dashboard v2)
     # ==================================================================
 
@@ -1604,6 +1872,17 @@ def register_dashboard_routes(
     app.router.add_get(
         "/api/dashboard/brain/node/{type}/{id}", routes.handle_brain_node,
     )
+    # F4 — Interactive Ops (Dashboard v2)
+    app.router.add_get("/api/dashboard/jobs/parse-schedule", routes.handle_cron_parse_schedule)
+    app.router.add_post("/api/dashboard/jobs/dry-run", routes.handle_cron_dry_run)
+    app.router.add_post("/api/dashboard/tools/{name}/toggle", routes.handle_tool_toggle)
+    app.router.add_get("/api/dashboard/tools/{name}/schema", routes.handle_tool_schema)
+    app.router.add_post("/api/dashboard/tools/{name}/invoke", routes.handle_tool_invoke)
+    app.router.add_post("/api/dashboard/skills/{name}/reload", routes.handle_skill_reload)
+    app.router.add_get("/api/dashboard/skills/{name}/full", routes.handle_skill_full)
+    app.router.add_post("/api/dashboard/mcp/{name}/toggle", routes.handle_mcp_toggle)
+    app.router.add_get("/api/dashboard/mcp/{name}/health", routes.handle_mcp_health)
+
     # F2 — Brain/Memory Editor (Dashboard v2)
     app.router.add_post("/api/dashboard/brain/memory", routes.handle_brain_memory_add)
     app.router.add_put(
