@@ -18,6 +18,7 @@ const items: NavItem[] = [
   { to: "/skills", label: "Skills", num: "07" },
   { to: "/mcp", label: "MCP", num: "08" },
   { to: "/health", label: "Health", num: "09" },
+  { to: "/config", label: "Config", num: "10" },
 ];
 
 export function SidebarNav() {

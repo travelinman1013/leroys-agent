@@ -523,6 +523,86 @@ export const api = {
       enabled: boolean;
       command: string | null;
     }>(`/api/dashboard/mcp/${encodeURIComponent(name)}/health`),
+
+  // F5 — Telemetry + Safe Config Editor
+  metricsTokens: (window: "1h" | "24h" | "7d" | "30d" = "24h") =>
+    apiFetch<{
+      buckets: Array<{ ts: number; input: number; output: number }>;
+      total: { input: number; output: number };
+      bucket_seconds: number;
+    }>(`/api/dashboard/metrics/tokens?window=${window}`),
+
+  metricsLatency: (
+    window: "1h" | "24h" | "7d" | "30d" = "24h",
+    groupBy: "tool" | "session" = "tool",
+  ) =>
+    apiFetch<{
+      groups: Record<
+        string,
+        { count: number; p50: number | null; p95: number | null; p99: number | null; max: number | null }
+      >;
+      group_by: string;
+    }>(`/api/dashboard/metrics/latency?window=${window}&group_by=${groupBy}`),
+
+  metricsCompression: (window: "1h" | "24h" | "7d" | "30d" = "24h") =>
+    apiFetch<{
+      events: Array<{
+        ts: number | null;
+        session_id: string | null;
+        tokens_before: number | null;
+        tokens_after: number | null;
+        n_messages_before: number | null;
+        n_messages_after: number | null;
+      }>;
+      count: number;
+    }>(`/api/dashboard/metrics/compression?window=${window}`),
+
+  metricsErrors: (window: "1h" | "24h" | "7d" | "30d" = "24h") =>
+    apiFetch<{
+      per_tool: Record<string, { total: number; errors: number; error_rate: number }>;
+    }>(`/api/dashboard/metrics/errors?window=${window}`),
+
+  metricsContext: () =>
+    apiFetch<{
+      latest: {
+        ts: string;
+        session_id: string | null;
+        model: string | null;
+        input_tokens: number | null;
+        output_tokens: number | null;
+        total_tokens: number | null;
+        latency_ms: number | null;
+      } | null;
+    }>("/api/dashboard/metrics/context"),
+
+  putConfig: (mutations: Record<string, unknown>) =>
+    apiFetch<{ applied: string[]; restart_required: string[]; backup: string | null }>(
+      "/api/dashboard/config",
+      { method: "PUT", body: JSON.stringify({ mutations }) },
+    ),
+
+  configBackups: () =>
+    apiFetch<{
+      backups: Array<{ filename: string; path: string; ts: number; size: number }>;
+    }>("/api/dashboard/config/backups"),
+
+  rollbackConfig: (filename: string) =>
+    apiFetch<{ restored: string; backup: string | null }>(
+      "/api/dashboard/config/rollback",
+      { method: "POST", body: JSON.stringify({ to: filename }) },
+    ),
+
+  gatewayInfo: () =>
+    apiFetch<{
+      pid: number;
+      uptime_seconds: number;
+      host: string;
+      port: number;
+      max_rss?: number;
+    }>("/api/dashboard/gateway/info"),
+
+  gatewayRestartCommand: () =>
+    apiFetch<{ command: string; note: string }>("/api/dashboard/gateway/restart-command"),
 };
 
 // --------------------------------------------------------------------------

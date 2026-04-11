@@ -1030,6 +1030,136 @@ class DashboardRoutes:
     # ==================================================================
 
     # ==================================================================
+    # F5 — Telemetry + Safe Config Editor (Dashboard v2)
+    # ==================================================================
+
+    @require_dashboard_auth
+    async def handle_metrics_tokens(self, request: "web.Request") -> "web.Response":
+        window = request.query.get("window", "24h")
+        try:
+            from gateway.metrics import get_metrics_reader
+            return _json_ok(get_metrics_reader().tokens(window))
+        except Exception as exc:
+            return _json_err(exc)
+
+    @require_dashboard_auth
+    async def handle_metrics_latency(self, request: "web.Request") -> "web.Response":
+        window = request.query.get("window", "24h")
+        group_by = request.query.get("group_by", "tool")
+        try:
+            from gateway.metrics import get_metrics_reader
+            return _json_ok(get_metrics_reader().latency(window, group_by))
+        except Exception as exc:
+            return _json_err(exc)
+
+    @require_dashboard_auth
+    async def handle_metrics_compression(self, request: "web.Request") -> "web.Response":
+        window = request.query.get("window", "24h")
+        try:
+            from gateway.metrics import get_metrics_reader
+            return _json_ok(get_metrics_reader().compression(window))
+        except Exception as exc:
+            return _json_err(exc)
+
+    @require_dashboard_auth
+    async def handle_metrics_errors(self, request: "web.Request") -> "web.Response":
+        window = request.query.get("window", "24h")
+        try:
+            from gateway.metrics import get_metrics_reader
+            return _json_ok(get_metrics_reader().errors(window))
+        except Exception as exc:
+            return _json_err(exc)
+
+    @require_dashboard_auth
+    async def handle_metrics_context(self, request: "web.Request") -> "web.Response":
+        try:
+            from gateway.metrics import get_metrics_reader
+            return _json_ok(get_metrics_reader().context())
+        except Exception as exc:
+            return _json_err(exc)
+
+    @require_dashboard_auth
+    async def handle_config_put(self, request: "web.Request") -> "web.Response":
+        """Apply allowlisted config mutations.
+
+        Body: ``{"mutations": {"approvals.mode": "manual", ...}}``.
+        """
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        mutations = body.get("mutations") or {}
+        if not isinstance(mutations, dict) or not mutations:
+            return _json_err(ValueError("mutations (dict) required"), 400)
+        try:
+            from hermes_cli.config import apply_config_mutations
+            result = apply_config_mutations(mutations)
+            return _json_ok(result)
+        except PermissionError as exc:
+            return _json_err(exc, 403)
+        except Exception as exc:
+            return _json_err(exc)
+
+    @require_dashboard_auth
+    async def handle_config_backups(self, request: "web.Request") -> "web.Response":
+        try:
+            from hermes_cli.config import list_config_backups
+            return _json_ok({"backups": list_config_backups()})
+        except Exception as exc:
+            return _json_err(exc)
+
+    @require_dashboard_auth
+    async def handle_config_rollback(self, request: "web.Request") -> "web.Response":
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        filename = body.get("to") or body.get("filename")
+        if not filename:
+            return _json_err(ValueError("'to' (filename) required"), 400)
+        try:
+            from hermes_cli.config import restore_config_backup
+            return _json_ok(restore_config_backup(filename))
+        except FileNotFoundError as exc:
+            return _json_err(exc, 404)
+        except Exception as exc:
+            return _json_err(exc)
+
+    @require_dashboard_auth
+    async def handle_gateway_info(self, request: "web.Request") -> "web.Response":
+        info: Dict[str, Any] = {
+            "pid": os.getpid(),
+            "uptime_seconds": time.time() - self._started_at,
+            "host": self._adapter._host,
+            "port": self._adapter._port,
+        }
+        try:
+            import resource
+            usage = resource.getrusage(resource.RUSAGE_SELF)
+            info["max_rss"] = usage.ru_maxrss
+            info["user_time"] = usage.ru_utime
+            info["system_time"] = usage.ru_stime
+        except Exception:
+            pass
+        return _json_ok(info)
+
+    @require_dashboard_auth
+    async def handle_gateway_restart_command(self, request: "web.Request") -> "web.Response":
+        """Return the launchctl command for the user to run.
+
+        Does NOT execute it — the dashboard cannot shell out from inside
+        the Seatbelt sandbox. The frontend shows the string in a dialog.
+        """
+        try:
+            uid = os.getuid()
+        except AttributeError:
+            uid = 0
+        return _json_ok({
+            "command": f"launchctl kickstart -k gui/{uid}/ai.hermes.gateway",
+            "note": "Run this in your terminal — the dashboard cannot exec from sandbox.",
+        })
+
+    # ==================================================================
     # F4 — Interactive Ops (Cron / Tools / Skills / MCP) — Dashboard v2
     # ==================================================================
 
@@ -1872,6 +2002,18 @@ def register_dashboard_routes(
     app.router.add_get(
         "/api/dashboard/brain/node/{type}/{id}", routes.handle_brain_node,
     )
+    # F5 — Telemetry + Safe Config Editor (Dashboard v2)
+    app.router.add_get("/api/dashboard/metrics/tokens", routes.handle_metrics_tokens)
+    app.router.add_get("/api/dashboard/metrics/latency", routes.handle_metrics_latency)
+    app.router.add_get("/api/dashboard/metrics/compression", routes.handle_metrics_compression)
+    app.router.add_get("/api/dashboard/metrics/errors", routes.handle_metrics_errors)
+    app.router.add_get("/api/dashboard/metrics/context", routes.handle_metrics_context)
+    app.router.add_put("/api/dashboard/config", routes.handle_config_put)
+    app.router.add_get("/api/dashboard/config/backups", routes.handle_config_backups)
+    app.router.add_post("/api/dashboard/config/rollback", routes.handle_config_rollback)
+    app.router.add_get("/api/dashboard/gateway/info", routes.handle_gateway_info)
+    app.router.add_get("/api/dashboard/gateway/restart-command", routes.handle_gateway_restart_command)
+
     # F4 — Interactive Ops (Dashboard v2)
     app.router.add_get("/api/dashboard/jobs/parse-schedule", routes.handle_cron_parse_schedule)
     app.router.add_post("/api/dashboard/jobs/dry-run", routes.handle_cron_dry_run)
