@@ -17,6 +17,8 @@ import { Input } from "@/components/ui/input";
 import { useApiMutation } from "@/lib/mutations";
 import { useNotify } from "@/lib/notifications";
 import { useConfirm } from "@/lib/confirm";
+import { useTheme, type Theme } from "@/lib/theme";
+import { cn } from "@/lib/utils";
 
 export const Route = createFileRoute("/config")({
   component: ConfigPage,
@@ -234,6 +236,8 @@ function ConfigPage() {
           />
         </ConfigCard>
 
+        <AppearanceCard />
+
         <ConfigCard title="Backups">
           <ul className="space-y-1.5">
             {(backups.data?.backups ?? [])
@@ -323,5 +327,79 @@ function SaveButton({
         {isPending ? "SAVING…" : "SAVE"}
       </Button>
     </div>
+  );
+}
+
+/*
+  AppearanceCard — houses the dark/light toggle that previously lived
+  in StatusHeader. DESIGN.md §9 anti-slop pledge explicitly forbids a
+  dark-mode toggle in header chrome: "toggle lives in settings, not
+  chrome." The Operator's Desk light + dark modes ship as "separate
+  instruments, not an accessibility preference" (DESIGN.md §4), so
+  the card reads "APPEARANCE · INSTRUMENT" and the controls are a
+  pair of segmented buttons (DARK / LIGHT) rather than a toggle
+  switch — the switch framing implies an on/off state where one
+  direction is the "default" and the other is the "accessibility"
+  mode. Segmented buttons signal "pick the instrument you want."
+
+  Changes apply instantly (no save button). Persists to localStorage
+  via `useTheme`, and the `bootstrapTheme()` call in main.tsx
+  applies the stored value before React paints to avoid a
+  dark→light flash on reload.
+*/
+function AppearanceCard() {
+  const { theme, setTheme } = useTheme();
+
+  return (
+    <ConfigCard title="Appearance · Instrument">
+      <Field label="Theme">
+        <div className="flex gap-2">
+          <ThemePill
+            theme="dark"
+            active={theme === "dark"}
+            onClick={() => setTheme("dark")}
+            label="Dark"
+          />
+          <ThemePill
+            theme="light"
+            active={theme === "light"}
+            onClick={() => setTheme("light")}
+            label="Light"
+          />
+        </div>
+      </Field>
+      <p className="font-mono text-[10px] uppercase tracking-marker text-ink-faint">
+        applies instantly · persisted per browser
+      </p>
+    </ConfigCard>
+  );
+}
+
+function ThemePill({
+  theme,
+  active,
+  onClick,
+  label,
+}: {
+  theme: Theme;
+  active: boolean;
+  onClick: () => void;
+  label: string;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-pressed={active}
+      aria-label={`${label} instrument`}
+      className={cn(
+        "h-8 border px-3 font-mono text-[10px] uppercase tracking-marker transition-colors duration-120 ease-operator",
+        active
+          ? "border-oxide-edge bg-oxide-wash text-oxide"
+          : "border-rule text-ink-2 hover:border-oxide-edge hover:text-ink",
+      )}
+    >
+      {theme === "dark" ? "◐" : "◑"} {label}
+    </button>
   );
 }
