@@ -1,11 +1,13 @@
+/**
+ * /tools — dense list of registered tools, grouped by toolset.
+ * Operator's Desk: hairline rows, mono ink, no card chrome.
+ */
+
 import { createFileRoute } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
 import { api } from "@/lib/api";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
-import { Wrench } from "lucide-react";
 
 export const Route = createFileRoute("/tools")({
   component: ToolsPage,
@@ -29,7 +31,6 @@ function ToolsPage() {
     );
   }, [data, filter]);
 
-  // Group by toolset
   const groups = useMemo(() => {
     const map = new Map<string, typeof filtered>();
     for (const t of filtered) {
@@ -42,52 +43,73 @@ function ToolsPage() {
   }, [filtered]);
 
   return (
-    <div className="p-6">
-      <header className="mb-6">
-        <h1 className="text-2xl font-semibold tracking-tight">Tools</h1>
-        <p className="text-sm text-muted-foreground">
-          {data?.tools.length ?? 0} tools registered in the agent's tool registry.
+    <div className="bg-bg">
+      <div className="grid grid-cols-[auto_1fr_auto] items-center gap-6 border-b border-rule bg-bg-alt px-10 py-4 font-mono text-[10px] uppercase tracking-marker text-ink-muted">
+        <div className="text-ink">TOOLS</div>
+        <div className="flex items-center justify-center gap-7">
+          <Meter label="Registered" value={String(data?.tools.length ?? 0)} />
+          <Meter label="Filtered" value={String(filtered.length)} />
+          <Meter label="Toolsets" value={String(groups.length)} />
+        </div>
+        <div className="text-ink-faint">REGISTRY</div>
+      </div>
+
+      <div className="px-10 pb-6 pt-9">
+        <h1 className="page-stamp text-[56px]">
+          tool <em>registry</em>
+        </h1>
+        <p className="mt-3 font-mono text-[10px] uppercase tracking-marker text-ink-muted">
+          ─── HAIRLINE ROWS · GROUPED BY TOOLSET ──
         </p>
-      </header>
+      </div>
 
-      <Input
-        value={filter}
-        onChange={(e) => setFilter(e.target.value)}
-        placeholder="Filter tools…"
-        className="mb-6 max-w-md"
-      />
+      <div className="px-10 pb-16">
+        <Input
+          value={filter}
+          onChange={(e) => setFilter(e.target.value)}
+          placeholder="grep tools…"
+          className="mb-8 max-w-md"
+        />
 
-      {isLoading && (
-        <p className="text-sm text-muted-foreground">Loading tools…</p>
-      )}
+        {isLoading && (
+          <p className="font-mono text-[11px] uppercase tracking-marker text-ink-muted">
+            loading tools<span className="loading-cursor ml-2" />
+          </p>
+        )}
 
-      <div className="grid gap-4 md:grid-cols-2">
-        {groups.map(([group, tools]) => (
-          <Card key={group}>
-            <CardHeader className="pb-3">
-              <CardTitle className="flex items-center gap-2 text-sm">
-                <Wrench className="size-4 text-blue-400" />
-                {group}
-                <Badge variant="outline" className="ml-auto">
-                  {tools.length}
-                </Badge>
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="pt-0">
-              <ul className="space-y-1">
+        <div className="space-y-10">
+          {groups.map(([group, tools]) => (
+            <section key={group}>
+              <div className="marker mb-3">
+                <span className="marker-num">
+                  {String(tools.length).padStart(2, "0")}
+                </span>
+                <span>{group}</span>
+                <span className="marker-rule" />
+              </div>
+              <ul className="border-t border-rule">
                 {tools.map((t) => (
                   <li
                     key={t.name}
-                    className="font-mono text-xs text-muted-foreground"
+                    className="border-b border-rule px-1 py-2 font-mono text-[12px] tabular-nums text-ink transition-colors duration-120 ease-operator hover:bg-oxide-wash"
                   >
                     {t.name}
                   </li>
                 ))}
               </ul>
-            </CardContent>
-          </Card>
-        ))}
+            </section>
+          ))}
+        </div>
       </div>
     </div>
+  );
+}
+
+function Meter({ label, value }: { label: string; value: string }) {
+  return (
+    <span className="flex items-baseline gap-2">
+      <span>{label}</span>
+      <span className="text-ink tabular-nums">{value}</span>
+    </span>
   );
 }

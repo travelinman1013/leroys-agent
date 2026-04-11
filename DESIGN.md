@@ -14,7 +14,7 @@ two converging proposals (Codex's "Control Room Modernism" and the
 Claude subagent's "Service Manual / Bone & Iron Oxide"), reconciled
 into one coherent system on 2026-04-11 via `/d-c`.
 
-Preview file (kept as a visual reference): `/tmp/d-c-preview-1775912565.html`
+Preview file (kept as a visual reference): `~/.hermes/operator-desk-preview.html`
 
 ---
 
@@ -402,6 +402,6 @@ Not part of the spec — just a hint for the next session that picks this up:
 9. **Light mode** — `data-theme` toggle in `__root.tsx`, persist to localStorage.
 10. **Self-host paid faces** — drop Söhne + MD IO into `public/fonts/`, swap font stacks.
 
-The preview file `/tmp/d-c-preview-1775912565.html` is the visual
+The preview file `~/.hermes/operator-desk-preview.html` is the visual
 reference for every step above. Open it in two browser tabs (one
 dark, one light) while implementing.

@@ -80,15 +80,38 @@ export function formatUptime(seconds: number): string {
   return `${s}s`;
 }
 
-/** Color class for an event type */
-export function eventColorClass(type: string): string {
+/**
+ * Semantic class for an event type. Operator's Desk differentiates events
+ * **typographically** (italic for tool, small-caps for memory, UPPERCASE
+ * for approval, etc.) — never by color. See DESIGN.md §4 rule 3.
+ *
+ * Returns a class that lives on the event row so descendant `.evt-label`
+ * and `.evt-body` selectors in index.css can apply the right type.
+ */
+export function eventClass(type: string): string {
   if (type.startsWith("turn.")) return "evt-turn";
   if (type.startsWith("tool.")) return "evt-tool";
   if (type.startsWith("llm.")) return "evt-llm";
   if (type.startsWith("approval.")) return "evt-approval";
-  if (type === "compaction") return "evt-compaction";
+  if (type.startsWith("memory.")) return "evt-memory";
+  if (type === "compaction" || type.startsWith("compaction.")) return "evt-compaction";
   if (type.startsWith("cron.")) return "evt-cron";
   if (type.startsWith("session.")) return "evt-session";
   if (type.startsWith("gateway.")) return "evt-gateway";
-  return "text-muted-foreground";
+  if (type.startsWith("error") || type.includes(".error")) return "evt-error";
+  return "evt-gateway";
+}
+
+/** Compact label for the type — single word, lowercase, for the event rail. */
+export function eventShortLabel(type: string): string {
+  if (type.startsWith("turn.")) return "turn";
+  if (type.startsWith("tool.")) return "tool";
+  if (type.startsWith("llm.")) return "llm";
+  if (type.startsWith("approval.")) return "approval";
+  if (type.startsWith("memory.")) return "memory";
+  if (type === "compaction" || type.startsWith("compaction.")) return "compact";
+  if (type.startsWith("cron.")) return "cron";
+  if (type.startsWith("session.")) return "session";
+  if (type.startsWith("gateway.")) return "gateway";
+  return type.split(".")[0] || type;
 }

@@ -1,8 +1,11 @@
+/**
+ * /sessions — dense table list (DESIGN.md §6 row `/sessions`).
+ * Mono throughout. Editorial chrome: id, title, model, turns, dur, last activity.
+ */
+
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "@/lib/api";
-import { Card, CardContent } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
 import { compactNumber, formatCost, relTimeFromUnix } from "@/lib/utils";
 
 export const Route = createFileRoute("/sessions")({
@@ -19,72 +22,118 @@ function SessionsList() {
   const sessions = data?.sessions ?? [];
 
   return (
-    <div className="p-6">
-      <header className="mb-6">
-        <h1 className="text-2xl font-semibold tracking-tight">Sessions</h1>
-        <p className="text-sm text-muted-foreground">
-          Every conversation the gateway has handled, newest first.
-        </p>
-      </header>
-
-      {isLoading && (
-        <p className="text-sm text-muted-foreground">Loading sessions…</p>
-      )}
-      {error && (
-        <p className="text-sm text-destructive">
-          Failed to load sessions: {(error as Error).message}
-        </p>
-      )}
-
-      <div className="space-y-2">
-        {sessions.map((s) => (
-          <Link
-            key={s.id}
-            to="/sessions/$id"
-            params={{ id: s.id }}
-            className="block"
-          >
-            <Card className="transition-colors hover:bg-accent/30">
-              <CardContent className="flex items-center gap-4 p-4">
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center gap-2">
-                    <span className="truncate font-mono text-xs text-muted-foreground">
-                      {s.id.slice(0, 28)}
-                    </span>
-                    <Badge variant="outline" className="text-[10px]">
-                      {s.source}
-                    </Badge>
-                    {s.model && (
-                      <Badge variant="secondary" className="text-[10px]">
-                        {s.model}
-                      </Badge>
-                    )}
-                  </div>
-                  <p className="mt-1 truncate text-sm">
-                    {s.title || s.preview || "(no preview)"}
-                  </p>
-                </div>
-                <div className="flex shrink-0 flex-col items-end text-xs">
-                  <span className="font-mono text-muted-foreground">
-                    {compactNumber(s.message_count)} msgs ·{" "}
-                    {compactNumber((s.input_tokens ?? 0) + (s.output_tokens ?? 0))} tok
-                  </span>
-                  <span className="font-mono text-muted-foreground">
-                    {formatCost(s.estimated_cost_usd)}
-                  </span>
-                  <span className="mt-0.5 text-[11px] text-muted-foreground">
-                    {relTimeFromUnix(s.last_active)}
-                  </span>
-                </div>
-              </CardContent>
-            </Card>
-          </Link>
-        ))}
+    <div className="bg-bg">
+      <div className="grid grid-cols-[auto_1fr_auto] items-center gap-6 border-b border-rule bg-bg-alt px-10 py-4 font-mono text-[10px] uppercase tracking-marker text-ink-muted">
+        <div className="text-ink">SESSIONS</div>
+        <div className="flex items-center justify-center gap-7">
+          <span className="flex items-baseline gap-2">
+            <span>Total</span>
+            <span className="text-ink tabular-nums">{sessions.length}</span>
+          </span>
+        </div>
+        <div className="text-ink-faint">REFRESH 15s</div>
       </div>
 
-      {sessions.length === 0 && !isLoading && (
-        <p className="text-sm text-muted-foreground">No sessions yet.</p>
+      <div className="px-10 pb-6 pt-9">
+        <h1 className="page-stamp text-[56px]">
+          all <em>sessions</em>
+        </h1>
+      </div>
+
+      {isLoading && (
+        <p className="px-10 font-mono text-[11px] uppercase tracking-marker text-ink-muted">
+          loading sessions<span className="loading-cursor ml-2" />
+        </p>
       )}
+      {error && (
+        <p className="px-10 font-mono text-[11px] uppercase tracking-marker text-danger">
+          {(error as Error).message}
+        </p>
+      )}
+
+      <div className="px-10 pb-16">
+        <table className="w-full border-collapse font-mono text-[12px] tabular-nums text-ink">
+          <thead>
+            <tr>
+              <Th>ID</Th>
+              <Th>TITLE</Th>
+              <Th>SRC</Th>
+              <Th>MODEL</Th>
+              <Th align="right">MSGS</Th>
+              <Th align="right">TOK</Th>
+              <Th align="right">COST</Th>
+              <Th align="right">LAST</Th>
+            </tr>
+          </thead>
+          <tbody>
+            {sessions.map((s) => (
+              <tr
+                key={s.id}
+                className="border-b border-rule transition-colors duration-120 ease-operator hover:bg-oxide-wash"
+              >
+                <td className="px-4 py-3 text-ink-faint">
+                  <Link
+                    to="/sessions/$id"
+                    params={{ id: s.id }}
+                    className="hover:text-oxide"
+                  >
+                    {s.id.slice(0, 8)}
+                  </Link>
+                </td>
+                <td className="max-w-[420px] truncate px-4 py-3 text-ink">
+                  <Link
+                    to="/sessions/$id"
+                    params={{ id: s.id }}
+                    className="hover:text-oxide"
+                  >
+                    {s.title || s.preview || "(no preview)"}
+                  </Link>
+                </td>
+                <td className="px-4 py-3 text-ink-2">{s.source}</td>
+                <td className="px-4 py-3 text-ink-2">
+                  {s.model ? s.model.split("/").pop() : "—"}
+                </td>
+                <td className="px-4 py-3 text-right text-ink">
+                  {compactNumber(s.message_count)}
+                </td>
+                <td className="px-4 py-3 text-right text-ink">
+                  {compactNumber(
+                    (s.input_tokens ?? 0) + (s.output_tokens ?? 0),
+                  )}
+                </td>
+                <td className="px-4 py-3 text-right text-ink-2">
+                  {formatCost(s.estimated_cost_usd)}
+                </td>
+                <td className="px-4 py-3 text-right text-ink-faint">
+                  {relTimeFromUnix(s.last_active)}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        {sessions.length === 0 && !isLoading && (
+          <p className="mt-6 font-mono text-[11px] uppercase tracking-marker text-ink-faint">
+            no sessions yet
+          </p>
+        )}
+      </div>
     </div>
+  );
+}
+
+function Th({
+  children,
+  align = "left",
+}: {
+  children: React.ReactNode;
+  align?: "left" | "right";
+}) {
+  return (
+    <th
+      className="border-b border-rule px-4 py-3.5 text-[10px] font-medium uppercase tracking-marker text-ink-muted"
+      style={{ textAlign: align }}
+    >
+      {children}
+    </th>
   );
 }

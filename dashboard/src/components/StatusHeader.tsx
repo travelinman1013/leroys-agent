@@ -1,15 +1,17 @@
 /**
- * StatusHeader — the persistent top bar.
+ * StatusHeader — the systems strip.
  *
- * Shows gateway status, model, sandbox indicator, uptime, and a live
- * subscriber count for the event bus.
+ * Operator's Desk header from DESIGN.md §6 / preview §00. Mono UPPERCASE
+ * patch-bay metrics across a hairline-divided strip. No icons, no badges,
+ * no chrome. The brand mark sits on the left, live pulse metrics in the
+ * middle, theme toggle on the right. Wraps the existing
+ * /api/dashboard/state query.
  */
 
-import { Badge } from "@/components/ui/badge";
 import { useQuery } from "@tanstack/react-query";
 import { api } from "@/lib/api";
-import { Activity, Cpu, Lock, Radio, Zap } from "lucide-react";
 import { formatUptime } from "@/lib/utils";
+import { useTheme } from "@/lib/theme";
 
 export function StatusHeader() {
   const { data, isLoading, error } = useQuery({
@@ -22,75 +24,102 @@ export function StatusHeader() {
   const connected = !isLoading && !error && Boolean(gateway);
 
   return (
-    <header className="flex h-14 items-center gap-4 border-b bg-card/50 px-6">
-      <div className="flex items-center gap-2">
-        <div className="relative">
-          <Zap className="size-5 text-indigo-400" />
-          {connected && (
-            <span className="absolute -right-0.5 -top-0.5 size-2 rounded-full bg-emerald-400 animate-pulse-slow" />
-          )}
-        </div>
-        <span className="font-semibold tracking-tight">Hermes</span>
-        <span className="text-xs text-muted-foreground">Dashboard</span>
+    <header className="grid h-14 grid-cols-[auto_1fr_auto] items-center gap-8 border-b border-rule bg-bg px-6 font-mono text-[11px] uppercase tracking-marker text-ink-muted">
+      {/* ── brand ────────────────────────────────────────────── */}
+      <div className="flex items-baseline gap-3.5">
+        <span className="font-display text-[13px] font-bold tracking-marker text-ink">
+          HERMES
+        </span>
+        <span className="text-ink-faint">v0.8.0 · operator's desk</span>
       </div>
 
-      <div className="ml-4 flex flex-1 items-center gap-3 text-xs">
-        <StatusPill
-          icon={<Activity className="size-3" />}
-          label="Status"
-          value={connected ? "online" : error ? "offline" : "connecting…"}
-          variant={connected ? "success" : "warn"}
+      {/* ── pulse meters ─────────────────────────────────────── */}
+      <div className="flex items-center justify-center gap-6">
+        <Meter
+          dot={connected ? "ok" : error ? "danger" : "warm"}
+          label={connected ? "Sandbox OK" : error ? "Offline" : "Connecting"}
         />
         {data?.model && (
-          <StatusPill
-            icon={<Cpu className="size-3" />}
-            label="Model"
-            value={data.model}
-          />
-        )}
-        {gateway?.sandboxed && (
-          <StatusPill
-            icon={<Lock className="size-3" />}
-            label="Sandbox"
-            value="Seatbelt"
-            variant="success"
-          />
+          <Meter label="Model" value={shortModel(data.model)} />
         )}
         {gateway?.uptime_seconds !== undefined && (
-          <StatusPill
-            icon={<Activity className="size-3" />}
-            label="Uptime"
-            value={formatUptime(gateway.uptime_seconds)}
-          />
+          <Meter label="Up" value={formatUptime(gateway.uptime_seconds)} />
         )}
         {data?.event_bus && (
-          <StatusPill
-            icon={<Radio className="size-3" />}
+          <Meter
             label="Bus"
             value={`${data.event_bus.subscribers} sub`}
           />
         )}
       </div>
+
+      {/* ── theme toggle ─────────────────────────────────────── */}
+      <ThemeToggle />
     </header>
   );
 }
 
-function StatusPill({
-  icon,
+function Meter({
+  dot,
   label,
   value,
-  variant = "outline",
+  warm,
 }: {
-  icon: React.ReactNode;
+  dot?: "ok" | "warm" | "warn" | "danger";
   label: string;
-  value: string;
-  variant?: "outline" | "success" | "warn";
+  value?: string;
+  warm?: boolean;
 }) {
   return (
-    <Badge variant={variant} className="gap-1 font-normal">
-      {icon}
-      <span className="text-muted-foreground">{label}</span>
-      <span className="font-semibold">{value}</span>
-    </Badge>
+    <span className="flex items-baseline gap-2">
+      {dot && <Dot kind={dot} />}
+      <span>{label}</span>
+      {value && (
+        <span
+          className={
+            warm
+              ? "text-oxide tabular-nums"
+              : "text-ink tabular-nums"
+          }
+        >
+          {value}
+        </span>
+      )}
+    </span>
   );
+}
+
+function Dot({ kind }: { kind: "ok" | "warm" | "warn" | "danger" }) {
+  const cls =
+    kind === "warm"
+      ? "bg-oxide oxide-pulse"
+      : kind === "warn"
+        ? "bg-warning"
+        : kind === "danger"
+          ? "bg-danger"
+          : "bg-success";
+  return (
+    <span className={`inline-block size-1.5 rounded-full ${cls}`} />
+  );
+}
+
+function ThemeToggle() {
+  const { theme, toggle } = useTheme();
+  return (
+    <button
+      onClick={toggle}
+      className="rounded-sm border border-rule px-3.5 py-1.5 font-mono text-[10px] uppercase tracking-wide text-ink-2 transition-colors duration-120 ease-operator hover:border-oxide-edge hover:text-oxide"
+    >
+      {theme === "dark" ? "◐ LIGHT MODE" : "◑ DARK MODE"}
+    </button>
+  );
+}
+
+function shortModel(model: string): string {
+  // "google/gemma-4-26b-a4b" → "GEMMA-4-26B"
+  const tail = model.split("/").pop() ?? model;
+  return tail
+    .replace(/-a\d+b?$/i, "")
+    .toUpperCase()
+    .slice(0, 14);
 }

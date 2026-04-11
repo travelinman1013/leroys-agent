@@ -1,71 +1,149 @@
+/* ───────────────────────────────────────────────────────────
+   HERMES — OPERATOR'S DESK
+   bone & iron oxide. hairlines. one accent. mechanical motion.
+   See DESIGN.md at the repo root for the full spec.
+   ─────────────────────────────────────────────────────────── */
+
+/* Free fallback faces. The production stack is Söhne / Söhne Breit / MD IO,
+   self-hosted from dashboard/public/fonts/ once licensed. */
+@import url("https://fonts.googleapis.com/css2?family=Instrument+Serif:ital@0;1&family=JetBrains+Mono:wght@400;500;700&display=swap");
+@import url("https://fonts.bunny.net/css?family=switzer:400,500,600,700,800");
+
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
 @layer base {
+  /* ───── DARK (primary) ───────────────────────────────────── */
+  :root,
+  :root[data-theme="dark"] {
+    /* Operator's Desk tokens — raw hex (mirrors DESIGN.md §4) */
+    --bg:           #0E1110;
+    --bg-alt:       #131716;
+    --surface:      #171C1A;
+    --surface-2:    #1D2321;
+    --surface-3:    #252C29;
+    --rule:         #2D3531;
+    --rule-strong:  #3B4540;
+    --ink:          #E7E2D8;
+    --ink-2:        #B6B0A3;
+    --ink-muted:    #8D877B;
+    --ink-faint:    #5E5A52;
+    --inverse:      #0E1110;
+
+    --oxide:        #C96B2C;
+    --oxide-hover:  #D97B38;
+    --oxide-deep:   #8E4B22;
+    --oxide-wash:   rgba(201, 107, 44, 0.10);
+    --oxide-edge:   rgba(201, 107, 44, 0.32);
+
+    --steel:        #4C6A7F;
+    --steel-wash:   rgba(76, 106, 127, 0.12);
+
+    --success:      #6E8F62;
+    --warning:      #C79A3B;
+    --danger:       #B5523D;
+
+    --grain-opacity: 0.035;
+
+    --radius: 0px;
+  }
+
+  /* ───── LIGHT (separate instrument, not a11y toggle) ─────── */
+  :root[data-theme="light"] {
+    --bg:           #F2EFE6;
+    --bg-alt:       #EAE6D9;
+    --surface:      #ECE8DB;
+    --surface-2:    #E2DCC9;
+    --surface-3:    #D9D2BC;
+    --rule:         rgba(22, 21, 19, 0.10);
+    --rule-strong:  rgba(22, 21, 19, 0.20);
+    --ink:          #161513;
+    --ink-2:        #3B362E;
+    --ink-muted:    #6B665B;
+    --ink-faint:    #948D7C;
+    --inverse:      #F2EFE6;
+
+    --oxide:        #B0561C;
+    --oxide-hover:  #C2410C;
+    --oxide-deep:   #6E3411;
+    --oxide-wash:   rgba(176, 86, 28, 0.08);
+    --oxide-edge:   rgba(176, 86, 28, 0.28);
+
+    --steel:        #3D5868;
+    --steel-wash:   rgba(61, 88, 104, 0.08);
+
+    --success:      #4A6B3A;
+    --warning:      #976B12;
+    --danger:       #8B2E1F;
+
+    --grain-opacity: 0.05;
+  }
+
   :root {
-    --background: 0 0% 100%;
-    --foreground: 240 10% 3.9%;
-    --card: 0 0% 100%;
-    --card-foreground: 240 10% 3.9%;
-    --popover: 0 0% 100%;
-    --popover-foreground: 240 10% 3.9%;
-    --primary: 240 5.9% 10%;
-    --primary-foreground: 0 0% 98%;
-    --secondary: 240 4.8% 95.9%;
-    --secondary-foreground: 240 5.9% 10%;
-    --muted: 240 4.8% 95.9%;
-    --muted-foreground: 240 3.8% 46.1%;
-    --accent: 240 4.8% 95.9%;
-    --accent-foreground: 240 5.9% 10%;
-    --destructive: 0 84.2% 60.2%;
-    --destructive-foreground: 0 0% 98%;
-    --border: 240 5.9% 90%;
-    --input: 240 5.9% 90%;
-    --ring: 240 5.9% 10%;
-    --radius: 0.5rem;
+    --font-sans:    "Söhne", "Switzer Variable", "Switzer", system-ui, -apple-system, sans-serif;
+    --font-display: "Söhne Breit", "Switzer Variable", "Switzer", system-ui, sans-serif;
+    --font-mono:    "MD IO", "Söhne Mono", "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+    --font-stamp:   "Instrument Serif", "Tiempos Headline", Georgia, serif;
   }
 
-  .dark {
-    --background: 240 10% 3.9%;
-    --foreground: 0 0% 98%;
-    --card: 240 10% 6%;
-    --card-foreground: 0 0% 98%;
-    --popover: 240 10% 3.9%;
-    --popover-foreground: 0 0% 98%;
-    --primary: 0 0% 98%;
-    --primary-foreground: 240 5.9% 10%;
-    --secondary: 240 3.7% 12%;
-    --secondary-foreground: 0 0% 98%;
-    --muted: 240 3.7% 12%;
-    --muted-foreground: 240 5% 64.9%;
-    --accent: 240 3.7% 15.9%;
-    --accent-foreground: 0 0% 98%;
-    --destructive: 0 62.8% 40%;
-    --destructive-foreground: 0 0% 98%;
-    --border: 240 3.7% 14%;
-    --input: 240 3.7% 14%;
-    --ring: 240 4.9% 83.9%;
-  }
-}
-
-@layer base {
   * {
-    @apply border-border;
+    border-color: var(--rule);
   }
-  body {
-    @apply bg-background text-foreground;
-    font-feature-settings: "cv11", "ss01";
-    font-variation-settings: "opsz" 16;
-  }
+
   html,
   body,
   #root {
     height: 100%;
   }
+
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--ink);
+    font-family: var(--font-sans);
+    font-size: 16px;
+    line-height: 1.55;
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+    transition:
+      background 320ms cubic-bezier(0.16, 0.84, 0.24, 1),
+      color 320ms cubic-bezier(0.16, 0.84, 0.24, 1);
+    position: relative;
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* paper / panel grain. you won't see it. you'll feel it. */
+  body::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    opacity: var(--grain-opacity);
+    z-index: 1;
+    background-image: url("data:image/svg+xml;utf8,<svg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='2' stitchTiles='stitch'/><feColorMatrix values='0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 0.6 0'/></filter><rect width='100%25' height='100%25' filter='url(%23n)'/></svg>");
+    mix-blend-mode: overlay;
+  }
+
+  #root {
+    position: relative;
+    z-index: 2;
+  }
+
+  /* Tabular numerics everywhere data lives */
+  code,
+  kbd,
+  pre,
+  samp,
+  table,
+  td,
+  th,
+  .tabular {
+    font-variant-numeric: tabular-nums;
+  }
 }
 
-/* Live-tail scroll area shadows */
+/* ───── Live-tail scroll mask (kept) ───────────────────────── */
 .fade-bottom {
   mask-image: linear-gradient(to top, transparent, black 40px);
 }
@@ -73,17 +151,154 @@
   mask-image: linear-gradient(to bottom, transparent, black 40px);
 }
 
-/* Monospace event stream */
+/* ───── Event stream typographic differentiation ──────────── */
+/* No color coding. Categories are differentiated by typography per
+   DESIGN.md §3 / §4 (rule 3 — no event rainbow). */
 .event-stream-line {
   font-variant-numeric: tabular-nums;
 }
 
-/* Keyword coloring */
-.evt-turn { color: #a78bfa; }
-.evt-tool { color: #60a5fa; }
-.evt-llm { color: #34d399; }
-.evt-approval { color: #fbbf24; }
-.evt-compaction { color: #f472b6; }
-.evt-cron { color: #22d3ee; }
-.evt-session { color: #c084fc; }
-.evt-gateway { color: #9ca3af; }
+.evt-label {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  color: var(--ink-muted);
+}
+
+.evt-tool .evt-body {
+  font-style: italic;
+  color: var(--ink-2);
+}
+.evt-memory .evt-label {
+  font-variant: small-caps;
+  letter-spacing: 0.04em;
+}
+.evt-memory .evt-body {
+  font-variant: small-caps;
+  letter-spacing: 0.04em;
+  color: var(--ink-2);
+}
+.evt-approval .evt-label {
+  text-transform: uppercase;
+  letter-spacing: 0.18em;
+  color: var(--oxide);
+  font-weight: 600;
+}
+.evt-approval .evt-body {
+  color: var(--oxide);
+}
+.evt-turn .evt-body,
+.evt-session .evt-body {
+  color: var(--ink);
+}
+.evt-gateway .evt-body,
+.evt-cron .evt-body {
+  color: var(--ink-faint);
+}
+.evt-llm .evt-body {
+  color: var(--ink-2);
+}
+.evt-compaction .evt-label {
+  color: var(--steel);
+}
+.evt-compaction .evt-body {
+  color: var(--ink-2);
+}
+.evt-error .evt-label,
+.evt-error .evt-body {
+  color: var(--danger);
+}
+
+/* ───── Marker rule (─── SECTION ──────────) ─────────────── */
+.marker {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  font-family: var(--font-mono);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.18em;
+  color: var(--ink-muted);
+}
+.marker .marker-num {
+  color: var(--oxide);
+  font-variant-numeric: tabular-nums;
+}
+.marker .marker-rule {
+  flex: 1;
+  height: 1px;
+  background: var(--rule);
+}
+
+/* ───── Page stamp (Instrument Serif italic, used once per route) */
+.page-stamp {
+  font-family: var(--font-stamp);
+  font-style: italic;
+  font-weight: 400;
+  line-height: 0.95;
+  letter-spacing: -0.02em;
+  color: var(--ink);
+  margin: 0;
+}
+.page-stamp em {
+  color: var(--oxide);
+  font-style: italic;
+}
+
+/* ───── ONE BIG NUMBER ─────────────────────────────────────── */
+.one-number-big {
+  font-family: var(--font-display);
+  font-weight: 700;
+  font-size: 144px;
+  line-height: 0.85;
+  letter-spacing: -0.04em;
+  color: var(--oxide);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ───── Mechanical loading cursor ──────────────────────────── */
+.loading-cursor::after {
+  content: "▋";
+  font-family: var(--font-mono);
+  color: var(--oxide);
+  animation: cursor-blink 600ms steps(1) infinite;
+  margin-left: 2px;
+}
+@keyframes cursor-blink {
+  50% {
+    opacity: 0;
+  }
+}
+
+/* ───── Oxide pulse dot (replaces pulse-slow) ──────────────── */
+.oxide-pulse {
+  animation: oxide-pulse 2.4s cubic-bezier(0.16, 0.84, 0.24, 1) infinite;
+}
+@keyframes oxide-pulse {
+  0%,
+  100% {
+    opacity: 1;
+    box-shadow: 0 0 0 0 var(--oxide-edge);
+  }
+  50% {
+    opacity: 0.55;
+    box-shadow: 0 0 0 4px transparent;
+  }
+}
+
+/* ───── Sandbox-friendly scrollbars (subtle) ───────────────── */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-track {
+  background: var(--bg);
+}
+::-webkit-scrollbar-thumb {
+  background: var(--rule-strong);
+  border: 2px solid var(--bg);
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--ink-faint);
+}

@@ -1,21 +1,15 @@
 /**
- * ApprovalCard — LangGraph Agent Inbox-style approval card.
+ * ApprovalCard — Operator's Desk lab-notebook approval card.
  *
- * Renders a pending dangerous-command approval with four actions mapped
- * to Hermes' existing scope model:
- *   Accept once  → "once"
- *   This session → "session"
- *   Always       → "always"
- *   Deny         → "deny"
+ * Hairline border with an oxide left rule, mono lab label, italic stamp
+ * "ask", mono command block. Four actions in the LangGraph Agent Inbox
+ * shape (once / session / always / deny). See DESIGN.md §6 (preview §05).
  */
 
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { api, type PendingApproval } from "@/lib/api";
 import { relTimeFromUnix } from "@/lib/utils";
-import { Check, Clock, Infinity, X, Shield } from "lucide-react";
 
 type Props = {
   approval: PendingApproval;
@@ -33,75 +27,78 @@ export function ApprovalCard({ approval }: Props) {
   });
 
   return (
-    <Card className="border-amber-900/50 bg-amber-950/10">
-      <CardHeader className="pb-3">
-        <div className="flex items-start justify-between gap-2">
-          <CardTitle className="flex items-center gap-2 text-sm">
-            <Shield className="size-4 text-amber-400" />
-            Approval requested
-          </CardTitle>
-          <Badge variant="warn" className="font-mono text-[10px]">
-            {approval.pattern_key}
-          </Badge>
+    <div className="relative grid grid-cols-1 gap-6 border border-oxide-edge bg-bg p-6 md:grid-cols-[1fr_auto] md:items-end">
+      {/* oxide left rule */}
+      <span className="absolute inset-y-0 left-0 w-[3px] bg-oxide" />
+
+      <div className="pl-3">
+        <div className="font-mono text-[10px] uppercase tracking-marker text-oxide">
+          ─── APPROVAL REQUIRED · {approval.pattern_key.toUpperCase()} ───────
         </div>
-        <div className="text-xs text-muted-foreground">
+        <p className="mt-2 font-stamp text-[28px] italic leading-tight text-ink">
+          Hermes wants to <em className="text-oxide">{approval.pattern_key}</em>
+        </p>
+        <p className="mt-2 text-[13px] leading-relaxed text-ink-2">
           Session{" "}
-          <span className="font-mono">{approval.session_key.slice(0, 24)}</span>
-          {" · "}
-          {relTimeFromUnix(approval.queued_at)}
-        </div>
-      </CardHeader>
-      <CardContent className="space-y-3 pt-0">
-        <pre className="rounded-md bg-black/40 p-2 font-mono text-xs text-amber-100 whitespace-pre-wrap break-all">
+          <span className="font-mono text-ink">
+            {approval.session_key.slice(0, 24)}
+          </span>{" "}
+          · queued {relTimeFromUnix(approval.queued_at)}
+          {approval.description && (
+            <>
+              {" · "}
+              {approval.description}
+            </>
+          )}
+        </p>
+        <pre className="mt-3 whitespace-pre-wrap break-all border border-rule bg-bg-alt px-3.5 py-2.5 font-mono text-[12px] text-ink">
           {approval.command}
         </pre>
-        {approval.description && (
-          <p className="text-xs text-muted-foreground">{approval.description}</p>
-        )}
-        <div className="flex flex-wrap gap-2 pt-1">
-          <Button
-            size="sm"
-            variant="default"
-            disabled={mutation.isPending}
-            onClick={() => mutation.mutate("once")}
-          >
-            <Check className="size-3.5" />
-            Once
-          </Button>
-          <Button
-            size="sm"
-            variant="secondary"
-            disabled={mutation.isPending}
-            onClick={() => mutation.mutate("session")}
-          >
-            <Clock className="size-3.5" />
-            Session
-          </Button>
-          <Button
-            size="sm"
-            variant="secondary"
-            disabled={mutation.isPending}
-            onClick={() => mutation.mutate("always")}
-          >
-            <Infinity className="size-3.5" />
-            Always
-          </Button>
-          <Button
-            size="sm"
-            variant="destructive"
-            disabled={mutation.isPending}
-            onClick={() => mutation.mutate("deny")}
-          >
-            <X className="size-3.5" />
-            Deny
-          </Button>
-        </div>
         {mutation.isError && (
-          <p className="text-xs text-destructive">
+          <p className="mt-2 font-mono text-[11px] uppercase tracking-marker text-danger">
             {(mutation.error as Error).message}
           </p>
         )}
-      </CardContent>
-    </Card>
+      </div>
+
+      <div className="flex min-w-[160px] flex-col gap-2 pl-3 md:pl-0">
+        <Button
+          size="sm"
+          variant="default"
+          className="w-full"
+          disabled={mutation.isPending}
+          onClick={() => mutation.mutate("once")}
+        >
+          Approve once
+        </Button>
+        <Button
+          size="sm"
+          variant="secondary"
+          className="w-full"
+          disabled={mutation.isPending}
+          onClick={() => mutation.mutate("session")}
+        >
+          Session
+        </Button>
+        <Button
+          size="sm"
+          variant="secondary"
+          className="w-full"
+          disabled={mutation.isPending}
+          onClick={() => mutation.mutate("always")}
+        >
+          Always
+        </Button>
+        <Button
+          size="sm"
+          variant="destructive"
+          className="w-full"
+          disabled={mutation.isPending}
+          onClick={() => mutation.mutate("deny")}
+        >
+          Deny
+        </Button>
+      </div>
+    </div>
   );
 }

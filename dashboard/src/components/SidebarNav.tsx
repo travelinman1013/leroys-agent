@@ -1,60 +1,64 @@
 import { Link, useRouterState } from "@tanstack/react-router";
 import { cn } from "@/lib/utils";
-import {
-  Activity,
-  MessageSquare,
-  Clock,
-  Wrench,
-  Sparkles,
-  Network,
-  HeartPulse,
-  Brain,
-} from "lucide-react";
 
 type NavItem = {
   to: string;
   label: string;
-  icon: React.ComponentType<{ className?: string }>;
+  num: string;
 };
 
+// patch-bay nav: numbered, mono UPPERCASE, hairline-divided.
 const items: NavItem[] = [
-  { to: "/", label: "Live Console", icon: Activity },
-  { to: "/brain", label: "Brain", icon: Brain },
-  { to: "/sessions", label: "Sessions", icon: MessageSquare },
-  { to: "/cron", label: "Cron", icon: Clock },
-  { to: "/tools", label: "Tools", icon: Wrench },
-  { to: "/skills", label: "Skills", icon: Sparkles },
-  { to: "/mcp", label: "MCP", icon: Network },
-  { to: "/health", label: "Health", icon: HeartPulse },
+  { to: "/", label: "Live", num: "01" },
+  { to: "/brain", label: "Brain", num: "02" },
+  { to: "/sessions", label: "Sessions", num: "03" },
+  { to: "/cron", label: "Cron", num: "04" },
+  { to: "/tools", label: "Tools", num: "05" },
+  { to: "/skills", label: "Skills", num: "06" },
+  { to: "/mcp", label: "MCP", num: "07" },
+  { to: "/health", label: "Health", num: "08" },
 ];
 
 export function SidebarNav() {
   const location = useRouterState({ select: (s) => s.location });
 
   return (
-    <nav className="flex w-48 shrink-0 flex-col gap-1 border-r bg-card/30 p-3">
-      {items.map((item) => {
-        const Icon = item.icon;
-        const active =
-          item.to === "/"
-            ? location.pathname === "/"
-            : location.pathname.startsWith(item.to);
-        return (
-          <Link
-            key={item.to}
-            to={item.to}
-            className={cn(
-              "flex items-center gap-2 rounded-md px-3 py-1.5 text-sm font-medium transition-colors",
-              active
-                ? "bg-secondary text-secondary-foreground"
-                : "text-muted-foreground hover:bg-secondary/50 hover:text-foreground",
-            )}
-          >
-            <Icon className="size-4" />
-            {item.label}
-          </Link>
-        );
-      })}
+    <nav className="flex w-44 shrink-0 flex-col border-r border-rule bg-bg-alt">
+      <div className="border-b border-rule px-5 py-4 font-mono text-[9px] uppercase tracking-marker text-ink-faint">
+        ─── ROUTES ────
+      </div>
+      <ul className="flex flex-col">
+        {items.map((item) => {
+          const active =
+            item.to === "/"
+              ? location.pathname === "/"
+              : location.pathname.startsWith(item.to);
+          return (
+            <li key={item.to} className="border-b border-rule/60">
+              <Link
+                to={item.to}
+                className={cn(
+                  "flex items-baseline gap-3 px-5 py-3 font-mono text-[11px] uppercase tracking-marker transition-colors duration-120 ease-operator",
+                  active
+                    ? "bg-oxide-wash text-oxide"
+                    : "text-ink-2 hover:bg-oxide-wash/40 hover:text-ink",
+                )}
+              >
+                <span
+                  className={cn(
+                    "tabular-nums",
+                    active ? "text-oxide" : "text-ink-faint",
+                  )}
+                >
+                  {item.num}
+                </span>
+                <span>{item.label}</span>
+                {active && <span className="ml-auto text-oxide">─</span>}
+              </Link>
+            </li>
+          );
+        })}
+      </ul>
     </nav>
   );
 }

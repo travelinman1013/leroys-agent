@@ -3,7 +3,12 @@ import ReactDOM from "react-dom/client";
 import { RouterProvider, createRouter } from "@tanstack/react-router";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { routeTree } from "./routeTree.gen";
+import { bootstrapTheme } from "./lib/theme";
 import "./index.css";
+
+// Apply Operator's Desk theme before React paints — avoids a dark→light flash
+// when the user has chosen light mode in a prior session.
+bootstrapTheme();
 
 // TanStack Query — server state cache & revalidation
 const queryClient = new QueryClient({
