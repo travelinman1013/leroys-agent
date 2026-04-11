@@ -1,10 +1,11 @@
 # Hermes Agent — System Architecture
 
-> **Snapshot**: 2026-04-10, post Phase 5 dashboard deployment
-> **Branch**: `feature/hermes-dashboard` (5 commits ahead of `main`)
+> **Snapshot**: 2026-04-11, post Dashboard v2 (W0 / F1–F5) deployment
+> **Branch**: `enhance/hermes-dashboard-v2` (6 commits ahead of `main`, PR #4)
 > **Live gateway**: `hermes gateway run` under `sandbox-exec -f ~/.hermes/hermes.sb`
 > **Dashboard**: `http://127.0.0.1:8642/dashboard/` (loopback + bearer token)
-> **Plan of record**: [`~/.claude/plans/tranquil-dreaming-dragonfly.md`](../../../../.claude/plans/tranquil-dreaming-dragonfly.md)
+> **Plan of record**: [`~/.claude/plans/cobalt-steering-heron.md`](../../../../.claude/plans/cobalt-steering-heron.md) (v2 — current)
+> **Phase 5 plan**: [`~/.claude/plans/tranquil-dreaming-dragonfly.md`](../../../../.claude/plans/tranquil-dreaming-dragonfly.md)
 > **Phase 4 plan**: [`~/.claude/plans/moonlit-moseying-salamander.md`](../../../../.claude/plans/moonlit-moseying-salamander.md)
 > **Recon log**: [`.claude/rules/recon-findings.md`](.claude/rules/recon-findings.md)
 
@@ -56,7 +57,7 @@ flowchart TB
     Browser>"Chrome DevTools<br/>(headless browser)<br/>localhost:9222"]
     HF>"Hugging Face Hub<br/>model + dataset cache"]
 
-    Maxwell -->|@mentions, slash commands| Discord
+    Maxwell -->|"@mentions, slash commands"| Discord
     Discord <-->|WebSocket :443| Hermes
     Hermes -->|HTTP :1234<br/>chat completions| LMStudio
     Hermes -->|HTTPS :443<br/>token in env var| GitHub
@@ -675,11 +676,15 @@ operator (currently Maxwell or the Phase 4 commit description).
 
 ---
 
-## 9. Dashboard & Event Bus (Phase 5) — component view
+## 9. Dashboard & Event Bus (Phase 5 + Dashboard v2) — component view
 
 New in Phase 5: an in-process event bus that fans structured events to
 a local web dashboard. Every layer of the agent runtime emits typed
-events; a single SSE multiplexer pipes them to the browser.
+events; a single SSE multiplexer pipes them to the browser. Dashboard
+v2 (W0 / F1–F5, plan `cobalt-steering-heron`) adds the **control half**
+on top of the Phase 5 observability skeleton — every section gets
+mutation routes and operational depth without changing the trust
+boundary or adding a second process.
 
 ```mermaid
 flowchart LR
@@ -699,13 +704,14 @@ flowchart LR
 
     subgraph api["API server (same process)"]
         sse["GET /api/dashboard/events<br/>SSE multiplexer"]
-        rest["GET /api/dashboard/*<br/>state, sessions, cron,<br/>approvals, tools, skills,<br/>mcp, doctor, config"]
+        rest["REST /api/dashboard/*<br/>(observe + control)<br/>state · sessions · cron · approvals<br/>tools · skills · mcp · brain<br/>doctor · config · metrics · gateway"]
+        metrics["gateway/metrics.py<br/>MetricsReader<br/>(rotation-aware NDJSON walker<br/>+ 30s per-window cache)"]
         handshake["GET /api/dashboard/handshake<br/>(loopback-only bearer bootstrap)"]
         static["GET /dashboard/*<br/>api_server_static/"]
     end
 
     subgraph browser["Browser (unsandboxed)"]
-        ui["React 19 + TanStack Router<br/>Live Console, Sessions, Cron,<br/>Tools, Skills, MCP, Health"]
+        ui["React 19 + TanStack Router (10 routes)<br/>Live · Brain · Sessions · Approvals · Cron<br/>Tools · Skills · MCP · Health · Config"]
     end
 
     agent -.-> bus
@@ -716,6 +722,8 @@ flowchart LR
     session -.-> bus
     bus -.->|async writer task| tee
     bus -.->|per-subscriber queue| sse
+    tee -.->|walks .ndjson + .1/.2/.3| metrics
+    metrics --> rest
 
     dispatch -.->|start_tool_span<br/>&#40;no-op if disabled&#41;| otel
     otel -.->|OTLP gRPC :4317| Phoenix>"Arize Phoenix<br/>(optional)"]
@@ -726,21 +734,59 @@ flowchart LR
     ui -->|GET static| static
 ```
 
-**Event schema** (borrowed from OpenHands V1):
+**Event schema** (borrowed from OpenHands V1, extended for v2):
 
 ```json
 {
   "type": "tool.invoked | tool.completed | turn.started | turn.ended |
            llm.call | approval.requested | approval.resolved |
            compaction | cron.fired | session.started | session.ended |
-           gateway.started",
-  "ts": "2026-04-10T14:36:13.527901+00:00",
-  "session_id": "20260410_143613_abc12345",
+           session.forked | session.injected | session.deleted |
+           session.exported | session.reopened |
+           memory.added | memory.replaced | memory.removed |
+           skill.installed | skill.removed | skill.reloaded |
+           mcp.connected | mcp.disconnected | gateway.started",
+  "ts": "2026-04-11T15:23:01.527901+00:00",
+  "session_id": "20260411_152301_abc12345",
   "data": { "…": "per-type payload" }
 }
 ```
 
-**Key invariants**:
+### Dashboard v2 capability map (W0 / F1–F5)
+
+| Wave / Feature | Routes added | What it lets the operator do |
+|---|---|---|
+| **W0 — Foundation** | (no new public routes — adds `@require_dashboard_auth` decorator, `_json_ok`/`_json_err` helpers, `_tail_read_ndjson` + `_walk_ndjson_rotation` extractors, `apply_config_mutations` allowlist + dated backups, `approval_history` v7 schema, frontend `ToastProvider` / `ConfirmProvider` / `useApiMutation`, Sheet/Dialog/Textarea/Switch primitives) | Refactors 15 existing handlers to use the decorator. Wires `llm.call` instrumentation in the agent loop AND `auxiliary_client.call_llm` so F5 metrics actually has data. Adds the foundation everything else stands on. |
+| **F1 — Session Control Plane** | `GET /sessions/search` · `DELETE /sessions/{id}` · `GET /sessions/{id}/export?format=json\|md` · `POST /sessions/{id}/fork` · `POST /sessions/{id}/inject` · `POST /sessions/{id}/reopen` · `POST /sessions/bulk` | LangGraph-style time travel. Search by title + source + date, fork an ended session at any turn (preserving every column including reasoning + tool_calls JSON, validator finding #11), inject a user message into an ended session and auto-reopen, bulk delete or export with per-row error reporting. Backed by new `SessionDB.fork_session` + `render_session_markdown`. |
+| **F2 — Brain / Memory Editor** | `POST /brain/memory` · `PUT /brain/memory/{hash}` · `DELETE /brain/memory/{hash}` · `GET /brain/export?store=…` · `POST /brain/import` | In-UI Letta-style memory CRUD on top of `MemoryStore.add/replace/remove`. Threat scanner + file lock are inherited unchanged — the dashboard route is a thin wrapper. Hash-addressed entries (8-char `_hash_entry` from `memory_tool.py`). |
+| **F3 — Live Console v2 + Approval Command Center** | `GET /events/search` · `GET /events/export` · `GET /approvals/history` · `GET /approvals/stats?window=…` · `POST /approvals/bulk` | Type-wildcard (`tool.*`) + q + session + window event search across rotated NDJSON files. NDJSON export download. New `/approvals` route with pending queue + bulk-resolve toolbar (Once/Session/Always/Deny) + history table + per-pattern stats sidebar over the last 7 days. Backed by the W0 v7 `approval_history` table. |
+| **F4 — Interactive Ops** | `GET /jobs/parse-schedule` · `POST /jobs/dry-run` · `POST /tools/{name}/toggle` · `GET /tools/{name}/schema` · **`POST /tools/{name}/invoke`** · `POST /skills/{name}/reload` · `GET /skills/{name}/full` · `POST /mcp/{name}/toggle` · `GET /mcp/{name}/health` | **Security-critical surface.** The new `/tools/{name}/invoke` route is the most likely regression point for the Phase 4 approval gate. It (a) recursively scrubs `force` / `skip_approval` / `unsafe` / `bypass` at every nesting level, (b) pre-checks dangerous shell patterns and returns 202 needs_approval BEFORE dispatch, (c) funnels through `model_tools.handle_function_call` which still applies the R3 path jail, and (d) sets `HERMES_GATEWAY_SESSION` so `check_all_command_guards` hits the gateway approval branch. The cron dry-run helper (`cron/jobs.dry_run_spec`) is non-persistent — never lands in `~/.hermes/cron/jobs/`. **Test gate**: `tests/gateway/test_tool_invoke_security.py` (8 cases, 4 plan assertions). If any fail, F4 does not ship. |
+| **F5 — Telemetry + Safe Config Editor** | `GET /metrics/tokens?window=…` · `GET /metrics/latency?window=…&group_by=…` · `GET /metrics/compression?window=…` · `GET /metrics/errors?window=…` · `GET /metrics/context` · `PUT /config` · `GET /config/backups` · `POST /config/rollback` · `GET /gateway/info` · `GET /gateway/restart-command` | Token / latency / compression / error metrics over 1h–30d windows. Live context gauge from the latest `llm.call`. Allowlisted YAML config edits via the W0 `apply_config_mutations` helper, with dated backup snapshots in `~/.hermes/config_backups/` and a rollback route. The gateway restart route returns the `launchctl kickstart` command **as a string** for the user to copy-paste — the dashboard cannot shell out from inside the sandbox. |
+
+### v2 invariants (in addition to the Phase 5 invariants below)
+
+- **Tool invoke route is the only place dashboard can drive a real
+  side-effecting tool call.** Every other "control" route either edits
+  config (allowlisted) or talks to SQLite. The route enforces the
+  Phase 4 approval gate AND the path jail by routing through
+  `handle_function_call`, then returns 202 needs_approval if a
+  dangerous pattern matches.
+- **Config mutations are allowlisted** (`hermes_cli.config.CONFIG_MUTATION_ALLOWLIST`).
+  The list is small and explicit; `model.provider`, `model.base_url`,
+  `mcp_servers.{name}.command`, and any non-allowlist key return 403.
+  PyYAML drops comments — every write creates a dated backup AND a
+  one-time pristine snapshot so the user can always restore.
+- **Gateway restart from the dashboard returns a command string only.**
+  It does NOT shell out. The Seatbelt sandbox would reject the call
+  anyway; the design choice keeps the boundary obvious.
+- **Approval history is fire-and-forget.** A failed `record_approval`
+  write never blocks `resolve_gateway_approval`. The DB is only an
+  audit trail, not part of the resolution path.
+- **Schema bumped to v7.** Existing v6 databases auto-migrate via the
+  `_init_schema` branch — `CREATE TABLE IF NOT EXISTS approval_history`
+  + indexes. No data loss.
+
+**Original Phase 5 invariants still hold**:
 
 - `EventBus.publish()` is fail-silent and non-blocking. The agent
   loop MUST continue even if the dashboard is disconnected, the
@@ -791,12 +837,20 @@ open http://localhost:6006
 
 ---
 
-## 10. Phase 4 + Phase 5 Commit Lineage (appendix)
+## 10. Phase 4 + Phase 5 + Dashboard v2 Commit Lineage (appendix)
 
 For historical reference. The branch state as of this snapshot:
 
 ```
-# Phase 5 — dashboard (feature/hermes-dashboard, this snapshot)
+# Dashboard v2 — full control expansion (enhance/hermes-dashboard-v2, PR #4)
+* 5e52a9b7 Dashboard v2 W2: F5 telemetry + safe config editor
+* c5948fde Dashboard v2 W2: F4 interactive ops (security-critical)
+* be6a8a01 Dashboard v2 W1: F3 live console v2 + approval command center
+* 89157a00 Dashboard v2 W1: F2 brain memory editor
+* 76441218 Dashboard v2 W1: F1 session control plane
+* 40fcb07e Dashboard v2 W0: foundation (auth decorator, llm.call, config mutator)
+
+# Phase 5 — dashboard (merged to main)
 * db2a514d Phase 5 R2 fix: add network-inbound + (local tcp) to sandbox profile
 * c870648d Phase 5 R4: optional OpenLLMetry + Phoenix sidecar observability
 * 0de2f95d Phase 5 R3: dashboard frontend (TanStack Router + React 19 + shadcn/ui)
