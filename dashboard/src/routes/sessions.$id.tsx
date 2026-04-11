@@ -6,12 +6,17 @@
  * notebook layout. See DESIGN.md §6 row `/sessions/$id` and preview §06.
  */
 
-import { createFileRoute, Link } from "@tanstack/react-router";
+import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
+import { useState } from "react";
 import { api } from "@/lib/api";
 import { Button } from "@/components/ui/button";
-import { ArrowLeft } from "lucide-react";
+import { ArrowLeft, GitBranch } from "lucide-react";
 import { compactNumber, formatCost, formatUnix } from "@/lib/utils";
+import { useApiMutation } from "@/lib/mutations";
+import { useConfirm } from "@/lib/confirm";
+import { ForkDialog } from "@/components/ForkDialog";
+import { InjectComposer } from "@/components/InjectComposer";
 
 export const Route = createFileRoute("/sessions/$id")({
   component: SessionDetail,
@@ -19,7 +24,7 @@ export const Route = createFileRoute("/sessions/$id")({
 
 function SessionDetail() {
   const { id } = Route.useParams();
-  const { data, isLoading, error } = useQuery({
+  const { data, isLoading, error, refetch } = useQuery({
     queryKey: ["dashboard", "sessions", id],
     queryFn: () => api.sessionDetail(id),
   });
@@ -49,8 +54,10 @@ function SessionDetail() {
 
       {data && (
         <SessionBody
+          sessionId={id}
           session={data.session as Record<string, any>}
           messages={data.messages as Array<Record<string, any>>}
+          refetch={refetch}
         />
       )}
     </div>
@@ -58,13 +65,56 @@ function SessionDetail() {
 }
 
 function SessionBody({
+  sessionId,
   session,
   messages,
+  refetch,
 }: {
+  sessionId: string;
   session: Record<string, any>;
   messages: Array<Record<string, any>>;
+  refetch: () => void;
 }) {
-  const id = String(session.id ?? "");
+  const id = String(session.id ?? sessionId);
+  const navigate = useNavigate();
+  const confirm = useConfirm();
+  const isEnded = session.ended_at != null;
+
+  const [forkDialog, setForkDialog] = useState<{ open: boolean; turnIdx: number }>({
+    open: false,
+    turnIdx: 0,
+  });
+
+  const fork = useApiMutation({
+    mutationFn: ({ turnIdx, title }: { turnIdx: number; title: string }) =>
+      api.forkSession(id, {
+        up_to_turn: turnIdx,
+        title: title || undefined,
+      }),
+    successMessage: "Forked",
+    onSuccess: (data) => {
+      setForkDialog({ open: false, turnIdx: 0 });
+      navigate({ to: "/sessions/$id", params: { id: data.id } });
+    },
+  });
+
+  const inject = useApiMutation({
+    mutationFn: (content: string) => api.injectMessage(id, { content }),
+    successMessage: "Message injected — session reopened",
+    onSuccess: () => refetch(),
+  });
+
+  const reopen = useApiMutation({
+    mutationFn: () => api.reopenSession(id),
+    successMessage: "Session reopened",
+    onSuccess: () => refetch(),
+  });
+
+  const del = useApiMutation({
+    mutationFn: () => api.deleteSession(id),
+    successMessage: "Deleted",
+    onSuccess: () => navigate({ to: "/sessions" }),
+  });
   const title = session.title || session.preview || "untitled session";
   const startedAt = session.started_at;
   const startedDate = startedAt
@@ -106,6 +156,46 @@ function SessionBody({
         </div>
       </header>
 
+      {/* ── F1 actions ── */}
+      <div className="mb-9 flex flex-wrap items-center gap-2">
+        <Button asChild size="sm" variant="outline">
+          <a href={api.exportSessionUrl(id, "json")} target="_blank" rel="noreferrer">
+            EXPORT JSON
+          </a>
+        </Button>
+        <Button asChild size="sm" variant="outline">
+          <a href={api.exportSessionUrl(id, "md")} target="_blank" rel="noreferrer">
+            EXPORT MD
+          </a>
+        </Button>
+        {isEnded && (
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => reopen.mutate()}
+            disabled={reopen.isPending}
+          >
+            {reopen.isPending ? "REOPENING…" : "REOPEN"}
+          </Button>
+        )}
+        <Button
+          size="sm"
+          variant="destructive"
+          onClick={async () => {
+            const ok = await confirm({
+              title: `Delete ${id.slice(0, 8)}?`,
+              description: "Cannot be undone. Child sessions will be orphaned.",
+              destructive: true,
+              confirmLabel: "DELETE",
+            });
+            if (ok) del.mutate();
+          }}
+          disabled={del.isPending}
+        >
+          DELETE
+        </Button>
+      </div>
+
       {/* ── meters strip ── */}
       <div className="mb-10 grid grid-cols-2 gap-x-10 gap-y-3 border-b border-rule pb-6 md:grid-cols-4">
         <Metric
@@ -145,7 +235,13 @@ function SessionBody({
 
       <div className="divide-y divide-rule">
         {messages.map((m, idx) => (
-          <Turn key={idx} message={m} />
+          <Turn
+            key={idx}
+            index={idx}
+            message={m}
+            canFork={isEnded && m.role === "assistant"}
+            onFork={() => setForkDialog({ open: true, turnIdx: idx })}
+          />
         ))}
         {messages.length === 0 && (
           <p className="py-6 font-mono text-[11px] uppercase tracking-marker text-ink-faint">
@@ -153,6 +249,24 @@ function SessionBody({
           </p>
         )}
       </div>
+
+      {isEnded && (
+        <InjectComposer
+          isPending={inject.isPending}
+          onSubmit={(content) => inject.mutate(content)}
+        />
+      )}
+
+      <ForkDialog
+        open={forkDialog.open}
+        onOpenChange={(o) => setForkDialog((p) => ({ ...p, open: o }))}
+        upToTurn={forkDialog.turnIdx}
+        defaultTitle={session.title ? `${session.title} (fork)` : ""}
+        isPending={fork.isPending}
+        onConfirm={(t) =>
+          fork.mutate({ turnIdx: forkDialog.turnIdx, title: t })
+        }
+      />
     </article>
   );
 }
@@ -170,7 +284,17 @@ function Metric({ label, value }: { label: string; value: React.ReactNode }) {
   );
 }
 
-function Turn({ message }: { message: Record<string, any> }) {
+function Turn({
+  index,
+  message,
+  canFork,
+  onFork,
+}: {
+  index: number;
+  message: Record<string, any>;
+  canFork: boolean;
+  onFork: () => void;
+}) {
   const role = String(message.role || "unknown");
   const isUser = role === "user";
   const isTool = role === "tool" || message.tool_name;
@@ -190,7 +314,7 @@ function Turn({ message }: { message: Record<string, any> }) {
   const hasToolCalls = Boolean(message.tool_calls);
 
   return (
-    <div className="grid grid-cols-[100px_1fr] gap-6 py-6">
+    <div className="group grid grid-cols-[100px_1fr] gap-6 py-6">
       <div className="text-right font-mono text-[10px] uppercase leading-relaxed tracking-label text-ink-faint">
         {ts && <div className="tabular-nums">{ts}</div>}
         <div
@@ -200,8 +324,20 @@ function Turn({ message }: { message: Record<string, any> }) {
         >
           {speaker}
         </div>
+        <div className="tabular-nums text-ink-faint">#{index + 1}</div>
       </div>
       <div className="min-w-0 text-[15px] leading-relaxed text-ink-2">
+        {canFork && (
+          <button
+            type="button"
+            onClick={onFork}
+            className="float-right ml-4 inline-flex items-center gap-1 font-mono text-[10px] uppercase tracking-marker text-ink-muted opacity-0 transition-opacity duration-120 ease-operator hover:text-oxide group-hover:opacity-100"
+            title={`Fork from turn ${index + 1}`}
+          >
+            <GitBranch className="size-3" />
+            FORK FROM HERE
+          </button>
+        )}
         {message.tool_name && (
           <ToolCallout
             name={String(message.tool_name)}

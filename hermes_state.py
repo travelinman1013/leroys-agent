@@ -22,6 +22,8 @@ import sqlite3
 import threading
 import time
 from pathlib import Path
+import uuid
+
 from hermes_constants import get_hermes_home
 from typing import Any, Callable, Dict, List, Optional, TypeVar
 
@@ -31,7 +33,7 @@ T = TypeVar("T")
 
 DEFAULT_DB_PATH = get_hermes_home() / "state.db"
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -84,10 +86,27 @@ CREATE TABLE IF NOT EXISTS messages (
     codex_reasoning_items TEXT
 );
 
+CREATE TABLE IF NOT EXISTS approval_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT,
+    command TEXT NOT NULL,
+    pattern_key TEXT,
+    description TEXT,
+    choice TEXT NOT NULL,
+    resolver TEXT NOT NULL,
+    requested_at REAL,
+    resolved_at REAL NOT NULL,
+    wait_ms INTEGER,
+    reason TEXT
+);
+
 CREATE INDEX IF NOT EXISTS idx_sessions_source ON sessions(source);
 CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_started ON sessions(started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, timestamp);
+CREATE INDEX IF NOT EXISTS idx_approval_history_session ON approval_history(session_id);
+CREATE INDEX IF NOT EXISTS idx_approval_history_resolved_at ON approval_history(resolved_at DESC);
+CREATE INDEX IF NOT EXISTS idx_approval_history_pattern ON approval_history(pattern_key);
 """
 
 FTS_SQL = """
@@ -329,6 +348,44 @@ class SessionDB:
                     except sqlite3.OperationalError:
                         pass  # Column already exists
                 cursor.execute("UPDATE schema_version SET version = 6")
+            if current_version < 7:
+                # v7: add approval_history table for the dashboard v2 audit
+                # trail. Existing CREATE TABLE IF NOT EXISTS in SCHEMA_SQL
+                # already provisioned the table on a fresh DB; this branch
+                # only runs on upgrade so we just bump the version (the
+                # schemascript at the top has already created the table
+                # and indexes via executescript above).
+                try:
+                    cursor.execute(
+                        """CREATE TABLE IF NOT EXISTS approval_history (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            session_id TEXT,
+                            command TEXT NOT NULL,
+                            pattern_key TEXT,
+                            description TEXT,
+                            choice TEXT NOT NULL,
+                            resolver TEXT NOT NULL,
+                            requested_at REAL,
+                            resolved_at REAL NOT NULL,
+                            wait_ms INTEGER,
+                            reason TEXT
+                        )"""
+                    )
+                    cursor.execute(
+                        "CREATE INDEX IF NOT EXISTS idx_approval_history_session "
+                        "ON approval_history(session_id)"
+                    )
+                    cursor.execute(
+                        "CREATE INDEX IF NOT EXISTS idx_approval_history_resolved_at "
+                        "ON approval_history(resolved_at DESC)"
+                    )
+                    cursor.execute(
+                        "CREATE INDEX IF NOT EXISTS idx_approval_history_pattern "
+                        "ON approval_history(pattern_key)"
+                    )
+                except sqlite3.OperationalError:
+                    pass
+                cursor.execute("UPDATE schema_version SET version = 7")
 
         # Unique title index — always ensure it exists (safe to run after migrations
         # since the title column is guaranteed to exist at this point)
@@ -1161,19 +1218,42 @@ class SessionDB:
         source: str = None,
         limit: int = 20,
         offset: int = 0,
+        *,
+        q: Optional[str] = None,
+        started_after: Optional[float] = None,
+        started_before: Optional[float] = None,
     ) -> List[Dict[str, Any]]:
-        """List sessions, optionally filtered by source."""
+        """List sessions with optional filters.
+
+        Filters:
+            source: exact match on the ``source`` column.
+            q: case-insensitive substring match against the session title.
+               Body-content search is explicitly out of scope (FTS5 over
+               message bodies is a future Wave).
+            started_after / started_before: unix-time bounds.
+        """
+        clauses: list[str] = []
+        params: list = []
+        if source:
+            clauses.append("source = ?")
+            params.append(source)
+        if q:
+            clauses.append("LOWER(COALESCE(title, '')) LIKE ?")
+            params.append(f"%{q.lower()}%")
+        if started_after is not None:
+            clauses.append("started_at >= ?")
+            params.append(started_after)
+        if started_before is not None:
+            clauses.append("started_at <= ?")
+            params.append(started_before)
+        where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+        sql = (
+            f"SELECT * FROM sessions{where} "
+            "ORDER BY started_at DESC LIMIT ? OFFSET ?"
+        )
+        params.extend([limit, offset])
         with self._lock:
-            if source:
-                cursor = self._conn.execute(
-                    "SELECT * FROM sessions WHERE source = ? ORDER BY started_at DESC LIMIT ? OFFSET ?",
-                    (source, limit, offset),
-                )
-            else:
-                cursor = self._conn.execute(
-                    "SELECT * FROM sessions ORDER BY started_at DESC LIMIT ? OFFSET ?",
-                    (limit, offset),
-                )
+            cursor = self._conn.execute(sql, params)
             return [dict(row) for row in cursor.fetchall()]
 
     # =========================================================================
@@ -1201,6 +1281,289 @@ class SessionDB:
             else:
                 cursor = self._conn.execute("SELECT COUNT(*) FROM messages")
             return cursor.fetchone()[0]
+
+    # =========================================================================
+    # Session forking + injection (Dashboard v2 F1)
+    # =========================================================================
+
+    def fork_session(
+        self,
+        src_id: str,
+        *,
+        up_to_turn_idx: Optional[int] = None,
+        title: Optional[str] = None,
+        source: str = "dashboard",
+    ) -> Optional[str]:
+        """Create a new session that branches off ``src_id``.
+
+        Copies the source session's metadata + the first ``up_to_turn_idx + 1``
+        messages into a new session linked via ``parent_session_id``. ALL
+        message columns are preserved including reasoning, reasoning_details,
+        codex_reasoning_items, tool_calls JSON and tool_call_id (validator
+        finding #11 — fork must not lose tool-call linkage).
+
+        Args:
+            src_id: source session id.
+            up_to_turn_idx: 0-based index of the LAST message to include
+                (inclusive). None = copy all messages.
+            title: optional title override. If None, "<src title> (fork)".
+            source: source label for the new session. Defaults to
+                "dashboard" so dashboard-initiated forks are filterable.
+
+        Returns:
+            The new session id, or None if ``src_id`` does not exist.
+        """
+        src = self.get_session(src_id)
+        if not src:
+            return None
+
+        new_id = f"{src_id}_fork_{uuid.uuid4().hex[:8]}"
+        new_title = title or (
+            f"{src['title']} (fork)" if src.get("title") else f"fork of {src_id}"
+        )
+        # Loosen title uniqueness collision: append the suffix until unique.
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT 1 FROM sessions WHERE title = ? LIMIT 1", (new_title,)
+            ).fetchone()
+        if row:
+            new_title = f"{new_title} {uuid.uuid4().hex[:4]}"
+
+        messages = self.get_messages(src_id)
+        if up_to_turn_idx is not None:
+            messages = messages[: up_to_turn_idx + 1]
+
+        def _do(conn):
+            # Copy session row directly to preserve every column.
+            conn.execute(
+                """INSERT INTO sessions (
+                    id, source, user_id, model, model_config, system_prompt,
+                    parent_session_id, started_at, title,
+                    billing_provider, billing_base_url, billing_mode
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    new_id,
+                    source,
+                    src.get("user_id"),
+                    src.get("model"),
+                    json.dumps(src.get("model_config")) if isinstance(
+                        src.get("model_config"), (dict, list)
+                    ) else src.get("model_config"),
+                    src.get("system_prompt"),
+                    src_id,
+                    time.time(),
+                    new_title,
+                    src.get("billing_provider"),
+                    src.get("billing_base_url"),
+                    src.get("billing_mode"),
+                ),
+            )
+            # Copy messages preserving every reasoning + tool field
+            mc = 0
+            tcc = 0
+            for m in messages:
+                tool_calls_payload = m.get("tool_calls")
+                if tool_calls_payload is not None and not isinstance(
+                    tool_calls_payload, str
+                ):
+                    tool_calls_payload = json.dumps(tool_calls_payload)
+                conn.execute(
+                    """INSERT INTO messages (
+                        session_id, role, content, tool_call_id, tool_calls,
+                        tool_name, timestamp, token_count, finish_reason,
+                        reasoning, reasoning_details, codex_reasoning_items
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        new_id,
+                        m.get("role"),
+                        m.get("content"),
+                        m.get("tool_call_id"),
+                        tool_calls_payload,
+                        m.get("tool_name"),
+                        m.get("timestamp", time.time()),
+                        m.get("token_count"),
+                        m.get("finish_reason"),
+                        m.get("reasoning"),
+                        m.get("reasoning_details") if isinstance(
+                            m.get("reasoning_details"), str
+                        ) else (
+                            json.dumps(m.get("reasoning_details"))
+                            if m.get("reasoning_details") else None
+                        ),
+                        m.get("codex_reasoning_items") if isinstance(
+                            m.get("codex_reasoning_items"), str
+                        ) else (
+                            json.dumps(m.get("codex_reasoning_items"))
+                            if m.get("codex_reasoning_items") else None
+                        ),
+                    ),
+                )
+                mc += 1
+                if m.get("tool_calls"):
+                    tcc += 1
+            conn.execute(
+                "UPDATE sessions SET message_count = ?, tool_call_count = ? "
+                "WHERE id = ?",
+                (mc, tcc, new_id),
+            )
+            return new_id
+
+        return self._execute_write(_do)
+
+    def render_session_markdown(self, session_id: str) -> Optional[str]:
+        """Render a session as a Markdown transcript for export.
+
+        Used by F1's GET /api/dashboard/sessions/{id}/export?format=md.
+        """
+        session = self.get_session(session_id)
+        if not session:
+            return None
+        msgs = self.get_messages(session_id)
+        lines: list[str] = []
+        title = session.get("title") or f"Session {session_id}"
+        lines.append(f"# {title}\n")
+        lines.append(f"- **Session ID:** `{session_id}`")
+        lines.append(f"- **Source:** {session.get('source', 'unknown')}")
+        if session.get("model"):
+            lines.append(f"- **Model:** {session['model']}")
+        lines.append("")
+        for i, m in enumerate(msgs):
+            role = m.get("role", "unknown")
+            content = m.get("content") or ""
+            lines.append(f"## {i + 1}. {role}\n")
+            if m.get("reasoning"):
+                lines.append("> **Reasoning:**")
+                for ln in str(m["reasoning"]).splitlines():
+                    lines.append(f"> {ln}")
+                lines.append("")
+            if content:
+                lines.append(content)
+                lines.append("")
+            if m.get("tool_calls"):
+                lines.append("```json")
+                lines.append(
+                    json.dumps(m["tool_calls"], indent=2, default=str)
+                )
+                lines.append("```")
+                lines.append("")
+        return "\n".join(lines)
+
+    # =========================================================================
+    # Approval history (Dashboard v2 W0 / F3)
+    # =========================================================================
+
+    def record_approval(
+        self,
+        *,
+        session_id: Optional[str],
+        command: str,
+        pattern_key: Optional[str],
+        description: Optional[str],
+        choice: str,
+        resolver: str,
+        requested_at: Optional[float] = None,
+        resolved_at: Optional[float] = None,
+        wait_ms: Optional[int] = None,
+        reason: Optional[str] = None,
+    ) -> Optional[int]:
+        """Insert a row into ``approval_history`` and return the row id.
+
+        Fire-and-forget: callers wrap this in try/except so a DB write
+        failure can never break the resolution path.
+        """
+        ts_resolved = resolved_at if resolved_at is not None else time.time()
+
+        def _do(conn):
+            cursor = conn.execute(
+                """INSERT INTO approval_history (
+                       session_id, command, pattern_key, description,
+                       choice, resolver, requested_at, resolved_at, wait_ms, reason
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    session_id, command, pattern_key, description,
+                    choice, resolver, requested_at, ts_resolved, wait_ms, reason,
+                ),
+            )
+            return cursor.lastrowid
+
+        return self._execute_write(_do)
+
+    def list_approval_history(
+        self,
+        *,
+        limit: int = 100,
+        offset: int = 0,
+        session_id: Optional[str] = None,
+        pattern_key: Optional[str] = None,
+        choice: Optional[str] = None,
+        since: Optional[float] = None,
+    ) -> List[Dict[str, Any]]:
+        """Paginated history query for the F3 approvals route."""
+        clauses = []
+        params: list = []
+        if session_id:
+            clauses.append("session_id = ?")
+            params.append(session_id)
+        if pattern_key:
+            clauses.append("pattern_key = ?")
+            params.append(pattern_key)
+        if choice:
+            clauses.append("choice = ?")
+            params.append(choice)
+        if since is not None:
+            clauses.append("resolved_at >= ?")
+            params.append(since)
+        where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+        sql = (
+            "SELECT id, session_id, command, pattern_key, description, "
+            "choice, resolver, requested_at, resolved_at, wait_ms, reason "
+            f"FROM approval_history{where} "
+            "ORDER BY resolved_at DESC LIMIT ? OFFSET ?"
+        )
+        params.extend([limit, offset])
+        with self._lock:
+            cursor = self._conn.execute(sql, params)
+            return [dict(row) for row in cursor.fetchall()]
+
+    def approval_history_stats(
+        self, *, since: Optional[float] = None
+    ) -> Dict[str, Dict[str, Any]]:
+        """Aggregate approval history into per-pattern stats."""
+        params: list = []
+        where = ""
+        if since is not None:
+            where = " WHERE resolved_at >= ?"
+            params.append(since)
+        sql = (
+            "SELECT pattern_key, choice, COUNT(*) AS n, "
+            "AVG(wait_ms) AS avg_wait_ms "
+            f"FROM approval_history{where} "
+            "GROUP BY pattern_key, choice"
+        )
+        with self._lock:
+            cursor = self._conn.execute(sql, params)
+            rows = list(cursor.fetchall())
+
+        out: Dict[str, Dict[str, Any]] = {}
+        for row in rows:
+            key = row["pattern_key"] or "unknown"
+            entry = out.setdefault(key, {
+                "count": 0, "denied": 0, "approved": 0, "wait_ms_sum": 0.0,
+            })
+            entry["count"] += int(row["n"] or 0)
+            if row["choice"] == "deny":
+                entry["denied"] += int(row["n"] or 0)
+            else:
+                entry["approved"] += int(row["n"] or 0)
+            if row["avg_wait_ms"] is not None:
+                entry["wait_ms_sum"] += float(row["avg_wait_ms"]) * int(row["n"] or 0)
+
+        for key, entry in out.items():
+            cnt = entry["count"] or 1
+            entry["deny_rate"] = entry["denied"] / cnt
+            entry["avg_wait_ms"] = entry["wait_ms_sum"] / cnt
+            entry.pop("wait_ms_sum", None)
+        return out
 
     # =========================================================================
     # Export and cleanup

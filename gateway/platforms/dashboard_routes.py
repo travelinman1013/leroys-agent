@@ -50,6 +50,7 @@ keepalive pattern from ``_handle_run_events``.
 from __future__ import annotations
 
 import asyncio
+import functools
 import hmac
 import ipaddress
 import json
@@ -115,6 +116,147 @@ def _redact_secrets(obj: Any) -> Any:
 # tool args, system prompts before they leave the gateway process.
 # Companion to ``_redact_secrets`` (which handles dict-key heuristics).
 from tools.redaction import redact_text  # noqa: E402
+
+
+# ---------------------------------------------------------------------------
+# Dashboard v2 Wave 0 — shared handler scaffolding
+# ---------------------------------------------------------------------------
+
+
+def require_dashboard_auth(fn):
+    """Decorator applying ``self._check_dashboard_auth`` before the handler.
+
+    Saves ~3 lines per handler. Apply to every dashboard route except
+    ``handle_handshake`` (which has its own loopback-only check) and
+    routes that need to differentiate auth modes.
+    """
+    @functools.wraps(fn)
+    async def wrapper(self, request: "web.Request", *args, **kwargs):
+        err = self._check_dashboard_auth(request)
+        if err is not None:
+            return err
+        return await fn(self, request, *args, **kwargs)
+    return wrapper
+
+
+def _json_ok(data: Any, status: int = 200) -> "web.Response":
+    """Standard JSON success response."""
+    return web.json_response(data, status=status)
+
+
+def _json_err(exc: BaseException, status: int = 500) -> "web.Response":
+    """Standard JSON error response. Logs the traceback."""
+    logger.exception("dashboard handler error: %s", exc)
+    return web.json_response(
+        {"error": str(exc) or exc.__class__.__name__}, status=status,
+    )
+
+
+def _tail_read_ndjson(
+    filter_fn=None,
+    limit: int = 500,
+    tail_bytes: int = 1024 * 1024,
+    path: Optional[Path] = None,
+) -> List[Dict[str, Any]]:
+    """Read the tail of ``events.ndjson`` and return parsed events.
+
+    Reused by F3 event search/export plus the legacy session-events
+    handler. Tails ~1 MB by default; the caller can bump ``tail_bytes``
+    for wider scans (the F3 routes set this from a query param).
+
+    Args:
+        filter_fn: Optional callable taking the parsed event dict and
+            returning True to keep, False to drop.
+        limit: Maximum number of events to return (most-recent wins).
+        tail_bytes: Window size at the END of the file to read.
+        path: Override the events.ndjson path (test hook).
+    """
+    from gateway.event_bus import _default_events_path
+    target = path or _default_events_path()
+    out: List[Dict[str, Any]] = []
+    if not target.exists():
+        return out
+    try:
+        with open(target, "rb") as f:
+            try:
+                f.seek(0, os.SEEK_END)
+                size = f.tell()
+                chunk = min(size, tail_bytes)
+                f.seek(size - chunk)
+                tail = f.read().decode("utf-8", errors="replace")
+            except OSError:
+                tail = f.read().decode("utf-8", errors="replace")
+    except OSError:
+        return out
+
+    for line in tail.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            event = json.loads(line)
+        except Exception:
+            continue
+        if filter_fn is None or filter_fn(event):
+            out.append(event)
+    if limit > 0:
+        return out[-limit:]
+    return out
+
+
+def _parse_ts(value: Any) -> Optional[float]:
+    """Parse a stored event timestamp into a unix-time float.
+
+    The event bus writes ``ts`` as ISO-8601 with microsecond precision
+    (``datetime.now(tz).isoformat()``). Older entries may be a float.
+    """
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            from datetime import datetime
+            # Tolerate trailing Z or +00:00
+            v = value.replace("Z", "+00:00")
+            return datetime.fromisoformat(v).timestamp()
+        except Exception:
+            return None
+    return None
+
+
+def _walk_ndjson_rotation(
+    base_path: Optional[Path] = None,
+    backup_count: int = 3,
+):
+    """Yield NDJSON event dicts in chronological order across rotated files.
+
+    Walks ``events.ndjson.3`` → ``events.ndjson.2`` → ``events.ndjson.1`` →
+    ``events.ndjson`` so a 24h query that spans rotation boundaries reads
+    every event in timestamp order. Used by F5 metrics aggregation.
+    """
+    from gateway.event_bus import _default_events_path
+    base = base_path or _default_events_path()
+    candidates: List[Path] = []
+    for i in range(backup_count, 0, -1):
+        p = base.with_suffix(base.suffix + f".{i}")
+        if p.exists():
+            candidates.append(p)
+    if base.exists():
+        candidates.append(base)
+    for p in candidates:
+        try:
+            with open(p, "r", encoding="utf-8", errors="replace") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        yield json.loads(line)
+                    except Exception:
+                        continue
+        except OSError:
+            continue
 
 
 class DashboardRoutes:
@@ -210,13 +352,10 @@ class DashboardRoutes:
     # GET /api/dashboard/state
     # ------------------------------------------------------------------
 
+    @require_dashboard_auth
     async def handle_state(self, request: "web.Request") -> "web.Response":
         """Current snapshot: active sessions, pending approvals, cron,
         gateway uptime, model name, sandbox status."""
-        auth_err = self._check_dashboard_auth(request)
-        if auth_err:
-            return auth_err
-
         state: Dict[str, Any] = {}
         state["gateway"] = {
             "started_at": self._started_at,
@@ -283,12 +422,9 @@ class DashboardRoutes:
     # GET /api/dashboard/sessions
     # ------------------------------------------------------------------
 
+    @require_dashboard_auth
     async def handle_sessions(self, request: "web.Request") -> "web.Response":
         """Paginated list of sessions with token counts and previews."""
-        auth_err = self._check_dashboard_auth(request)
-        if auth_err:
-            return auth_err
-
         try:
             limit = max(1, min(200, int(request.query.get("limit", "50"))))
             offset = max(0, int(request.query.get("offset", "0")))
@@ -327,11 +463,8 @@ class DashboardRoutes:
     # GET /api/dashboard/sessions/{id}
     # ------------------------------------------------------------------
 
+    @require_dashboard_auth
     async def handle_session_detail(self, request: "web.Request") -> "web.Response":
-        auth_err = self._check_dashboard_auth(request)
-        if auth_err:
-            return auth_err
-
         session_id = request.match_info.get("id", "")
         if not session_id:
             return web.json_response({"error": "session id required"}, status=400)
@@ -375,46 +508,23 @@ class DashboardRoutes:
     # GET /api/dashboard/sessions/{id}/events
     # ------------------------------------------------------------------
 
+    @require_dashboard_auth
     async def handle_session_events(self, request: "web.Request") -> "web.Response":
         """Filter events.ndjson by session_id."""
-        auth_err = self._check_dashboard_auth(request)
-        if auth_err:
-            return auth_err
-
         session_id = request.match_info.get("id", "")
         try:
             limit = max(1, min(1000, int(request.query.get("limit", "200"))))
         except ValueError:
             limit = 200
 
-        events: List[Dict[str, Any]] = []
         try:
-            from gateway.event_bus import _default_events_path
-            path = _default_events_path()
-            if path.exists():
-                # Tail-read the last N lines cheaply
-                with open(path, "rb") as f:
-                    try:
-                        f.seek(0, os.SEEK_END)
-                        size = f.tell()
-                        chunk = min(size, 1024 * 1024)  # 1 MB window
-                        f.seek(size - chunk)
-                        tail = f.read().decode("utf-8", errors="replace")
-                    except OSError:
-                        tail = f.read().decode("utf-8", errors="replace")
-                for line in tail.splitlines():
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        event = json.loads(line)
-                    except Exception:
-                        continue
-                    if event.get("session_id") == session_id:
-                        events.append(event)
-                events = events[-limit:]
+            events = _tail_read_ndjson(
+                filter_fn=lambda e: e.get("session_id") == session_id,
+                limit=limit,
+            )
         except Exception as exc:
             logger.debug("dashboard: session events read failed: %s", exc)
+            events = []
 
         return web.json_response({"events": events})
 
@@ -422,11 +532,8 @@ class DashboardRoutes:
     # GET /api/dashboard/approvals
     # ------------------------------------------------------------------
 
+    @require_dashboard_auth
     async def handle_list_approvals(self, request: "web.Request") -> "web.Response":
-        auth_err = self._check_dashboard_auth(request)
-        if auth_err:
-            return auth_err
-
         try:
             from tools.approval import list_pending_approvals_for_dashboard
             pending = list_pending_approvals_for_dashboard()
@@ -440,6 +547,7 @@ class DashboardRoutes:
     # POST /api/dashboard/approvals/{session_key}
     # ------------------------------------------------------------------
 
+    @require_dashboard_auth
     async def handle_resolve_approval(self, request: "web.Request") -> "web.Response":
         """Resolve a pending approval.
 
@@ -452,10 +560,6 @@ class DashboardRoutes:
             edit     -> rejected (clients should POST a new approval)
             response -> rejected (dashboard doesn't support side-channel yet)
         """
-        auth_err = self._check_dashboard_auth(request)
-        if auth_err:
-            return auth_err
-
         session_key = request.match_info.get("session_key", "")
         if not session_key:
             return web.json_response({"error": "session_key required"}, status=400)
@@ -491,11 +595,8 @@ class DashboardRoutes:
     # GET /api/dashboard/tools
     # ------------------------------------------------------------------
 
+    @require_dashboard_auth
     async def handle_tools(self, request: "web.Request") -> "web.Response":
-        auth_err = self._check_dashboard_auth(request)
-        if auth_err:
-            return auth_err
-
         try:
             from model_tools import registry as _tool_registry
             tool_names = _tool_registry.get_all_tool_names()
@@ -511,11 +612,8 @@ class DashboardRoutes:
     # GET /api/dashboard/skills
     # ------------------------------------------------------------------
 
+    @require_dashboard_auth
     async def handle_skills(self, request: "web.Request") -> "web.Response":
-        auth_err = self._check_dashboard_auth(request)
-        if auth_err:
-            return auth_err
-
         skills: List[Dict[str, Any]] = []
         try:
             from hermes_cli.config import get_hermes_home
@@ -543,11 +641,8 @@ class DashboardRoutes:
     # GET /api/dashboard/mcp
     # ------------------------------------------------------------------
 
+    @require_dashboard_auth
     async def handle_mcp(self, request: "web.Request") -> "web.Response":
-        auth_err = self._check_dashboard_auth(request)
-        if auth_err:
-            return auth_err
-
         mcp_info: List[Dict[str, Any]] = []
         try:
             from hermes_cli.config import load_config
@@ -581,11 +676,8 @@ class DashboardRoutes:
     # GET /api/dashboard/doctor
     # ------------------------------------------------------------------
 
+    @require_dashboard_auth
     async def handle_doctor(self, request: "web.Request") -> "web.Response":
-        auth_err = self._check_dashboard_auth(request)
-        if auth_err:
-            return auth_err
-
         # Cheap "doctor" — report basic health without re-running the full
         # CLI doctor (which prints to stdout and has side effects).
         checks: List[Dict[str, Any]] = []
@@ -639,11 +731,8 @@ class DashboardRoutes:
     # GET /api/dashboard/config
     # ------------------------------------------------------------------
 
+    @require_dashboard_auth
     async def handle_config(self, request: "web.Request") -> "web.Response":
-        auth_err = self._check_dashboard_auth(request)
-        if auth_err:
-            return auth_err
-
         try:
             from hermes_cli.config import load_config
             cfg = load_config() or {}
@@ -656,11 +745,8 @@ class DashboardRoutes:
     # GET /api/dashboard/recent
     # ------------------------------------------------------------------
 
+    @require_dashboard_auth
     async def handle_recent(self, request: "web.Request") -> "web.Response":
-        auth_err = self._check_dashboard_auth(request)
-        if auth_err:
-            return auth_err
-
         try:
             limit = max(1, min(500, int(request.query.get("limit", "100"))))
         except ValueError:
@@ -679,6 +765,1012 @@ class DashboardRoutes:
     # GET /api/dashboard/brain/graph — typed knowledge graph snapshot
     # ------------------------------------------------------------------
 
+    # ==================================================================
+    # F1 — Session Control Plane (Dashboard v2)
+    # ==================================================================
+
+    @require_dashboard_auth
+    async def handle_session_search(self, request: "web.Request") -> "web.Response":
+        """Search sessions with optional title query, source, and date range.
+
+        Query params:
+            q: substring against title
+            source: exact match against ``source`` column
+            from / to: unix timestamps
+            limit / offset: pagination
+        """
+        try:
+            limit = max(1, min(200, int(request.query.get("limit", "50"))))
+            offset = max(0, int(request.query.get("offset", "0")))
+        except ValueError:
+            return _json_err(ValueError("limit/offset must be integers"), 400)
+        q = request.query.get("q") or None
+        source = request.query.get("source") or None
+        try:
+            t_from = float(request.query["from"]) if "from" in request.query else None
+            t_to = float(request.query["to"]) if "to" in request.query else None
+        except ValueError:
+            return _json_err(ValueError("from/to must be numeric unix ts"), 400)
+        try:
+            from hermes_state import SessionDB
+            db = SessionDB()
+            rows = db.search_sessions(
+                source=source,
+                limit=limit,
+                offset=offset,
+                q=q,
+                started_after=t_from,
+                started_before=t_to,
+            )
+            for r in rows:
+                if r.get("title"):
+                    r["title"] = redact_text(r["title"])
+            return _json_ok({"sessions": rows, "limit": limit, "offset": offset})
+        except Exception as exc:
+            return _json_err(exc)
+
+    @require_dashboard_auth
+    async def handle_delete_session(self, request: "web.Request") -> "web.Response":
+        session_id = request.match_info.get("id", "")
+        if not session_id:
+            return _json_err(ValueError("session id required"), 400)
+        try:
+            from hermes_state import SessionDB
+            db = SessionDB()
+            ok = db.delete_session(session_id)
+            if not ok:
+                return _json_err(LookupError("session not found"), 404)
+            try:
+                from gateway.event_bus import publish as _publish_event
+                _publish_event(
+                    "session.deleted",
+                    session_id=session_id,
+                    data={"resolver": "dashboard"},
+                )
+            except Exception:
+                pass
+            return _json_ok({"deleted": True, "id": session_id})
+        except Exception as exc:
+            return _json_err(exc)
+
+    @require_dashboard_auth
+    async def handle_export_session(self, request: "web.Request") -> "web.Response":
+        session_id = request.match_info.get("id", "")
+        fmt = (request.query.get("format") or "json").lower()
+        if not session_id:
+            return _json_err(ValueError("session id required"), 400)
+        try:
+            from hermes_state import SessionDB
+            db = SessionDB()
+            if fmt == "md" or fmt == "markdown":
+                md = db.render_session_markdown(session_id)
+                if md is None:
+                    return _json_err(LookupError("session not found"), 404)
+                return web.Response(
+                    text=md,
+                    content_type="text/markdown",
+                    headers={
+                        "Content-Disposition":
+                            f'attachment; filename="{session_id}.md"',
+                    },
+                )
+            data = db.export_session(session_id)
+            if data is None:
+                return _json_err(LookupError("session not found"), 404)
+            try:
+                from gateway.event_bus import publish as _publish_event
+                _publish_event(
+                    "session.exported",
+                    session_id=session_id,
+                    data={"format": fmt},
+                )
+            except Exception:
+                pass
+            return web.json_response(
+                data,
+                headers={
+                    "Content-Disposition":
+                        f'attachment; filename="{session_id}.json"',
+                },
+            )
+        except Exception as exc:
+            return _json_err(exc)
+
+    @require_dashboard_auth
+    async def handle_fork_session(self, request: "web.Request") -> "web.Response":
+        session_id = request.match_info.get("id", "")
+        if not session_id:
+            return _json_err(ValueError("session id required"), 400)
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        up_to_turn = body.get("up_to_turn")
+        title = body.get("title")
+        try:
+            up_to_turn_idx = int(up_to_turn) if up_to_turn is not None else None
+        except (TypeError, ValueError):
+            return _json_err(ValueError("up_to_turn must be an integer"), 400)
+        try:
+            from hermes_state import SessionDB
+            db = SessionDB()
+            src = db.get_session(session_id)
+            if not src:
+                return _json_err(LookupError("source session not found"), 404)
+            if src.get("ended_at") is None:
+                return _json_err(
+                    ValueError("cannot fork an active session — wait for it to end"),
+                    409,
+                )
+            new_id = db.fork_session(
+                session_id, up_to_turn_idx=up_to_turn_idx, title=title,
+            )
+            try:
+                from gateway.event_bus import publish as _publish_event
+                _publish_event(
+                    "session.forked",
+                    session_id=new_id,
+                    data={"parent_id": session_id, "up_to_turn": up_to_turn_idx},
+                )
+            except Exception:
+                pass
+            return _json_ok({"id": new_id, "parent_id": session_id})
+        except Exception as exc:
+            return _json_err(exc)
+
+    @require_dashboard_auth
+    async def handle_inject_message(self, request: "web.Request") -> "web.Response":
+        session_id = request.match_info.get("id", "")
+        if not session_id:
+            return _json_err(ValueError("session id required"), 400)
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        content = body.get("content")
+        role = body.get("role", "user")
+        if not content or not isinstance(content, str):
+            return _json_err(ValueError("content (str) required"), 400)
+        if role not in ("user", "system"):
+            return _json_err(ValueError("role must be 'user' or 'system'"), 400)
+        try:
+            from hermes_state import SessionDB
+            db = SessionDB()
+            session = db.get_session(session_id)
+            if not session:
+                return _json_err(LookupError("session not found"), 404)
+            # Reopen if ended, then append
+            if session.get("ended_at") is not None:
+                db.reopen_session(session_id)
+            msg_id = db.append_message(
+                session_id=session_id, role=role, content=content,
+            )
+            try:
+                from gateway.event_bus import publish as _publish_event
+                _publish_event(
+                    "session.injected",
+                    session_id=session_id,
+                    data={"message_id": msg_id, "role": role},
+                )
+            except Exception:
+                pass
+            return _json_ok({"id": session_id, "message_id": msg_id})
+        except Exception as exc:
+            return _json_err(exc)
+
+    @require_dashboard_auth
+    async def handle_reopen_session(self, request: "web.Request") -> "web.Response":
+        session_id = request.match_info.get("id", "")
+        if not session_id:
+            return _json_err(ValueError("session id required"), 400)
+        try:
+            from hermes_state import SessionDB
+            db = SessionDB()
+            session = db.get_session(session_id)
+            if not session:
+                return _json_err(LookupError("session not found"), 404)
+            db.reopen_session(session_id)
+            try:
+                from gateway.event_bus import publish as _publish_event
+                _publish_event(
+                    "session.reopened",
+                    session_id=session_id,
+                    data={"resolver": "dashboard"},
+                )
+            except Exception:
+                pass
+            return _json_ok({"id": session_id, "reopened": True})
+        except Exception as exc:
+            return _json_err(exc)
+
+    @require_dashboard_auth
+    async def handle_session_bulk(self, request: "web.Request") -> "web.Response":
+        """Bulk action over a list of session IDs.
+
+        Body: ``{ids: [...], action: "delete" | "export"}``.
+        Returns ``{results: [{id, ok, error?}, ...]}``.
+        """
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        ids = body.get("ids") or []
+        action = (body.get("action") or "").lower()
+        if not isinstance(ids, list) or not ids:
+            return _json_err(ValueError("ids (non-empty list) required"), 400)
+        if action not in ("delete", "export"):
+            return _json_err(ValueError("action must be 'delete' or 'export'"), 400)
+
+        from hermes_state import SessionDB
+        db = SessionDB()
+        results: list[dict] = []
+        for raw_id in ids:
+            sid = str(raw_id)
+            row = {"id": sid, "ok": False}
+            try:
+                if action == "delete":
+                    deleted = db.delete_session(sid)
+                    row["ok"] = deleted
+                    if not deleted:
+                        row["error"] = "not found"
+                else:  # export
+                    data = db.export_session(sid)
+                    if data is None:
+                        row["error"] = "not found"
+                    else:
+                        row["ok"] = True
+                        row["message_count"] = len(data.get("messages", []))
+            except Exception as exc:
+                row["error"] = str(exc)
+            results.append(row)
+        return _json_ok({"results": results, "action": action})
+
+    # ==================================================================
+    # F2 — Brain/Memory Editor (Dashboard v2)
+    # ==================================================================
+
+    # ==================================================================
+    # F5 — Telemetry + Safe Config Editor (Dashboard v2)
+    # ==================================================================
+
+    @require_dashboard_auth
+    async def handle_metrics_tokens(self, request: "web.Request") -> "web.Response":
+        window = request.query.get("window", "24h")
+        try:
+            from gateway.metrics import get_metrics_reader
+            return _json_ok(get_metrics_reader().tokens(window))
+        except Exception as exc:
+            return _json_err(exc)
+
+    @require_dashboard_auth
+    async def handle_metrics_latency(self, request: "web.Request") -> "web.Response":
+        window = request.query.get("window", "24h")
+        group_by = request.query.get("group_by", "tool")
+        try:
+            from gateway.metrics import get_metrics_reader
+            return _json_ok(get_metrics_reader().latency(window, group_by))
+        except Exception as exc:
+            return _json_err(exc)
+
+    @require_dashboard_auth
+    async def handle_metrics_compression(self, request: "web.Request") -> "web.Response":
+        window = request.query.get("window", "24h")
+        try:
+            from gateway.metrics import get_metrics_reader
+            return _json_ok(get_metrics_reader().compression(window))
+        except Exception as exc:
+            return _json_err(exc)
+
+    @require_dashboard_auth
+    async def handle_metrics_errors(self, request: "web.Request") -> "web.Response":
+        window = request.query.get("window", "24h")
+        try:
+            from gateway.metrics import get_metrics_reader
+            return _json_ok(get_metrics_reader().errors(window))
+        except Exception as exc:
+            return _json_err(exc)
+
+    @require_dashboard_auth
+    async def handle_metrics_context(self, request: "web.Request") -> "web.Response":
+        try:
+            from gateway.metrics import get_metrics_reader
+            return _json_ok(get_metrics_reader().context())
+        except Exception as exc:
+            return _json_err(exc)
+
+    @require_dashboard_auth
+    async def handle_config_put(self, request: "web.Request") -> "web.Response":
+        """Apply allowlisted config mutations.
+
+        Body: ``{"mutations": {"approvals.mode": "manual", ...}}``.
+        """
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        mutations = body.get("mutations") or {}
+        if not isinstance(mutations, dict) or not mutations:
+            return _json_err(ValueError("mutations (dict) required"), 400)
+        try:
+            from hermes_cli.config import apply_config_mutations
+            result = apply_config_mutations(mutations)
+            return _json_ok(result)
+        except PermissionError as exc:
+            return _json_err(exc, 403)
+        except Exception as exc:
+            return _json_err(exc)
+
+    @require_dashboard_auth
+    async def handle_config_backups(self, request: "web.Request") -> "web.Response":
+        try:
+            from hermes_cli.config import list_config_backups
+            return _json_ok({"backups": list_config_backups()})
+        except Exception as exc:
+            return _json_err(exc)
+
+    @require_dashboard_auth
+    async def handle_config_rollback(self, request: "web.Request") -> "web.Response":
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        filename = body.get("to") or body.get("filename")
+        if not filename:
+            return _json_err(ValueError("'to' (filename) required"), 400)
+        try:
+            from hermes_cli.config import restore_config_backup
+            return _json_ok(restore_config_backup(filename))
+        except FileNotFoundError as exc:
+            return _json_err(exc, 404)
+        except Exception as exc:
+            return _json_err(exc)
+
+    @require_dashboard_auth
+    async def handle_gateway_info(self, request: "web.Request") -> "web.Response":
+        info: Dict[str, Any] = {
+            "pid": os.getpid(),
+            "uptime_seconds": time.time() - self._started_at,
+            "host": self._adapter._host,
+            "port": self._adapter._port,
+        }
+        try:
+            import resource
+            usage = resource.getrusage(resource.RUSAGE_SELF)
+            info["max_rss"] = usage.ru_maxrss
+            info["user_time"] = usage.ru_utime
+            info["system_time"] = usage.ru_stime
+        except Exception:
+            pass
+        return _json_ok(info)
+
+    @require_dashboard_auth
+    async def handle_gateway_restart_command(self, request: "web.Request") -> "web.Response":
+        """Return the launchctl command for the user to run.
+
+        Does NOT execute it — the dashboard cannot shell out from inside
+        the Seatbelt sandbox. The frontend shows the string in a dialog.
+        """
+        try:
+            uid = os.getuid()
+        except AttributeError:
+            uid = 0
+        return _json_ok({
+            "command": f"launchctl kickstart -k gui/{uid}/ai.hermes.gateway",
+            "note": "Run this in your terminal — the dashboard cannot exec from sandbox.",
+        })
+
+    # ==================================================================
+    # F4 — Interactive Ops (Cron / Tools / Skills / MCP) — Dashboard v2
+    # ==================================================================
+
+    @require_dashboard_auth
+    async def handle_cron_parse_schedule(self, request: "web.Request") -> "web.Response":
+        expr = request.query.get("expr", "").strip()
+        if not expr:
+            return _json_err(ValueError("expr query required"), 400)
+        try:
+            from cron.jobs import parse_schedule
+            return _json_ok({"parsed": parse_schedule(expr)})
+        except Exception as exc:
+            return _json_err(exc, 400)
+
+    @require_dashboard_auth
+    async def handle_cron_dry_run(self, request: "web.Request") -> "web.Response":
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        prompt = (body.get("prompt") or "").strip()
+        schedule = (body.get("schedule") or "30m").strip()
+        if not prompt:
+            return _json_err(ValueError("prompt required"), 400)
+        try:
+            from cron.jobs import dry_run_spec
+            spec = dry_run_spec(
+                prompt,
+                schedule,
+                name=body.get("name"),
+                deliver=body.get("deliver"),
+                skill=body.get("skill"),
+                skills=body.get("skills"),
+            )
+            try:
+                from gateway.event_bus import publish as _publish_event
+                _publish_event(
+                    "cron.fired",
+                    session_id=f"dry_run_{spec['id']}",
+                    data={
+                        "phase": "dry-run",
+                        "job_id": spec["id"],
+                        "job_name": spec["name"],
+                        "dry_run": True,
+                    },
+                )
+            except Exception:
+                pass
+            return _json_ok({"spec": spec, "persisted": False})
+        except Exception as exc:
+            return _json_err(exc, 400)
+
+    @require_dashboard_auth
+    async def handle_tool_toggle(self, request: "web.Request") -> "web.Response":
+        name = request.match_info.get("name", "")
+        if not name:
+            return _json_err(ValueError("tool name required"), 400)
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        platform = body.get("platform", "")
+        enabled = bool(body.get("enabled", True))
+        if not platform:
+            return _json_err(ValueError("platform field required"), 400)
+        try:
+            from hermes_cli.config import apply_config_mutations
+            result = apply_config_mutations({
+                f"platform_toolsets.{platform}.{name}": enabled,
+            })
+            return _json_ok(result)
+        except PermissionError as exc:
+            return _json_err(exc, 403)
+        except Exception as exc:
+            return _json_err(exc)
+
+    @require_dashboard_auth
+    async def handle_tool_schema(self, request: "web.Request") -> "web.Response":
+        name = request.match_info.get("name", "")
+        if not name:
+            return _json_err(ValueError("tool name required"), 400)
+        try:
+            from model_tools import registry as _tool_registry
+            spec = None
+            try:
+                tool_specs = _tool_registry.get_tool_specs()
+                for s in tool_specs:
+                    fn = s.get("function") or {}
+                    if fn.get("name") == name:
+                        spec = s
+                        break
+            except Exception:
+                pass
+            if spec is None:
+                return _json_err(LookupError("tool not found"), 404)
+            return _json_ok({"name": name, "spec": spec})
+        except Exception as exc:
+            return _json_err(exc)
+
+    @require_dashboard_auth
+    async def handle_tool_invoke(self, request: "web.Request") -> "web.Response":
+        """SECURITY-CRITICAL: dashboard-initiated tool invocation.
+
+        EVERY invocation funnels through ``handle_function_call`` which
+        applies path jail (R3) before dispatch and the standard
+        approval gate via the ``hermes_tools.terminal`` RPC for shell
+        commands. The handler ALSO scans args for the ``force`` smuggle
+        and known dangerous params, and pre-checks dangerous command
+        patterns before invoking the dispatcher.
+
+        Test coverage:
+            tests/gateway/test_tool_invoke_security.py
+        """
+        name = request.match_info.get("name", "")
+        if not name:
+            return _json_err(ValueError("tool name required"), 400)
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        args = body.get("args") or {}
+        if not isinstance(args, dict):
+            return _json_err(ValueError("args must be a dict"), 400)
+        session_id = body.get("session_id") or f"dashboard-invoke-{int(time.time())}"
+
+        # ── Strip the ``force`` smuggle at every level. Phase 4 R1 closed
+        # the kwarg path; the dashboard route applies its own scrub so a
+        # later regression in execute_code's blocked-param list cannot
+        # leak via the dashboard.
+        def _scrub_force(obj: Any) -> Any:
+            if isinstance(obj, dict):
+                return {
+                    k: _scrub_force(v)
+                    for k, v in obj.items()
+                    if k not in ("force", "skip_approval", "unsafe", "bypass")
+                }
+            if isinstance(obj, list):
+                return [_scrub_force(v) for v in obj]
+            return obj
+
+        scrubbed_args = _scrub_force(args)
+
+        # ── Pre-check for dangerous shell commands so we surface a 202
+        # needs_approval response BEFORE we hand the call to
+        # handle_function_call. This makes the gate visible from the UI
+        # without weakening the existing in-process gate that runs
+        # underneath at hermes_tools.terminal.
+        try:
+            from tools.approval import detect_dangerous_command
+            command_str = ""
+            if name in ("execute_code", "terminal", "shell"):
+                command_str = str(scrubbed_args.get("command", ""))
+            if command_str:
+                is_dangerous, pattern_key, description = detect_dangerous_command(command_str)
+                if is_dangerous:
+                    return _json_ok({
+                        "needs_approval": True,
+                        "pattern_key": pattern_key,
+                        "description": description,
+                        "command": command_str,
+                    }, status=202)
+        except Exception:
+            pass
+
+        # ── Dispatch through the normal pipeline. Path jail (R3) runs
+        # inside handle_function_call before any tool code executes.
+        try:
+            from model_tools import handle_function_call
+            os_env_marker = os.environ.get("HERMES_GATEWAY_SESSION")
+            os.environ["HERMES_GATEWAY_SESSION"] = "1"
+            try:
+                result = handle_function_call(
+                    name,
+                    scrubbed_args,
+                    session_id=session_id,
+                )
+            finally:
+                if os_env_marker is None:
+                    os.environ.pop("HERMES_GATEWAY_SESSION", None)
+                else:
+                    os.environ["HERMES_GATEWAY_SESSION"] = os_env_marker
+            return _json_ok({"result": result, "tool": name})
+        except Exception as exc:
+            return _json_err(exc)
+
+    @require_dashboard_auth
+    async def handle_skill_reload(self, request: "web.Request") -> "web.Response":
+        name = request.match_info.get("name", "")
+        if not name:
+            return _json_err(ValueError("skill name required"), 400)
+        try:
+            from hermes_cli.config import get_hermes_home
+            skill_dir = Path(get_hermes_home()) / "skills" / name
+            if not skill_dir.is_dir():
+                return _json_err(LookupError("skill not found"), 404)
+            try:
+                from gateway.event_bus import publish as _publish_event
+                _publish_event(
+                    "skill.reloaded",
+                    session_id=None,
+                    data={"skill": name, "resolver": "dashboard"},
+                )
+            except Exception:
+                pass
+            return _json_ok({"reloaded": True, "name": name})
+        except Exception as exc:
+            return _json_err(exc)
+
+    @require_dashboard_auth
+    async def handle_skill_full(self, request: "web.Request") -> "web.Response":
+        name = request.match_info.get("name", "")
+        if not name:
+            return _json_err(ValueError("skill name required"), 400)
+        try:
+            from hermes_cli.config import get_hermes_home
+            skill_dir = Path(get_hermes_home()) / "skills" / name
+            md_path = skill_dir / "SKILL.md"
+            if not md_path.exists():
+                return _json_err(LookupError("SKILL.md not found"), 404)
+            text = md_path.read_text(encoding="utf-8", errors="replace")
+            return _json_ok({"name": name, "content": text})
+        except Exception as exc:
+            return _json_err(exc)
+
+    @require_dashboard_auth
+    async def handle_mcp_toggle(self, request: "web.Request") -> "web.Response":
+        name = request.match_info.get("name", "")
+        if not name:
+            return _json_err(ValueError("server name required"), 400)
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        enabled = bool(body.get("enabled", True))
+        try:
+            from hermes_cli.config import apply_config_mutations
+            # ``disabled`` is the inverse — store both for clarity.
+            result = apply_config_mutations({
+                f"mcp_servers.{name}.disabled": not enabled,
+            })
+            return _json_ok(result)
+        except PermissionError as exc:
+            return _json_err(exc, 403)
+        except Exception as exc:
+            return _json_err(exc)
+
+    @require_dashboard_auth
+    async def handle_mcp_health(self, request: "web.Request") -> "web.Response":
+        name = request.match_info.get("name", "")
+        if not name:
+            return _json_err(ValueError("server name required"), 400)
+        try:
+            from hermes_cli.config import load_config
+            cfg = load_config() or {}
+            servers = cfg.get("mcp_servers") or {}
+            entry = servers.get(name) if isinstance(servers, dict) else None
+            if entry is None:
+                return _json_err(LookupError("mcp server not configured"), 404)
+            return _json_ok({
+                "name": name,
+                "configured": True,
+                "enabled": not entry.get("disabled", False),
+                "command": entry.get("command"),
+            })
+        except Exception as exc:
+            return _json_err(exc)
+
+    # ==================================================================
+    # F3 — Live Console v2 + Approval Command Center (Dashboard v2)
+    # ==================================================================
+
+    @require_dashboard_auth
+    async def handle_events_search(self, request: "web.Request") -> "web.Response":
+        """Filter events.ndjson by event-type wildcard, free-text query,
+        session id, and time window. Walks rotated files when ``window``
+        spans the rotation boundary.
+        """
+        try:
+            limit = max(1, min(2000, int(request.query.get("limit", "500"))))
+        except ValueError:
+            return _json_err(ValueError("limit must be int"), 400)
+
+        type_param = request.query.get("types") or ""
+        type_filters = [t.strip() for t in type_param.split(",") if t.strip()]
+        query = (request.query.get("q") or "").lower()
+        session_filter = request.query.get("session") or None
+        try:
+            t_from = float(request.query["from"]) if "from" in request.query else None
+            t_to = float(request.query["to"]) if "to" in request.query else None
+        except ValueError:
+            return _json_err(ValueError("from/to must be numeric unix ts"), 400)
+
+        def _match_type(event_type: str) -> bool:
+            if not type_filters:
+                return True
+            for pat in type_filters:
+                if pat.endswith(".*"):
+                    if event_type.startswith(pat[:-2]):
+                        return True
+                elif event_type == pat:
+                    return True
+            return False
+
+        def _match_event(e: Dict[str, Any]) -> bool:
+            etype = e.get("type", "")
+            if not _match_type(etype):
+                return False
+            if session_filter and e.get("session_id") != session_filter:
+                return False
+            if t_from is not None or t_to is not None:
+                ts = _parse_ts(e.get("ts"))
+                if ts is None:
+                    return False
+                if t_from is not None and ts < t_from:
+                    return False
+                if t_to is not None and ts > t_to:
+                    return False
+            if query:
+                # Search the data dict + type
+                blob = (etype + " " + json.dumps(e.get("data") or {}, default=str)).lower()
+                if query not in blob:
+                    return False
+            return True
+
+        try:
+            # If a window is specified, walk all rotated files; else tail-read.
+            if t_from is not None or t_to is not None:
+                events: list[dict] = []
+                for raw in _walk_ndjson_rotation():
+                    if _match_event(raw):
+                        events.append(raw)
+                events = events[-limit:]
+            else:
+                events = _tail_read_ndjson(
+                    filter_fn=_match_event, limit=limit, tail_bytes=4 * 1024 * 1024,
+                )
+            return _json_ok({"events": events, "count": len(events)})
+        except Exception as exc:
+            return _json_err(exc)
+
+    @require_dashboard_auth
+    async def handle_events_export(self, request: "web.Request") -> "web.Response":
+        """Stream filtered events as application/x-ndjson.
+
+        Honors the same query params as /events/search but returns NDJSON
+        for download instead of a JSON envelope. Capped at 50k events to
+        keep dashboard exports reasonable.
+        """
+        type_param = request.query.get("types") or ""
+        type_filters = [t.strip() for t in type_param.split(",") if t.strip()]
+        try:
+            t_from = float(request.query["from"]) if "from" in request.query else None
+            t_to = float(request.query["to"]) if "to" in request.query else None
+        except ValueError:
+            return _json_err(ValueError("from/to must be numeric unix ts"), 400)
+
+        def _match_type(event_type: str) -> bool:
+            if not type_filters:
+                return True
+            for pat in type_filters:
+                if pat.endswith(".*"):
+                    if event_type.startswith(pat[:-2]):
+                        return True
+                elif event_type == pat:
+                    return True
+            return False
+
+        def _match_event(e: Dict[str, Any]) -> bool:
+            if not _match_type(e.get("type", "")):
+                return False
+            if t_from is not None or t_to is not None:
+                ts = _parse_ts(e.get("ts"))
+                if ts is None:
+                    return False
+                if t_from is not None and ts < t_from:
+                    return False
+                if t_to is not None and ts > t_to:
+                    return False
+            return True
+
+        response = web.StreamResponse(
+            status=200,
+            headers={
+                "Content-Type": "application/x-ndjson",
+                "Content-Disposition": 'attachment; filename="hermes-events.ndjson"',
+                "X-Accel-Buffering": "no",
+            },
+        )
+        await response.prepare(request)
+        try:
+            cap = 50000
+            n = 0
+            for raw in _walk_ndjson_rotation():
+                if not _match_event(raw):
+                    continue
+                line = json.dumps(raw, default=str) + "\n"
+                await response.write(line.encode("utf-8"))
+                n += 1
+                if n >= cap:
+                    break
+        except (asyncio.CancelledError, ConnectionResetError):
+            pass
+        except Exception as exc:
+            logger.debug("dashboard: events export failed: %s", exc)
+        return response
+
+    @require_dashboard_auth
+    async def handle_approvals_history(self, request: "web.Request") -> "web.Response":
+        try:
+            limit = max(1, min(500, int(request.query.get("limit", "100"))))
+            offset = max(0, int(request.query.get("offset", "0")))
+        except ValueError:
+            return _json_err(ValueError("limit/offset must be int"), 400)
+        pattern = request.query.get("pattern") or None
+        session = request.query.get("session") or None
+        choice = request.query.get("choice") or None
+        try:
+            since = float(request.query["since"]) if "since" in request.query else None
+        except ValueError:
+            return _json_err(ValueError("since must be numeric"), 400)
+        try:
+            from hermes_state import SessionDB
+            db = SessionDB()
+            rows = db.list_approval_history(
+                limit=limit, offset=offset,
+                session_id=session, pattern_key=pattern,
+                choice=choice, since=since,
+            )
+            return _json_ok({"rows": rows, "limit": limit, "offset": offset})
+        except Exception as exc:
+            return _json_err(exc)
+
+    @require_dashboard_auth
+    async def handle_approvals_stats(self, request: "web.Request") -> "web.Response":
+        window = request.query.get("window", "7d")
+        seconds_map = {"1h": 3600, "24h": 86400, "7d": 604800, "30d": 2592000}
+        delta = seconds_map.get(window, 604800)
+        since = time.time() - delta
+        try:
+            from hermes_state import SessionDB
+            db = SessionDB()
+            stats = db.approval_history_stats(since=since)
+            return _json_ok({"stats": stats, "window": window, "since": since})
+        except Exception as exc:
+            return _json_err(exc)
+
+    @require_dashboard_auth
+    async def handle_approvals_bulk(self, request: "web.Request") -> "web.Response":
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        keys = body.get("session_keys") or []
+        choice = (body.get("choice") or "").lower()
+        if not isinstance(keys, list) or not keys:
+            return _json_err(ValueError("session_keys (non-empty list) required"), 400)
+        if choice not in ("once", "session", "always", "deny", "accept", "ignore"):
+            return _json_err(ValueError("choice required"), 400)
+        # LangGraph schema translation matches handle_resolve_approval
+        translation = {"accept": "once", "ignore": "deny"}
+        choice = translation.get(choice, choice)
+
+        from tools.approval import resolve_gateway_approval
+        results: list[dict] = []
+        for key in keys:
+            row = {"session_key": str(key), "ok": False}
+            try:
+                n = resolve_gateway_approval(str(key), choice)
+                row["resolved"] = n
+                row["ok"] = n > 0
+                if n == 0:
+                    row["error"] = "no pending approval"
+            except Exception as exc:
+                row["error"] = str(exc)
+            results.append(row)
+        return _json_ok({"results": results, "choice": choice})
+
+    @require_dashboard_auth
+    async def handle_brain_memory_add(self, request: "web.Request") -> "web.Response":
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        store = (body.get("store") or "").strip()
+        content = body.get("content")
+        target = self._memory_target_from_store(store)
+        if target is None:
+            return _json_err(ValueError("store must be 'MEMORY.md' or 'USER.md'"), 400)
+        if not content or not isinstance(content, str):
+            return _json_err(ValueError("content (str) required"), 400)
+        try:
+            from tools.memory_tool import MemoryStore
+            store_obj = MemoryStore()
+            store_obj.load_from_disk()
+            result = store_obj.add(target, content)
+            if not result.get("success"):
+                return _json_err(ValueError(result.get("error", "add failed")), 400)
+            return _json_ok({"ok": True, "result": result})
+        except Exception as exc:
+            return _json_err(exc)
+
+    @require_dashboard_auth
+    async def handle_brain_memory_replace(self, request: "web.Request") -> "web.Response":
+        store_param = request.query.get("store") or "MEMORY.md"
+        target = self._memory_target_from_store(store_param)
+        if target is None:
+            return _json_err(ValueError("store query must be MEMORY.md or USER.md"), 400)
+        hash8 = request.match_info.get("hash", "")
+        if not hash8:
+            return _json_err(ValueError("hash required"), 400)
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        new_content = body.get("content")
+        if not new_content or not isinstance(new_content, str):
+            return _json_err(ValueError("content (str) required"), 400)
+        try:
+            from tools.memory_tool import MemoryStore
+            store_obj = MemoryStore()
+            store_obj.load_from_disk()
+            old_entry = store_obj.find_entry_by_hash(target, hash8)
+            if old_entry is None:
+                return _json_err(LookupError("no entry matches hash"), 404)
+            result = store_obj.replace(target, old_entry, new_content)
+            if not result.get("success"):
+                return _json_err(ValueError(result.get("error", "replace failed")), 400)
+            return _json_ok({"ok": True, "result": result})
+        except Exception as exc:
+            return _json_err(exc)
+
+    @require_dashboard_auth
+    async def handle_brain_memory_delete(self, request: "web.Request") -> "web.Response":
+        store_param = request.query.get("store") or "MEMORY.md"
+        target = self._memory_target_from_store(store_param)
+        if target is None:
+            return _json_err(ValueError("store query must be MEMORY.md or USER.md"), 400)
+        hash8 = request.match_info.get("hash", "")
+        if not hash8:
+            return _json_err(ValueError("hash required"), 400)
+        try:
+            from tools.memory_tool import MemoryStore
+            store_obj = MemoryStore()
+            store_obj.load_from_disk()
+            entry = store_obj.find_entry_by_hash(target, hash8)
+            if entry is None:
+                return _json_err(LookupError("no entry matches hash"), 404)
+            result = store_obj.remove(target, entry)
+            if not result.get("success"):
+                return _json_err(ValueError(result.get("error", "remove failed")), 400)
+            return _json_ok({"ok": True, "result": result})
+        except Exception as exc:
+            return _json_err(exc)
+
+    @require_dashboard_auth
+    async def handle_brain_memory_export(self, request: "web.Request") -> "web.Response":
+        store_param = request.query.get("store") or "both"
+        try:
+            from tools.memory_tool import MemoryStore
+            store_obj = MemoryStore()
+            store_obj.load_from_disk()
+            payload: Dict[str, Any] = {}
+            if store_param in ("MEMORY.md", "memory", "both"):
+                payload["MEMORY.md"] = {
+                    "raw": store_obj.export_raw("memory"),
+                    "entries": list(store_obj.memory_entries),
+                }
+            if store_param in ("USER.md", "user", "both"):
+                payload["USER.md"] = {
+                    "raw": store_obj.export_raw("user"),
+                    "entries": list(store_obj.user_entries),
+                }
+            return _json_ok(payload)
+        except Exception as exc:
+            return _json_err(exc)
+
+    @require_dashboard_auth
+    async def handle_brain_memory_import(self, request: "web.Request") -> "web.Response":
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        store_param = body.get("store") or ""
+        target = self._memory_target_from_store(store_param)
+        if target is None:
+            return _json_err(ValueError("store must be 'MEMORY.md' or 'USER.md'"), 400)
+        raw = body.get("raw_content")
+        if not isinstance(raw, str):
+            return _json_err(ValueError("raw_content (str) required"), 400)
+        mode = (body.get("mode") or "replace").lower()
+        try:
+            from tools.memory_tool import MemoryStore
+            store_obj = MemoryStore()
+            store_obj.load_from_disk()
+            result = store_obj.import_raw(target, raw, mode=mode)
+            if not result.get("success"):
+                return _json_err(ValueError(result.get("error", "import failed")), 400)
+            return _json_ok({"ok": True, "result": result})
+        except Exception as exc:
+            return _json_err(exc)
+
+    @staticmethod
+    def _memory_target_from_store(store: str) -> Optional[str]:
+        s = (store or "").strip().upper()
+        if s in ("MEMORY.MD", "MEMORY"):
+            return "memory"
+        if s in ("USER.MD", "USER"):
+            return "user"
+        return None
+
+    @require_dashboard_auth
     async def handle_brain_graph(self, request: "web.Request") -> "web.Response":
         """Return the brain visualization snapshot.
 
@@ -690,9 +1782,6 @@ class DashboardRoutes:
         per 5-second window. Wrapped in ``asyncio.to_thread`` so the
         SQLite + filesystem queries don't stall the event loop.
         """
-        auth_err = self._check_dashboard_auth(request)
-        if auth_err:
-            return auth_err
         try:
             from tools.brain_snapshot import build_brain_snapshot
             snapshot = await asyncio.to_thread(build_brain_snapshot)
@@ -705,6 +1794,7 @@ class DashboardRoutes:
     # GET /api/dashboard/brain/node/{type}/{id} — single node detail
     # ------------------------------------------------------------------
 
+    @require_dashboard_auth
     async def handle_brain_node(self, request: "web.Request") -> "web.Response":
         """Look up a single node from the current brain snapshot.
 
@@ -713,9 +1803,6 @@ class DashboardRoutes:
         click. Returns 404 if the node was not present in the latest
         rebuild (e.g. it was removed since the snapshot was cached).
         """
-        auth_err = self._check_dashboard_auth(request)
-        if auth_err:
-            return auth_err
         node_type = request.match_info.get("type", "")
         node_id = request.match_info.get("id", "")
         if not node_type or not node_id:
@@ -734,16 +1821,13 @@ class DashboardRoutes:
     # GET /api/dashboard/events — SSE multiplexer
     # ------------------------------------------------------------------
 
+    @require_dashboard_auth
     async def handle_events(self, request: "web.Request") -> "web.StreamResponse":
         """SSE stream of EventBus events.
 
         Keepalive pattern mirrors ``_handle_run_events`` in api_server.py
         (30s timeout → comment-frame keepalive).
         """
-        auth_err = self._check_dashboard_auth(request)
-        if auth_err:
-            return auth_err
-
         try:
             replay = max(0, min(500, int(request.query.get("replay", "50"))))
         except ValueError:
@@ -886,10 +1970,25 @@ def register_dashboard_routes(
     app.router.add_get("/api/dashboard/handshake", routes.handle_handshake)
     app.router.add_get("/api/dashboard/state", routes.handle_state)
     app.router.add_get("/api/dashboard/sessions", routes.handle_sessions)
+    # F1 — Static segments (search/bulk) MUST be registered BEFORE the
+    # dynamic /sessions/{id} route so aiohttp matches them first.
+    app.router.add_get("/api/dashboard/sessions/search", routes.handle_session_search)
+    app.router.add_post("/api/dashboard/sessions/bulk", routes.handle_session_bulk)
     app.router.add_get("/api/dashboard/sessions/{id}", routes.handle_session_detail)
     app.router.add_get("/api/dashboard/sessions/{id}/events", routes.handle_session_events)
+    app.router.add_delete("/api/dashboard/sessions/{id}", routes.handle_delete_session)
+    app.router.add_get("/api/dashboard/sessions/{id}/export", routes.handle_export_session)
+    app.router.add_post("/api/dashboard/sessions/{id}/fork", routes.handle_fork_session)
+    app.router.add_post("/api/dashboard/sessions/{id}/inject", routes.handle_inject_message)
+    app.router.add_post("/api/dashboard/sessions/{id}/reopen", routes.handle_reopen_session)
     app.router.add_get("/api/dashboard/approvals", routes.handle_list_approvals)
+    # F3 — Live Console v2 + Approval Command Center
+    app.router.add_get("/api/dashboard/approvals/history", routes.handle_approvals_history)
+    app.router.add_get("/api/dashboard/approvals/stats", routes.handle_approvals_stats)
+    app.router.add_post("/api/dashboard/approvals/bulk", routes.handle_approvals_bulk)
     app.router.add_post("/api/dashboard/approvals/{session_key}", routes.handle_resolve_approval)
+    app.router.add_get("/api/dashboard/events/search", routes.handle_events_search)
+    app.router.add_get("/api/dashboard/events/export", routes.handle_events_export)
     app.router.add_get("/api/dashboard/tools", routes.handle_tools)
     app.router.add_get("/api/dashboard/skills", routes.handle_skills)
     app.router.add_get("/api/dashboard/mcp", routes.handle_mcp)
@@ -897,11 +1996,45 @@ def register_dashboard_routes(
     app.router.add_get("/api/dashboard/config", routes.handle_config)
     app.router.add_get("/api/dashboard/recent", routes.handle_recent)
     app.router.add_get("/api/dashboard/events", routes.handle_events)
+
     # Brain visualization (Wave-1 R1 of stateful-noodling-reddy plan)
     app.router.add_get("/api/dashboard/brain/graph", routes.handle_brain_graph)
     app.router.add_get(
         "/api/dashboard/brain/node/{type}/{id}", routes.handle_brain_node,
     )
+    # F5 — Telemetry + Safe Config Editor (Dashboard v2)
+    app.router.add_get("/api/dashboard/metrics/tokens", routes.handle_metrics_tokens)
+    app.router.add_get("/api/dashboard/metrics/latency", routes.handle_metrics_latency)
+    app.router.add_get("/api/dashboard/metrics/compression", routes.handle_metrics_compression)
+    app.router.add_get("/api/dashboard/metrics/errors", routes.handle_metrics_errors)
+    app.router.add_get("/api/dashboard/metrics/context", routes.handle_metrics_context)
+    app.router.add_put("/api/dashboard/config", routes.handle_config_put)
+    app.router.add_get("/api/dashboard/config/backups", routes.handle_config_backups)
+    app.router.add_post("/api/dashboard/config/rollback", routes.handle_config_rollback)
+    app.router.add_get("/api/dashboard/gateway/info", routes.handle_gateway_info)
+    app.router.add_get("/api/dashboard/gateway/restart-command", routes.handle_gateway_restart_command)
+
+    # F4 — Interactive Ops (Dashboard v2)
+    app.router.add_get("/api/dashboard/jobs/parse-schedule", routes.handle_cron_parse_schedule)
+    app.router.add_post("/api/dashboard/jobs/dry-run", routes.handle_cron_dry_run)
+    app.router.add_post("/api/dashboard/tools/{name}/toggle", routes.handle_tool_toggle)
+    app.router.add_get("/api/dashboard/tools/{name}/schema", routes.handle_tool_schema)
+    app.router.add_post("/api/dashboard/tools/{name}/invoke", routes.handle_tool_invoke)
+    app.router.add_post("/api/dashboard/skills/{name}/reload", routes.handle_skill_reload)
+    app.router.add_get("/api/dashboard/skills/{name}/full", routes.handle_skill_full)
+    app.router.add_post("/api/dashboard/mcp/{name}/toggle", routes.handle_mcp_toggle)
+    app.router.add_get("/api/dashboard/mcp/{name}/health", routes.handle_mcp_health)
+
+    # F2 — Brain/Memory Editor (Dashboard v2)
+    app.router.add_post("/api/dashboard/brain/memory", routes.handle_brain_memory_add)
+    app.router.add_put(
+        "/api/dashboard/brain/memory/{hash}", routes.handle_brain_memory_replace
+    )
+    app.router.add_delete(
+        "/api/dashboard/brain/memory/{hash}", routes.handle_brain_memory_delete
+    )
+    app.router.add_get("/api/dashboard/brain/export", routes.handle_brain_memory_export)
+    app.router.add_post("/api/dashboard/brain/import", routes.handle_brain_memory_import)
 
     # Static UI bundle
     if static_dir is not None and static_dir.is_dir():

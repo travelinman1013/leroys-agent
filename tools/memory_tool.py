@@ -352,6 +352,73 @@ class MemoryStore:
 
         return self._success_response(target, "Entry replaced.")
 
+    def find_entry_by_hash(self, target: str, hash8: str) -> Optional[str]:
+        """Resolve an 8-char content hash back to the entry string.
+
+        Used by the dashboard PUT/DELETE routes so the UI can address
+        an entry without sending its full content over the wire.
+        Returns None when no entry matches.
+        """
+        with self._file_lock(self._path_for(target)):
+            self._reload_target(target)
+            for entry in self._entries_for(target):
+                if _hash_entry(entry) == hash8:
+                    return entry
+        return None
+
+    def export_raw(self, target: str) -> str:
+        """Return the raw delimited file content for export."""
+        with self._file_lock(self._path_for(target)):
+            self._reload_target(target)
+            entries = self._entries_for(target)
+            return ENTRY_DELIMITER.join(entries)
+
+    def import_raw(self, target: str, raw: str, mode: str = "replace") -> Dict[str, Any]:
+        """Replace or append entries from a delimiter-separated string.
+
+        Pre-scans every parsed entry through ``_scan_memory_content``;
+        a single threat match aborts the whole import (atomic).
+        """
+        if mode not in ("replace", "append"):
+            return {"success": False, "error": "mode must be 'replace' or 'append'"}
+
+        # Parse + scan first so we never partially apply
+        new_entries: List[str] = []
+        for chunk in raw.split(ENTRY_DELIMITER):
+            chunk = chunk.strip()
+            if not chunk:
+                continue
+            err = _scan_memory_content(chunk)
+            if err:
+                return {"success": False, "error": err}
+            new_entries.append(chunk)
+
+        with self._file_lock(self._path_for(target)):
+            if mode == "replace":
+                self._set_entries(target, new_entries)
+            else:
+                self._reload_target(target)
+                existing = self._entries_for(target)
+                merged = existing + [e for e in new_entries if e not in existing]
+                self._set_entries(target, merged)
+            # Re-check char limit
+            total = self._char_count(target)
+            limit = self._char_limit(target)
+            if total > limit:
+                return {
+                    "success": False,
+                    "error": (
+                        f"Import would put memory at {total:,}/{limit:,} chars. "
+                        f"Drop entries before importing."
+                    ),
+                }
+            self.save_to_disk(target)
+
+        for entry in new_entries:
+            _emit_memory_event("memory.added", target, content=entry)
+
+        return self._success_response(target, f"Imported {len(new_entries)} entries.")
+
     def remove(self, target: str, old_text: str) -> Dict[str, Any]:
         """Remove the entry containing old_text substring."""
         old_text = old_text.strip()

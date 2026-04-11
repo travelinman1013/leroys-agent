@@ -285,7 +285,351 @@ export const api = {
     apiFetch<{ node: BrainNode }>(
       `/api/dashboard/brain/node/${encodeURIComponent(type)}/${encodeURIComponent(id)}`,
     ),
+
+  // F1 — Session Control Plane (Dashboard v2)
+  searchSessions: (opts: {
+    q?: string;
+    source?: string;
+    from?: number;
+    to?: number;
+    limit?: number;
+    offset?: number;
+  } = {}) => {
+    const params = new URLSearchParams();
+    if (opts.q) params.set("q", opts.q);
+    if (opts.source) params.set("source", opts.source);
+    if (opts.from !== undefined) params.set("from", String(opts.from));
+    if (opts.to !== undefined) params.set("to", String(opts.to));
+    if (opts.limit) params.set("limit", String(opts.limit));
+    if (opts.offset) params.set("offset", String(opts.offset));
+    const qs = params.toString();
+    return apiFetch<{ sessions: SessionListRow[]; limit: number; offset: number }>(
+      `/api/dashboard/sessions/search${qs ? `?${qs}` : ""}`,
+    );
+  },
+
+  deleteSession: (id: string) =>
+    apiFetch<{ deleted: boolean; id: string }>(
+      `/api/dashboard/sessions/${encodeURIComponent(id)}`,
+      { method: "DELETE" },
+    ),
+
+  exportSessionUrl: (id: string, format: "json" | "md" = "json") =>
+    `/api/dashboard/sessions/${encodeURIComponent(id)}/export?format=${format}`,
+
+  forkSession: (id: string, body: { up_to_turn?: number; title?: string }) =>
+    apiFetch<{ id: string; parent_id: string }>(
+      `/api/dashboard/sessions/${encodeURIComponent(id)}/fork`,
+      { method: "POST", body: JSON.stringify(body) },
+    ),
+
+  injectMessage: (id: string, body: { content: string; role?: "user" | "system" }) =>
+    apiFetch<{ id: string; message_id: number }>(
+      `/api/dashboard/sessions/${encodeURIComponent(id)}/inject`,
+      { method: "POST", body: JSON.stringify(body) },
+    ),
+
+  reopenSession: (id: string) =>
+    apiFetch<{ id: string; reopened: boolean }>(
+      `/api/dashboard/sessions/${encodeURIComponent(id)}/reopen`,
+      { method: "POST" },
+    ),
+
+  bulkSessions: (body: { ids: string[]; action: "delete" | "export" }) =>
+    apiFetch<{
+      results: Array<{ id: string; ok: boolean; error?: string; message_count?: number }>;
+      action: string;
+    }>("/api/dashboard/sessions/bulk", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  // F2 — Brain/Memory Editor
+  addMemory: (body: { store: "MEMORY.md" | "USER.md"; content: string }) =>
+    apiFetch<{ ok: boolean }>("/api/dashboard/brain/memory", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  replaceMemory: (
+    hash: string,
+    store: "MEMORY.md" | "USER.md",
+    content: string,
+  ) =>
+    apiFetch<{ ok: boolean }>(
+      `/api/dashboard/brain/memory/${encodeURIComponent(hash)}?store=${encodeURIComponent(store)}`,
+      { method: "PUT", body: JSON.stringify({ content }) },
+    ),
+
+  deleteMemory: (hash: string, store: "MEMORY.md" | "USER.md") =>
+    apiFetch<{ ok: boolean }>(
+      `/api/dashboard/brain/memory/${encodeURIComponent(hash)}?store=${encodeURIComponent(store)}`,
+      { method: "DELETE" },
+    ),
+
+  exportMemory: (store: "MEMORY.md" | "USER.md" | "both" = "both") =>
+    apiFetch<Record<string, { raw: string; entries: string[] }>>(
+      `/api/dashboard/brain/export?store=${encodeURIComponent(store)}`,
+    ),
+
+  importMemory: (body: {
+    store: "MEMORY.md" | "USER.md";
+    raw_content: string;
+    mode?: "replace" | "append";
+  }) =>
+    apiFetch<{ ok: boolean }>("/api/dashboard/brain/import", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  // F3 — Live Console v2 + Approval Command Center
+  searchEvents: (opts: {
+    types?: string[];
+    q?: string;
+    session?: string;
+    from?: number;
+    to?: number;
+    limit?: number;
+  } = {}) => {
+    const params = new URLSearchParams();
+    if (opts.types?.length) params.set("types", opts.types.join(","));
+    if (opts.q) params.set("q", opts.q);
+    if (opts.session) params.set("session", opts.session);
+    if (opts.from !== undefined) params.set("from", String(opts.from));
+    if (opts.to !== undefined) params.set("to", String(opts.to));
+    if (opts.limit) params.set("limit", String(opts.limit));
+    const qs = params.toString();
+    return apiFetch<{ events: HermesEvent[]; count: number }>(
+      `/api/dashboard/events/search${qs ? `?${qs}` : ""}`,
+    );
+  },
+
+  exportEventsUrl: (opts: { types?: string[]; from?: number; to?: number } = {}) => {
+    const params = new URLSearchParams();
+    if (opts.types?.length) params.set("types", opts.types.join(","));
+    if (opts.from !== undefined) params.set("from", String(opts.from));
+    if (opts.to !== undefined) params.set("to", String(opts.to));
+    const qs = params.toString();
+    return `/api/dashboard/events/export${qs ? `?${qs}` : ""}`;
+  },
+
+  approvalsHistory: (opts: {
+    limit?: number;
+    offset?: number;
+    pattern?: string;
+    session?: string;
+    choice?: string;
+    since?: number;
+  } = {}) => {
+    const params = new URLSearchParams();
+    if (opts.limit) params.set("limit", String(opts.limit));
+    if (opts.offset) params.set("offset", String(opts.offset));
+    if (opts.pattern) params.set("pattern", opts.pattern);
+    if (opts.session) params.set("session", opts.session);
+    if (opts.choice) params.set("choice", opts.choice);
+    if (opts.since !== undefined) params.set("since", String(opts.since));
+    const qs = params.toString();
+    return apiFetch<{
+      rows: ApprovalHistoryRow[];
+      limit: number;
+      offset: number;
+    }>(`/api/dashboard/approvals/history${qs ? `?${qs}` : ""}`);
+  },
+
+  approvalsStats: (window: "1h" | "24h" | "7d" | "30d" = "7d") =>
+    apiFetch<{
+      stats: Record<string, ApprovalStatEntry>;
+      window: string;
+      since: number;
+    }>(`/api/dashboard/approvals/stats?window=${window}`),
+
+  bulkResolveApprovals: (
+    sessionKeys: string[],
+    choice: "once" | "session" | "always" | "deny" | "accept" | "ignore",
+  ) =>
+    apiFetch<{
+      results: Array<{ session_key: string; ok: boolean; resolved?: number; error?: string }>;
+      choice: string;
+    }>("/api/dashboard/approvals/bulk", {
+      method: "POST",
+      body: JSON.stringify({ session_keys: sessionKeys, choice }),
+    }),
+
+  // F4 — Interactive Ops
+  parseCronSchedule: (expr: string) =>
+    apiFetch<{ parsed: Record<string, unknown> }>(
+      `/api/dashboard/jobs/parse-schedule?expr=${encodeURIComponent(expr)}`,
+    ),
+
+  cronDryRun: (body: {
+    prompt: string;
+    schedule: string;
+    deliver?: string;
+    skill?: string;
+  }) =>
+    apiFetch<{ spec: Record<string, unknown>; persisted: boolean }>(
+      "/api/dashboard/jobs/dry-run",
+      { method: "POST", body: JSON.stringify(body) },
+    ),
+
+  toggleTool: (name: string, platform: string, enabled: boolean) =>
+    apiFetch<{ applied: string[]; restart_required: string[] }>(
+      `/api/dashboard/tools/${encodeURIComponent(name)}/toggle`,
+      { method: "POST", body: JSON.stringify({ platform, enabled }) },
+    ),
+
+  toolSchema: (name: string) =>
+    apiFetch<{ name: string; spec: Record<string, unknown> }>(
+      `/api/dashboard/tools/${encodeURIComponent(name)}/schema`,
+    ),
+
+  invokeTool: (name: string, args: Record<string, unknown>, sessionId?: string) =>
+    apiFetch<{
+      result?: string;
+      tool?: string;
+      needs_approval?: boolean;
+      pattern_key?: string;
+      description?: string;
+      command?: string;
+    }>(
+      `/api/dashboard/tools/${encodeURIComponent(name)}/invoke`,
+      {
+        method: "POST",
+        body: JSON.stringify({ args, session_id: sessionId }),
+      },
+    ),
+
+  reloadSkill: (name: string) =>
+    apiFetch<{ reloaded: boolean; name: string }>(
+      `/api/dashboard/skills/${encodeURIComponent(name)}/reload`,
+      { method: "POST" },
+    ),
+
+  skillFull: (name: string) =>
+    apiFetch<{ name: string; content: string }>(
+      `/api/dashboard/skills/${encodeURIComponent(name)}/full`,
+    ),
+
+  toggleMcp: (name: string, enabled: boolean) =>
+    apiFetch<{ applied: string[]; restart_required: string[] }>(
+      `/api/dashboard/mcp/${encodeURIComponent(name)}/toggle`,
+      { method: "POST", body: JSON.stringify({ enabled }) },
+    ),
+
+  mcpHealth: (name: string) =>
+    apiFetch<{
+      name: string;
+      configured: boolean;
+      enabled: boolean;
+      command: string | null;
+    }>(`/api/dashboard/mcp/${encodeURIComponent(name)}/health`),
+
+  // F5 — Telemetry + Safe Config Editor
+  metricsTokens: (window: "1h" | "24h" | "7d" | "30d" = "24h") =>
+    apiFetch<{
+      buckets: Array<{ ts: number; input: number; output: number }>;
+      total: { input: number; output: number };
+      bucket_seconds: number;
+    }>(`/api/dashboard/metrics/tokens?window=${window}`),
+
+  metricsLatency: (
+    window: "1h" | "24h" | "7d" | "30d" = "24h",
+    groupBy: "tool" | "session" = "tool",
+  ) =>
+    apiFetch<{
+      groups: Record<
+        string,
+        { count: number; p50: number | null; p95: number | null; p99: number | null; max: number | null }
+      >;
+      group_by: string;
+    }>(`/api/dashboard/metrics/latency?window=${window}&group_by=${groupBy}`),
+
+  metricsCompression: (window: "1h" | "24h" | "7d" | "30d" = "24h") =>
+    apiFetch<{
+      events: Array<{
+        ts: number | null;
+        session_id: string | null;
+        tokens_before: number | null;
+        tokens_after: number | null;
+        n_messages_before: number | null;
+        n_messages_after: number | null;
+      }>;
+      count: number;
+    }>(`/api/dashboard/metrics/compression?window=${window}`),
+
+  metricsErrors: (window: "1h" | "24h" | "7d" | "30d" = "24h") =>
+    apiFetch<{
+      per_tool: Record<string, { total: number; errors: number; error_rate: number }>;
+    }>(`/api/dashboard/metrics/errors?window=${window}`),
+
+  metricsContext: () =>
+    apiFetch<{
+      latest: {
+        ts: string;
+        session_id: string | null;
+        model: string | null;
+        input_tokens: number | null;
+        output_tokens: number | null;
+        total_tokens: number | null;
+        latency_ms: number | null;
+      } | null;
+    }>("/api/dashboard/metrics/context"),
+
+  putConfig: (mutations: Record<string, unknown>) =>
+    apiFetch<{ applied: string[]; restart_required: string[]; backup: string | null }>(
+      "/api/dashboard/config",
+      { method: "PUT", body: JSON.stringify({ mutations }) },
+    ),
+
+  configBackups: () =>
+    apiFetch<{
+      backups: Array<{ filename: string; path: string; ts: number; size: number }>;
+    }>("/api/dashboard/config/backups"),
+
+  rollbackConfig: (filename: string) =>
+    apiFetch<{ restored: string; backup: string | null }>(
+      "/api/dashboard/config/rollback",
+      { method: "POST", body: JSON.stringify({ to: filename }) },
+    ),
+
+  gatewayInfo: () =>
+    apiFetch<{
+      pid: number;
+      uptime_seconds: number;
+      host: string;
+      port: number;
+      max_rss?: number;
+    }>("/api/dashboard/gateway/info"),
+
+  gatewayRestartCommand: () =>
+    apiFetch<{ command: string; note: string }>("/api/dashboard/gateway/restart-command"),
 };
+
+// --------------------------------------------------------------------------
+// F3 types
+// --------------------------------------------------------------------------
+
+export interface ApprovalHistoryRow {
+  id: number;
+  session_id: string | null;
+  command: string;
+  pattern_key: string | null;
+  description: string | null;
+  choice: string;
+  resolver: string;
+  requested_at: number | null;
+  resolved_at: number;
+  wait_ms: number | null;
+  reason: string | null;
+}
+
+export interface ApprovalStatEntry {
+  count: number;
+  approved: number;
+  denied: number;
+  deny_rate: number;
+  avg_wait_ms: number;
+}
 
 // --------------------------------------------------------------------------
 // Brain visualization types

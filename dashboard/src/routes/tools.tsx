@@ -8,6 +8,8 @@ import { useQuery } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
 import { api } from "@/lib/api";
 import { Input } from "@/components/ui/input";
+import { Button } from "@/components/ui/button";
+import { ToolInvokeDrawer } from "@/components/ToolInvokeDrawer";
 
 export const Route = createFileRoute("/tools")({
   component: ToolsPage,
@@ -15,6 +17,7 @@ export const Route = createFileRoute("/tools")({
 
 function ToolsPage() {
   const [filter, setFilter] = useState("");
+  const [invokeTarget, setInvokeTarget] = useState<string | null>(null);
   const { data, isLoading } = useQuery({
     queryKey: ["dashboard", "tools"],
     queryFn: api.tools,
@@ -77,6 +80,14 @@ function ToolsPage() {
           </p>
         )}
 
+        {invokeTarget && (
+          <ToolInvokeDrawer
+            open={!!invokeTarget}
+            onOpenChange={(o) => !o && setInvokeTarget(null)}
+            toolName={invokeTarget}
+          />
+        )}
+
         <div className="space-y-10">
           {groups.map(([group, tools]) => (
             <section key={group}>
@@ -91,9 +102,16 @@ function ToolsPage() {
                 {tools.map((t) => (
                   <li
                     key={t.name}
-                    className="border-b border-rule px-1 py-2 font-mono text-[12px] tabular-nums text-ink transition-colors duration-120 ease-operator hover:bg-oxide-wash"
+                    className="flex items-center justify-between border-b border-rule px-1 py-2 font-mono text-[12px] tabular-nums text-ink transition-colors duration-120 ease-operator hover:bg-oxide-wash"
                   >
-                    {t.name}
+                    <span>{t.name}</span>
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      onClick={() => setInvokeTarget(t.name)}
+                    >
+                      INVOKE
+                    </Button>
                   </li>
                 ))}
               </ul>

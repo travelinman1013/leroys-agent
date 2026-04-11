@@ -12,6 +12,7 @@ This module provides:
 - hermes config wizard   - Re-run setup wizard
 """
 
+import logging
 import os
 import platform
 import re
@@ -20,8 +21,11 @@ import subprocess
 import sys
 import tempfile
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Dict, Any, Optional, List, Tuple
+
+logger = logging.getLogger(__name__)
 
 from tools.tool_backend_helpers import managed_nous_tools_enabled as _managed_nous_tools_enabled
 
@@ -2270,6 +2274,235 @@ _COMMENTED_SECTIONS = """
 #     provider: openrouter
 #     model: google/gemini-2.5-flash
 """
+
+
+# ---------------------------------------------------------------------------
+# Dashboard v2 Wave 0 — safe config mutator
+# ---------------------------------------------------------------------------
+
+# Allowlist of dotted-path keys the dashboard PUT /api/dashboard/config route
+# can mutate. Anything outside this set raises PermissionError. Patterns
+# ending in ``.*`` match any leaf under that namespace.
+CONFIG_MUTATION_ALLOWLIST = frozenset({
+    "approvals.mode",
+    "approvals.non_interactive_policy",
+    "approvals.gateway_timeout",
+    "compression.threshold",
+    "compression.target_ratio",
+    "code_execution.max_tool_output",
+    "cron.timezone",
+    "cron.defaults.*",
+    "platform_toolsets.*",
+    "mcp_servers.*.enabled",
+    "mcp_servers.*.disabled",
+    "agent.max_turns",
+    "agent.reasoning_effort",
+})
+
+# Keys whose values are read once at component init and cached. The dashboard
+# UI surfaces "Restart required" when one of these is mutated.
+_CONFIG_INIT_CACHED_KEYS = frozenset({
+    "compression.threshold",
+    "compression.target_ratio",
+    "code_execution.max_tool_output",
+    "platform_toolsets.*",
+    "mcp_servers.*.enabled",
+    "mcp_servers.*.disabled",
+    "agent.max_turns",
+})
+
+# Maximum number of dated backups to retain in ~/.hermes/config_backups/
+_CONFIG_BACKUP_KEEP = 30
+
+
+def _config_path_matches(dotkey: str, pattern: str) -> bool:
+    """Match a dotted path against an allowlist pattern with ``*`` wildcards."""
+    key_parts = dotkey.split(".")
+    pat_parts = pattern.split(".")
+    if len(key_parts) < len(pat_parts):
+        return False
+    # Allow trailing ``.*`` to match any number of remaining segments.
+    if pat_parts[-1] == "*":
+        if len(key_parts) < len(pat_parts) - 1:
+            return False
+        for kp, pp in zip(key_parts[: len(pat_parts) - 1], pat_parts[:-1]):
+            if pp == "*":
+                continue
+            if pp != kp:
+                return False
+        return True
+    # Otherwise lengths must match exactly.
+    if len(key_parts) != len(pat_parts):
+        return False
+    for kp, pp in zip(key_parts, pat_parts):
+        if pp == "*":
+            continue
+        if pp != kp:
+            return False
+    return True
+
+
+def _config_key_in_allowlist(dotkey: str) -> bool:
+    return any(_config_path_matches(dotkey, p) for p in CONFIG_MUTATION_ALLOWLIST)
+
+
+def _config_key_is_init_cached(dotkey: str) -> bool:
+    return any(_config_path_matches(dotkey, p) for p in _CONFIG_INIT_CACHED_KEYS)
+
+
+def _set_nested_key(cfg: Dict[str, Any], dotkey: str, value: Any) -> None:
+    """Set ``cfg[a][b][c] = value`` for dotkey ``a.b.c``, creating dicts."""
+    parts = dotkey.split(".")
+    cursor = cfg
+    for p in parts[:-1]:
+        nxt = cursor.get(p)
+        if not isinstance(nxt, dict):
+            nxt = {}
+            cursor[p] = nxt
+        cursor = nxt
+    cursor[parts[-1]] = value
+
+
+def _get_config_backup_dir() -> Path:
+    return get_hermes_home() / "config_backups"
+
+
+def list_config_backups() -> list[Dict[str, Any]]:
+    """Return ``[{filename, ts, size}, ...]`` for backups in
+    ``~/.hermes/config_backups/`` sorted oldest → newest."""
+    backups: list[Dict[str, Any]] = []
+    bdir = _get_config_backup_dir()
+    if not bdir.is_dir():
+        return backups
+    try:
+        for child in sorted(bdir.iterdir()):
+            if not child.is_file() or child.suffix != ".yaml":
+                continue
+            try:
+                stat = child.stat()
+                backups.append({
+                    "filename": child.name,
+                    "path": str(child),
+                    "ts": stat.st_mtime,
+                    "size": stat.st_size,
+                })
+            except OSError:
+                continue
+    except OSError:
+        pass
+    return backups
+
+
+def _backup_config_to_dated_file(cfg: Dict[str, Any]) -> Optional[Path]:
+    """Snapshot the current config to ``config_backups/<ts>.yaml``.
+
+    On the very first dashboard write, also stash a ``pristine-YYYY-MM-DD.yaml``
+    so the user can always restore the byte-original (modulo PyYAML's
+    comment loss).
+    """
+    try:
+        from utils import atomic_yaml_write
+        bdir = _get_config_backup_dir()
+        bdir.mkdir(parents=True, exist_ok=True)
+        # Microsecond precision so back-to-back writes don't collide
+        # within the same second.
+        ts = datetime.now().strftime("%Y%m%d-%H%M%S-%f")
+        backup_path = bdir / f"{ts}.yaml"
+        atomic_yaml_write(backup_path, cfg)
+
+        # First-write pristine snapshot
+        pristine_glob = list(bdir.glob("pristine-*.yaml"))
+        if not pristine_glob:
+            today = datetime.now().strftime("%Y-%m-%d")
+            atomic_yaml_write(bdir / f"pristine-{today}.yaml", cfg)
+
+        # Trim oldest if over retention limit
+        existing = sorted(bdir.glob("[0-9]*.yaml"))
+        if len(existing) > _CONFIG_BACKUP_KEEP:
+            for old in existing[: len(existing) - _CONFIG_BACKUP_KEEP]:
+                try:
+                    old.unlink()
+                except OSError:
+                    pass
+        return backup_path
+    except Exception as exc:
+        logger.warning("config backup failed: %s", exc)
+        return None
+
+
+def apply_config_mutations(mutations: Dict[str, Any]) -> Dict[str, Any]:
+    """Apply a batch of allowlisted config mutations atomically.
+
+    Args:
+        mutations: dotted-path → new value mapping (e.g.
+                   ``{"compression.threshold": 0.8}``).
+
+    Returns:
+        ``{"applied": [...], "restart_required": [...], "backup": "<filename>"}``
+
+    Raises:
+        PermissionError: if any key is outside the allowlist.
+        ValueError: if mutations is empty.
+    """
+    if not mutations:
+        raise ValueError("mutations must not be empty")
+
+    # Validate every key BEFORE touching disk so a partial write is impossible.
+    for dotkey in mutations:
+        if not _config_key_in_allowlist(dotkey):
+            raise PermissionError(
+                f"Config key '{dotkey}' is not in the dashboard mutation allowlist"
+            )
+
+    cfg = load_config()
+    backup_path = _backup_config_to_dated_file(cfg)
+
+    applied: list[str] = []
+    restart_required: list[str] = []
+    for dotkey, value in mutations.items():
+        _set_nested_key(cfg, dotkey, value)
+        applied.append(dotkey)
+        if _config_key_is_init_cached(dotkey):
+            restart_required.append(dotkey)
+
+    save_config(cfg)
+    reset_path_jail_cache()  # safe_roots/denied_paths may have moved
+
+    return {
+        "applied": applied,
+        "restart_required": restart_required,
+        "backup": backup_path.name if backup_path else None,
+    }
+
+
+def restore_config_backup(filename: str) -> Dict[str, Any]:
+    """Restore a backup file from ``config_backups/`` over the live config.
+
+    The current live config is snapshotted first (so a rollback is itself
+    reversible). Returns ``{"restored": filename, "backup": "<new ts>.yaml"}``.
+
+    Raises:
+        FileNotFoundError: if the named backup does not exist.
+    """
+    bdir = _get_config_backup_dir()
+    src = bdir / filename
+    if not src.is_file():
+        raise FileNotFoundError(f"backup not found: {filename}")
+    # Snapshot current before overwrite
+    cur = load_config()
+    new_backup = _backup_config_to_dated_file(cur)
+
+    from utils import atomic_yaml_write
+    with open(src, "r", encoding="utf-8") as f:
+        restored_cfg = yaml.safe_load(f) or {}
+    config_path = get_config_path()
+    atomic_yaml_write(config_path, restored_cfg)
+    _secure_file(config_path)
+    reset_path_jail_cache()
+    return {
+        "restored": filename,
+        "backup": new_backup.name if new_backup else None,
+    }
 
 
 def save_config(config: Dict[str, Any]):

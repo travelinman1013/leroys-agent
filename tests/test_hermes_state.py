@@ -935,7 +935,7 @@ class TestSchemaInit:
     def test_schema_version(self, db):
         cursor = db._conn.execute("SELECT version FROM schema_version")
         version = cursor.fetchone()[0]
-        assert version == 6
+        assert version == 7
 
     def test_title_column_exists(self, db):
         """Verify the title column was created in the sessions table."""
@@ -991,12 +991,12 @@ class TestSchemaInit:
         conn.commit()
         conn.close()
 
-        # Open with SessionDB — should migrate to v6
+        # Open with SessionDB — should migrate to current schema (v7)
         migrated_db = SessionDB(db_path=db_path)
 
         # Verify migration
         cursor = migrated_db._conn.execute("SELECT version FROM schema_version")
-        assert cursor.fetchone()[0] == 6
+        assert cursor.fetchone()[0] == 7
 
         # Verify title column exists and is NULL for existing sessions
         session = migrated_db.get_session("existing")
@@ -1375,3 +1375,109 @@ class TestConcurrentWriteSafety:
         assert "30" in src, (
             "SQLite timeout should be at least 30s to handle CLI/gateway lock contention"
         )
+
+
+class TestApprovalHistory:
+    """v7 schema: approval_history table + record_approval helper."""
+
+    def test_table_exists_after_init(self, db):
+        cursor = db._conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='approval_history'"
+        )
+        assert cursor.fetchone() is not None
+
+    def test_indexes_exist(self, db):
+        cursor = db._conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='approval_history'"
+        )
+        names = {r[0] for r in cursor.fetchall()}
+        assert "idx_approval_history_session" in names
+        assert "idx_approval_history_resolved_at" in names
+        assert "idx_approval_history_pattern" in names
+
+    def test_record_and_list(self, db):
+        rid = db.record_approval(
+            session_id="s1",
+            command="rm -rf /tmp/x",
+            pattern_key="rm -rf",
+            description="recursive delete",
+            choice="once",
+            resolver="dashboard",
+            requested_at=1000.0,
+            resolved_at=1001.5,
+            wait_ms=1500,
+        )
+        assert rid is not None and rid > 0
+        rows = db.list_approval_history(limit=10)
+        assert len(rows) == 1
+        assert rows[0]["choice"] == "once"
+        assert rows[0]["pattern_key"] == "rm -rf"
+        assert rows[0]["wait_ms"] == 1500
+
+    def test_pagination_and_filters(self, db):
+        for i in range(10):
+            db.record_approval(
+                session_id=f"s{i % 2}",
+                command=f"cmd-{i}",
+                pattern_key="rm -rf" if i % 3 == 0 else "curl",
+                description="x",
+                choice="deny" if i % 4 == 0 else "once",
+                resolver="dashboard",
+                resolved_at=1000.0 + i,
+            )
+        # session filter
+        rows = db.list_approval_history(session_id="s0")
+        assert all(r["session_id"] == "s0" for r in rows)
+        # choice filter
+        denied = db.list_approval_history(choice="deny")
+        assert all(r["choice"] == "deny" for r in denied)
+        # pagination
+        page1 = db.list_approval_history(limit=4, offset=0)
+        page2 = db.list_approval_history(limit=4, offset=4)
+        assert len(page1) == 4 and len(page2) == 4
+        assert page1[0]["id"] != page2[0]["id"]
+
+    def test_stats_aggregation(self, db):
+        for choice in ("once", "once", "deny", "session"):
+            db.record_approval(
+                session_id="s",
+                command="rm",
+                pattern_key="rm -rf",
+                description="d",
+                choice=choice,
+                resolver="dashboard",
+                resolved_at=time.time(),
+                wait_ms=200,
+            )
+        stats = db.approval_history_stats()
+        assert "rm -rf" in stats
+        entry = stats["rm -rf"]
+        assert entry["count"] == 4
+        assert entry["denied"] == 1
+        assert entry["approved"] == 3
+        assert 0 < entry["deny_rate"] < 1
+
+    def test_migration_from_v6_creates_table(self, tmp_path):
+        """Existing v6 DBs without approval_history must migrate cleanly.
+
+        The trick: open a fresh DB at v7, drop the approval_history table
+        to simulate a v6 install, manually rewind schema_version to 6,
+        then re-open and assert the migration kicked in.
+        """
+        db_path = tmp_path / "v6_state.db"
+        # Phase 1: create at current version, then rewind to v6 + drop table.
+        first = SessionDB(db_path=db_path)
+        first._conn.execute("DROP TABLE IF EXISTS approval_history")
+        first._conn.execute("UPDATE schema_version SET version = 6")
+        first._conn.commit()
+        first.close()
+
+        # Phase 2: re-open — should run v7 migration
+        migrated = SessionDB(db_path=db_path)
+        cursor = migrated._conn.execute("SELECT version FROM schema_version")
+        assert cursor.fetchone()[0] == 7
+        cursor = migrated._conn.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='approval_history'"
+        )
+        assert cursor.fetchone() is not None
+        migrated.close()

@@ -11,9 +11,9 @@
  * Plan reference: ~/.claude/plans/stateful-noodling-reddy.md (Wave 2 / R3)
  */
 import { createFileRoute, Link } from "@tanstack/react-router";
-import { useQuery } from "@tanstack/react-query";
-import { useCallback, useEffect, useRef, useState } from "react";
-import { RefreshCw, X } from "lucide-react";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Plus, RefreshCw, X } from "lucide-react";
 import {
   api,
   subscribeEvents,
@@ -23,6 +23,11 @@ import {
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import { BrainGraph } from "@/components/BrainGraph";
+import { BrainSearchBar } from "@/components/BrainSearchBar";
+import { BrainImportExportBar } from "@/components/BrainImportExportBar";
+import { MemoryEditorSheet } from "@/components/MemoryEditorSheet";
+import { useApiMutation } from "@/lib/mutations";
+import { useConfirm } from "@/lib/confirm";
 
 export const Route = createFileRoute("/brain")({
   component: BrainPage,
@@ -60,6 +65,35 @@ function BrainPage() {
   const [visibleTypes, setVisibleTypes] = useState<Set<BrainNode["type"]>>(
     () => new Set(ALL_TYPES),
   );
+
+  // F2: search query for substring filter
+  const [search, setSearch] = useState("");
+
+  // F2: memory editor state — used for both Add and Edit modes
+  const [editor, setEditor] = useState<{
+    open: boolean;
+    mode: "create" | "edit";
+    store: "MEMORY.md" | "USER.md";
+    hash?: string;
+    initialContent?: string;
+  }>({ open: false, mode: "create", store: "MEMORY.md" });
+
+  const filteredGraph = useMemo(() => {
+    if (!graph.data) return graph.data;
+    const needle = search.trim().toLowerCase();
+    if (!needle) return graph.data;
+    const matchingIds = new Set<string>();
+    for (const n of graph.data.nodes) {
+      if (n.label.toLowerCase().includes(needle)) matchingIds.add(n.id);
+    }
+    return {
+      ...graph.data,
+      nodes: graph.data.nodes.filter((n) => matchingIds.has(n.id)),
+      edges: graph.data.edges.filter(
+        (e) => matchingIds.has(e.source) && matchingIds.has(e.target),
+      ),
+    };
+  }, [graph.data, search]);
 
   // Pulse state — set of node IDs currently glowing. Each pulse self-clears
   // after 2 seconds. We use a Set instead of an array for O(1) membership
@@ -137,6 +171,20 @@ function BrainPage() {
             </div>
           )}
           <Button
+            size="sm"
+            variant="outline"
+            onClick={() =>
+              setEditor({
+                open: true,
+                mode: "create",
+                store: "MEMORY.md",
+              })
+            }
+          >
+            <Plus className="size-3" />
+            ADD MEMORY
+          </Button>
+          <Button
             size="icon"
             variant="ghost"
             onClick={() => graph.refetch()}
@@ -147,6 +195,9 @@ function BrainPage() {
           </Button>
         </div>
       </header>
+
+      <BrainImportExportBar />
+      <BrainSearchBar value={search} onChange={setSearch} />
 
       {/* Filter chips — type/shape legend, no color */}
       <div className="flex shrink-0 items-center gap-3 border-b border-rule bg-bg-alt px-10 py-3">
@@ -188,9 +239,9 @@ function BrainPage() {
               failed to load: {String(graph.error)}
             </div>
           )}
-          {graph.data && (
+          {filteredGraph && (
             <BrainGraph
-              graph={graph.data}
+              graph={filteredGraph}
               pulses={pulses}
               visibleTypes={visibleTypes}
               onNodeClick={setSelected}
@@ -204,10 +255,28 @@ function BrainPage() {
             <BrainNodeDetailCard
               node={selected}
               onClose={() => setSelected(null)}
+              onEdit={(store, hash, content) =>
+                setEditor({
+                  open: true,
+                  mode: "edit",
+                  store,
+                  hash,
+                  initialContent: content,
+                })
+              }
             />
           </div>
         )}
       </div>
+
+      <MemoryEditorSheet
+        open={editor.open}
+        onOpenChange={(o) => setEditor((p) => ({ ...p, open: o }))}
+        mode={editor.mode}
+        store={editor.store}
+        hash={editor.hash}
+        initialContent={editor.initialContent}
+      />
     </div>
   );
 }
@@ -267,11 +336,35 @@ function mapEventToNodeId(event: HermesEvent): string | null {
 function BrainNodeDetailCard({
   node,
   onClose,
+  onEdit,
 }: {
   node: BrainNode;
   onClose: () => void;
+  onEdit: (store: "MEMORY.md" | "USER.md", hash: string, content: string) => void;
 }) {
   const meta = node.metadata as Record<string, unknown>;
+  const queryClient = useQueryClient();
+  const confirm = useConfirm();
+  const isMemory = node.type === "memory";
+
+  // Memory nodes encode their store + hash in metadata: store="MEMORY.md"|"USER.md"
+  // and the hash is the prefix of node.id after "memory:".
+  const memoryStore: "MEMORY.md" | "USER.md" =
+    (meta.store as "MEMORY.md" | "USER.md") || "MEMORY.md";
+  const memoryHash = node.id.replace(/^memory:/, "");
+  const memoryContent = (meta.content as string) || (meta.preview as string) || "";
+
+  const del = useApiMutation({
+    mutationFn: () => api.deleteMemory(memoryHash, memoryStore),
+    successMessage: `Removed entry from ${memoryStore}`,
+    onSuccess: () => {
+      onClose();
+      queryClient.invalidateQueries({
+        queryKey: ["dashboard", "brain", "graph"],
+      });
+    },
+  });
+
   return (
     <div className="border border-rule bg-bg p-5">
       <div className="flex items-start justify-between gap-2 border-b border-rule pb-3">
@@ -301,6 +394,35 @@ function BrainNodeDetailCard({
           >
             VIEW TRANSCRIPT →
           </Link>
+        )}
+        {isMemory && (
+          <div className="flex items-center gap-2 pt-3">
+            <Button
+              size="sm"
+              variant="outline"
+              onClick={() =>
+                onEdit(memoryStore, memoryHash, memoryContent)
+              }
+            >
+              EDIT
+            </Button>
+            <Button
+              size="sm"
+              variant="destructive"
+              onClick={async () => {
+                const ok = await confirm({
+                  title: "Delete memory entry?",
+                  description: "Cannot be undone.",
+                  destructive: true,
+                  confirmLabel: "DELETE",
+                });
+                if (ok) del.mutate();
+              }}
+              disabled={del.isPending}
+            >
+              DELETE
+            </Button>
+          </div>
         )}
       </div>
     </div>

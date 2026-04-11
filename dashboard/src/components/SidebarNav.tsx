@@ -12,11 +12,13 @@ const items: NavItem[] = [
   { to: "/", label: "Live", num: "01" },
   { to: "/brain", label: "Brain", num: "02" },
   { to: "/sessions", label: "Sessions", num: "03" },
-  { to: "/cron", label: "Cron", num: "04" },
-  { to: "/tools", label: "Tools", num: "05" },
-  { to: "/skills", label: "Skills", num: "06" },
-  { to: "/mcp", label: "MCP", num: "07" },
-  { to: "/health", label: "Health", num: "08" },
+  { to: "/approvals", label: "Approvals", num: "04" },
+  { to: "/cron", label: "Cron", num: "05" },
+  { to: "/tools", label: "Tools", num: "06" },
+  { to: "/skills", label: "Skills", num: "07" },
+  { to: "/mcp", label: "MCP", num: "08" },
+  { to: "/health", label: "Health", num: "09" },
+  { to: "/config", label: "Config", num: "10" },
 ];
 
 export function SidebarNav() {
