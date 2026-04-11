@@ -204,6 +204,27 @@ def _tail_read_ndjson(
     return out
 
 
+def _parse_ts(value: Any) -> Optional[float]:
+    """Parse a stored event timestamp into a unix-time float.
+
+    The event bus writes ``ts`` as ISO-8601 with microsecond precision
+    (``datetime.now(tz).isoformat()``). Older entries may be a float.
+    """
+    if value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    if isinstance(value, str):
+        try:
+            from datetime import datetime
+            # Tolerate trailing Z or +00:00
+            v = value.replace("Z", "+00:00")
+            return datetime.fromisoformat(v).timestamp()
+        except Exception:
+            return None
+    return None
+
+
 def _walk_ndjson_rotation(
     base_path: Optional[Path] = None,
     backup_count: int = 3,
@@ -1008,6 +1029,216 @@ class DashboardRoutes:
     # F2 — Brain/Memory Editor (Dashboard v2)
     # ==================================================================
 
+    # ==================================================================
+    # F3 — Live Console v2 + Approval Command Center (Dashboard v2)
+    # ==================================================================
+
+    @require_dashboard_auth
+    async def handle_events_search(self, request: "web.Request") -> "web.Response":
+        """Filter events.ndjson by event-type wildcard, free-text query,
+        session id, and time window. Walks rotated files when ``window``
+        spans the rotation boundary.
+        """
+        try:
+            limit = max(1, min(2000, int(request.query.get("limit", "500"))))
+        except ValueError:
+            return _json_err(ValueError("limit must be int"), 400)
+
+        type_param = request.query.get("types") or ""
+        type_filters = [t.strip() for t in type_param.split(",") if t.strip()]
+        query = (request.query.get("q") or "").lower()
+        session_filter = request.query.get("session") or None
+        try:
+            t_from = float(request.query["from"]) if "from" in request.query else None
+            t_to = float(request.query["to"]) if "to" in request.query else None
+        except ValueError:
+            return _json_err(ValueError("from/to must be numeric unix ts"), 400)
+
+        def _match_type(event_type: str) -> bool:
+            if not type_filters:
+                return True
+            for pat in type_filters:
+                if pat.endswith(".*"):
+                    if event_type.startswith(pat[:-2]):
+                        return True
+                elif event_type == pat:
+                    return True
+            return False
+
+        def _match_event(e: Dict[str, Any]) -> bool:
+            etype = e.get("type", "")
+            if not _match_type(etype):
+                return False
+            if session_filter and e.get("session_id") != session_filter:
+                return False
+            if t_from is not None or t_to is not None:
+                ts = _parse_ts(e.get("ts"))
+                if ts is None:
+                    return False
+                if t_from is not None and ts < t_from:
+                    return False
+                if t_to is not None and ts > t_to:
+                    return False
+            if query:
+                # Search the data dict + type
+                blob = (etype + " " + json.dumps(e.get("data") or {}, default=str)).lower()
+                if query not in blob:
+                    return False
+            return True
+
+        try:
+            # If a window is specified, walk all rotated files; else tail-read.
+            if t_from is not None or t_to is not None:
+                events: list[dict] = []
+                for raw in _walk_ndjson_rotation():
+                    if _match_event(raw):
+                        events.append(raw)
+                events = events[-limit:]
+            else:
+                events = _tail_read_ndjson(
+                    filter_fn=_match_event, limit=limit, tail_bytes=4 * 1024 * 1024,
+                )
+            return _json_ok({"events": events, "count": len(events)})
+        except Exception as exc:
+            return _json_err(exc)
+
+    @require_dashboard_auth
+    async def handle_events_export(self, request: "web.Request") -> "web.Response":
+        """Stream filtered events as application/x-ndjson.
+
+        Honors the same query params as /events/search but returns NDJSON
+        for download instead of a JSON envelope. Capped at 50k events to
+        keep dashboard exports reasonable.
+        """
+        type_param = request.query.get("types") or ""
+        type_filters = [t.strip() for t in type_param.split(",") if t.strip()]
+        try:
+            t_from = float(request.query["from"]) if "from" in request.query else None
+            t_to = float(request.query["to"]) if "to" in request.query else None
+        except ValueError:
+            return _json_err(ValueError("from/to must be numeric unix ts"), 400)
+
+        def _match_type(event_type: str) -> bool:
+            if not type_filters:
+                return True
+            for pat in type_filters:
+                if pat.endswith(".*"):
+                    if event_type.startswith(pat[:-2]):
+                        return True
+                elif event_type == pat:
+                    return True
+            return False
+
+        def _match_event(e: Dict[str, Any]) -> bool:
+            if not _match_type(e.get("type", "")):
+                return False
+            if t_from is not None or t_to is not None:
+                ts = _parse_ts(e.get("ts"))
+                if ts is None:
+                    return False
+                if t_from is not None and ts < t_from:
+                    return False
+                if t_to is not None and ts > t_to:
+                    return False
+            return True
+
+        response = web.StreamResponse(
+            status=200,
+            headers={
+                "Content-Type": "application/x-ndjson",
+                "Content-Disposition": 'attachment; filename="hermes-events.ndjson"',
+                "X-Accel-Buffering": "no",
+            },
+        )
+        await response.prepare(request)
+        try:
+            cap = 50000
+            n = 0
+            for raw in _walk_ndjson_rotation():
+                if not _match_event(raw):
+                    continue
+                line = json.dumps(raw, default=str) + "\n"
+                await response.write(line.encode("utf-8"))
+                n += 1
+                if n >= cap:
+                    break
+        except (asyncio.CancelledError, ConnectionResetError):
+            pass
+        except Exception as exc:
+            logger.debug("dashboard: events export failed: %s", exc)
+        return response
+
+    @require_dashboard_auth
+    async def handle_approvals_history(self, request: "web.Request") -> "web.Response":
+        try:
+            limit = max(1, min(500, int(request.query.get("limit", "100"))))
+            offset = max(0, int(request.query.get("offset", "0")))
+        except ValueError:
+            return _json_err(ValueError("limit/offset must be int"), 400)
+        pattern = request.query.get("pattern") or None
+        session = request.query.get("session") or None
+        choice = request.query.get("choice") or None
+        try:
+            since = float(request.query["since"]) if "since" in request.query else None
+        except ValueError:
+            return _json_err(ValueError("since must be numeric"), 400)
+        try:
+            from hermes_state import SessionDB
+            db = SessionDB()
+            rows = db.list_approval_history(
+                limit=limit, offset=offset,
+                session_id=session, pattern_key=pattern,
+                choice=choice, since=since,
+            )
+            return _json_ok({"rows": rows, "limit": limit, "offset": offset})
+        except Exception as exc:
+            return _json_err(exc)
+
+    @require_dashboard_auth
+    async def handle_approvals_stats(self, request: "web.Request") -> "web.Response":
+        window = request.query.get("window", "7d")
+        seconds_map = {"1h": 3600, "24h": 86400, "7d": 604800, "30d": 2592000}
+        delta = seconds_map.get(window, 604800)
+        since = time.time() - delta
+        try:
+            from hermes_state import SessionDB
+            db = SessionDB()
+            stats = db.approval_history_stats(since=since)
+            return _json_ok({"stats": stats, "window": window, "since": since})
+        except Exception as exc:
+            return _json_err(exc)
+
+    @require_dashboard_auth
+    async def handle_approvals_bulk(self, request: "web.Request") -> "web.Response":
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        keys = body.get("session_keys") or []
+        choice = (body.get("choice") or "").lower()
+        if not isinstance(keys, list) or not keys:
+            return _json_err(ValueError("session_keys (non-empty list) required"), 400)
+        if choice not in ("once", "session", "always", "deny", "accept", "ignore"):
+            return _json_err(ValueError("choice required"), 400)
+        # LangGraph schema translation matches handle_resolve_approval
+        translation = {"accept": "once", "ignore": "deny"}
+        choice = translation.get(choice, choice)
+
+        from tools.approval import resolve_gateway_approval
+        results: list[dict] = []
+        for key in keys:
+            row = {"session_key": str(key), "ok": False}
+            try:
+                n = resolve_gateway_approval(str(key), choice)
+                row["resolved"] = n
+                row["ok"] = n > 0
+                if n == 0:
+                    row["error"] = "no pending approval"
+            except Exception as exc:
+                row["error"] = str(exc)
+            results.append(row)
+        return _json_ok({"results": results, "choice": choice})
+
     @require_dashboard_auth
     async def handle_brain_memory_add(self, request: "web.Request") -> "web.Response":
         try:
@@ -1353,7 +1584,13 @@ def register_dashboard_routes(
     app.router.add_post("/api/dashboard/sessions/{id}/inject", routes.handle_inject_message)
     app.router.add_post("/api/dashboard/sessions/{id}/reopen", routes.handle_reopen_session)
     app.router.add_get("/api/dashboard/approvals", routes.handle_list_approvals)
+    # F3 — Live Console v2 + Approval Command Center
+    app.router.add_get("/api/dashboard/approvals/history", routes.handle_approvals_history)
+    app.router.add_get("/api/dashboard/approvals/stats", routes.handle_approvals_stats)
+    app.router.add_post("/api/dashboard/approvals/bulk", routes.handle_approvals_bulk)
     app.router.add_post("/api/dashboard/approvals/{session_key}", routes.handle_resolve_approval)
+    app.router.add_get("/api/dashboard/events/search", routes.handle_events_search)
+    app.router.add_get("/api/dashboard/events/export", routes.handle_events_export)
     app.router.add_get("/api/dashboard/tools", routes.handle_tools)
     app.router.add_get("/api/dashboard/skills", routes.handle_skills)
     app.router.add_get("/api/dashboard/mcp", routes.handle_mcp)

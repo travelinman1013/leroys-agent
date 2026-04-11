@@ -7,14 +7,28 @@
  */
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { useNavigate } from "@tanstack/react-router";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
-import { Pause, Play, Trash2, Filter } from "lucide-react";
+import { Pause, Play, Trash2, Filter, Download } from "lucide-react";
 import type { HermesEvent } from "@/lib/api";
-import { subscribeEvents } from "@/lib/api";
+import { subscribeEvents, api } from "@/lib/api";
 import { cn, eventClass, eventShortLabel, relTimeFromIso } from "@/lib/utils";
 
 const MAX_EVENTS = 1000;
+
+const EVENT_CATEGORIES = [
+  { label: "TURN", patterns: ["turn.started", "turn.ended"] },
+  { label: "TOOL", patterns: ["tool.invoked", "tool.completed"] },
+  { label: "LLM", patterns: ["llm.call"] },
+  { label: "APPROVAL", patterns: ["approval.requested", "approval.resolved"] },
+  { label: "COMPACT", patterns: ["compaction"] },
+  { label: "CRON", patterns: ["cron.fired"] },
+  { label: "SESSION", patterns: ["session.started", "session.ended", "session.forked", "session.injected", "session.deleted", "session.exported", "session.reopened"] },
+  { label: "MEMORY", patterns: ["memory.added", "memory.replaced", "memory.removed"] },
+] as const;
+
+type CategoryLabel = (typeof EVENT_CATEGORIES)[number]["label"];
 
 type Props = {
   className?: string;
@@ -26,8 +40,30 @@ export function EventStream({ className, compact = false }: Props) {
   const [filter, setFilter] = useState("");
   const [paused, setPaused] = useState(false);
   const [autoScroll, setAutoScroll] = useState(true);
+  const [activeCats, setActiveCats] = useState<Set<CategoryLabel>>(
+    () => new Set(EVENT_CATEGORIES.map((c) => c.label)),
+  );
   const bufferRef = useRef<HermesEvent[]>([]);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const navigate = useNavigate();
+
+  const isCatActive = (label: CategoryLabel) => activeCats.has(label);
+  const toggleCat = (label: CategoryLabel) =>
+    setActiveCats((prev) => {
+      const next = new Set(prev);
+      if (next.has(label)) next.delete(label);
+      else next.add(label);
+      return next;
+    });
+
+  const matchesActiveCats = (type: string) => {
+    for (const cat of EVENT_CATEGORIES) {
+      if (cat.patterns.some((p) => type === p || type.startsWith(p))) {
+        return activeCats.has(cat.label);
+      }
+    }
+    return true; // unrecognized event types always pass
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -57,27 +93,28 @@ export function EventStream({ className, compact = false }: Props) {
     }
   }, [events.length, autoScroll]);
 
-  // Regex filter
+  // Filter pipeline: chip categories → text/regex
   const filtered = useMemo(() => {
-    if (!filter.trim()) return events;
+    let base = events.filter((e) => matchesActiveCats(e.type));
+    if (!filter.trim()) return base;
     try {
       const regex = new RegExp(filter, "i");
-      return events.filter(
+      return base.filter(
         (e) =>
           regex.test(e.type) ||
           regex.test(JSON.stringify(e.data)) ||
           (e.session_id && regex.test(e.session_id)),
       );
     } catch {
-      // Invalid regex — fall back to substring match
       const lower = filter.toLowerCase();
-      return events.filter(
+      return base.filter(
         (e) =>
           e.type.toLowerCase().includes(lower) ||
           JSON.stringify(e.data).toLowerCase().includes(lower),
       );
     }
-  }, [events, filter]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [events, filter, activeCats]);
 
   const handleClear = () => {
     bufferRef.current = [];
@@ -86,6 +123,27 @@ export function EventStream({ className, compact = false }: Props) {
 
   return (
     <div className={cn("flex h-full flex-col", className)}>
+      {/* Chip filter row */}
+      <div className="flex flex-wrap items-center gap-1.5 border-b border-rule px-4 py-2">
+        {EVENT_CATEGORIES.map((cat) => {
+          const active = isCatActive(cat.label);
+          return (
+            <button
+              key={cat.label}
+              type="button"
+              onClick={() => toggleCat(cat.label)}
+              className={cn(
+                "border px-2 py-0.5 font-mono text-[10px] uppercase tracking-marker transition-colors duration-120 ease-operator",
+                active
+                  ? "border-oxide-edge bg-oxide-wash text-oxide"
+                  : "border-rule-strong text-ink-faint hover:border-oxide-edge hover:text-ink",
+              )}
+            >
+              {cat.label}
+            </button>
+          );
+        })}
+      </div>
       {/* Toolbar — hairline rule, mono, no chrome */}
       <div className="flex items-center gap-3 border-b border-rule px-4 py-2.5">
         <div className="relative flex-1">
@@ -101,6 +159,23 @@ export function EventStream({ className, compact = false }: Props) {
           {filtered.length}
           {filtered.length !== events.length && ` / ${events.length}`}
         </span>
+        <Button
+          variant="ghost"
+          size="icon"
+          className="h-7 w-7 text-ink-muted hover:text-oxide"
+          asChild
+          title="Export filtered events as NDJSON (1h window)"
+        >
+          <a
+            href={api.exportEventsUrl({
+              from: Math.floor(Date.now() / 1000) - 3600,
+            })}
+            target="_blank"
+            rel="noreferrer"
+          >
+            <Download className="size-3.5" />
+          </a>
+        </Button>
         <Button
           variant="ghost"
           size="icon"
@@ -142,7 +217,12 @@ export function EventStream({ className, compact = false }: Props) {
         )}
         <ul>
           {filtered.map((event, idx) => (
-            <EventRow key={`${event.ts}-${idx}`} event={event} compact={compact} />
+            <EventRow
+              key={`${event.ts}-${idx}`}
+              event={event}
+              compact={compact}
+              onSessionClick={(sid) => navigate({ to: "/sessions/$id", params: { id: sid } })}
+            />
           ))}
         </ul>
       </div>
@@ -157,7 +237,15 @@ export function EventStream({ className, compact = false }: Props) {
   );
 }
 
-function EventRow({ event, compact }: { event: HermesEvent; compact: boolean }) {
+function EventRow({
+  event,
+  compact,
+  onSessionClick,
+}: {
+  event: HermesEvent;
+  compact: boolean;
+  onSessionClick?: (id: string) => void;
+}) {
   const [expanded, setExpanded] = useState(false);
   const evtCls = eventClass(event.type);
   const label = eventShortLabel(event.type);
@@ -184,9 +272,17 @@ function EventRow({ event, compact }: { event: HermesEvent; compact: boolean }) 
         <span className="evt-label">{label}</span>
         <span className="evt-body truncate">
           {!compact && event.session_id && (
-            <span className="mr-3 text-ink-faint">
+            <button
+              type="button"
+              className="mr-3 text-ink-faint hover:text-oxide"
+              onClick={(e) => {
+                e.stopPropagation();
+                onSessionClick?.(event.session_id!);
+              }}
+              title="Open session"
+            >
               {String(event.session_id).slice(0, 8)}
-            </span>
+            </button>
           )}
           {summarizeData(event)}
         </span>

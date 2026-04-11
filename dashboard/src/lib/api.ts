@@ -381,7 +381,106 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body),
     }),
+
+  // F3 — Live Console v2 + Approval Command Center
+  searchEvents: (opts: {
+    types?: string[];
+    q?: string;
+    session?: string;
+    from?: number;
+    to?: number;
+    limit?: number;
+  } = {}) => {
+    const params = new URLSearchParams();
+    if (opts.types?.length) params.set("types", opts.types.join(","));
+    if (opts.q) params.set("q", opts.q);
+    if (opts.session) params.set("session", opts.session);
+    if (opts.from !== undefined) params.set("from", String(opts.from));
+    if (opts.to !== undefined) params.set("to", String(opts.to));
+    if (opts.limit) params.set("limit", String(opts.limit));
+    const qs = params.toString();
+    return apiFetch<{ events: HermesEvent[]; count: number }>(
+      `/api/dashboard/events/search${qs ? `?${qs}` : ""}`,
+    );
+  },
+
+  exportEventsUrl: (opts: { types?: string[]; from?: number; to?: number } = {}) => {
+    const params = new URLSearchParams();
+    if (opts.types?.length) params.set("types", opts.types.join(","));
+    if (opts.from !== undefined) params.set("from", String(opts.from));
+    if (opts.to !== undefined) params.set("to", String(opts.to));
+    const qs = params.toString();
+    return `/api/dashboard/events/export${qs ? `?${qs}` : ""}`;
+  },
+
+  approvalsHistory: (opts: {
+    limit?: number;
+    offset?: number;
+    pattern?: string;
+    session?: string;
+    choice?: string;
+    since?: number;
+  } = {}) => {
+    const params = new URLSearchParams();
+    if (opts.limit) params.set("limit", String(opts.limit));
+    if (opts.offset) params.set("offset", String(opts.offset));
+    if (opts.pattern) params.set("pattern", opts.pattern);
+    if (opts.session) params.set("session", opts.session);
+    if (opts.choice) params.set("choice", opts.choice);
+    if (opts.since !== undefined) params.set("since", String(opts.since));
+    const qs = params.toString();
+    return apiFetch<{
+      rows: ApprovalHistoryRow[];
+      limit: number;
+      offset: number;
+    }>(`/api/dashboard/approvals/history${qs ? `?${qs}` : ""}`);
+  },
+
+  approvalsStats: (window: "1h" | "24h" | "7d" | "30d" = "7d") =>
+    apiFetch<{
+      stats: Record<string, ApprovalStatEntry>;
+      window: string;
+      since: number;
+    }>(`/api/dashboard/approvals/stats?window=${window}`),
+
+  bulkResolveApprovals: (
+    sessionKeys: string[],
+    choice: "once" | "session" | "always" | "deny" | "accept" | "ignore",
+  ) =>
+    apiFetch<{
+      results: Array<{ session_key: string; ok: boolean; resolved?: number; error?: string }>;
+      choice: string;
+    }>("/api/dashboard/approvals/bulk", {
+      method: "POST",
+      body: JSON.stringify({ session_keys: sessionKeys, choice }),
+    }),
 };
+
+// --------------------------------------------------------------------------
+// F3 types
+// --------------------------------------------------------------------------
+
+export interface ApprovalHistoryRow {
+  id: number;
+  session_id: string | null;
+  command: string;
+  pattern_key: string | null;
+  description: string | null;
+  choice: string;
+  resolver: string;
+  requested_at: number | null;
+  resolved_at: number;
+  wait_ms: number | null;
+  reason: string | null;
+}
+
+export interface ApprovalStatEntry {
+  count: number;
+  approved: number;
+  denied: number;
+  deny_rate: number;
+  avg_wait_ms: number;
+}
 
 // --------------------------------------------------------------------------
 // Brain visualization types
