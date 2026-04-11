@@ -325,19 +325,34 @@ function Turn({
           {speaker}
         </div>
         <div className="tabular-nums text-ink-faint">#{index + 1}</div>
-      </div>
-      <div className="min-w-0 text-[15px] leading-relaxed text-ink-2">
+        {/*
+          Fork affordance lives in the margin gutter rather than
+          floated into the content column. Previously it was
+          `opacity-0 group-hover:opacity-100` inside the assistant
+          body, which gave it zero discoverability — users couldn't
+          tell the feature existed until they happened to hover over
+          an assistant turn on an ended session. The gutter form is
+          always visible on every eligible turn (assistant + ended
+          session), faint by default, brightening to oxide on hover.
+          Uses the same 100px gutter that holds the timestamp /
+          speaker / index so it shares the editorial-transcript
+          rhythm per DESIGN.md §6 /sessions/$id row.
+        */}
         {canFork && (
           <button
             type="button"
             onClick={onFork}
-            className="float-right ml-4 inline-flex items-center gap-1 font-mono text-[10px] uppercase tracking-marker text-ink-muted opacity-0 transition-opacity duration-120 ease-operator hover:text-oxide group-hover:opacity-100"
+            className="mt-1 inline-flex items-center gap-1 font-mono text-[9px] uppercase tracking-marker text-ink-faint transition-colors duration-120 ease-operator hover:text-oxide"
             title={`Fork from turn ${index + 1}`}
+            aria-label={`Fork session from turn ${index + 1}`}
           >
-            <GitBranch className="size-3" />
-            FORK FROM HERE
+            <GitBranch className="size-2.5" />
+            FORK
           </button>
         )}
+      </div>
+      <div className="min-w-0 text-[15px] leading-relaxed text-ink-2">
+        {/* Fork button relocated to the margin gutter above. */}
         {message.tool_name && (
           <ToolCallout
             name={String(message.tool_name)}
