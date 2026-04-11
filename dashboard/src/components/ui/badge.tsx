@@ -2,21 +2,19 @@ import * as React from "react";
 import { cva, type VariantProps } from "class-variance-authority";
 import { cn } from "@/lib/utils";
 
+// Operator's Desk badge: mono UPPERCASE patch-bay chip, 2px radius,
+// 1px hairline, no fills (semantic colors are tinted from the wash).
 const badgeVariants = cva(
-  "inline-flex items-center rounded-md border px-2 py-0.5 text-xs font-semibold transition-colors focus:outline-none focus:ring-2 focus:ring-ring focus:ring-offset-2",
+  "inline-flex items-center rounded-sm border px-2 py-0.5 font-mono text-[10px] uppercase tracking-label transition-colors focus:outline-none",
   {
     variants: {
       variant: {
-        default:
-          "border-transparent bg-primary text-primary-foreground shadow hover:bg-primary/80",
-        secondary:
-          "border-transparent bg-secondary text-secondary-foreground hover:bg-secondary/80",
-        destructive:
-          "border-transparent bg-destructive text-destructive-foreground shadow hover:bg-destructive/80",
-        outline: "text-foreground",
-        success:
-          "border-transparent bg-emerald-600/20 text-emerald-300 border-emerald-900/50",
-        warn: "border-transparent bg-amber-600/20 text-amber-300 border-amber-900/50",
+        default: "border-oxide-edge bg-oxide-wash text-oxide",
+        secondary: "border-rule-strong bg-transparent text-ink-2",
+        destructive: "border-danger/40 bg-transparent text-danger",
+        outline: "border-rule-strong bg-transparent text-ink-2",
+        success: "border-success/40 bg-transparent text-success",
+        warn: "border-warning/40 bg-transparent text-warning",
       },
     },
     defaultVariants: {

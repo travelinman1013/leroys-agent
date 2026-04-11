@@ -197,5 +197,5 @@ component change to the dashboard. It defines:
   Berkeley Mono, etc.)
 
 Do not deviate from `DESIGN.md` without explicit user approval. The
-visual reference preview file is `/tmp/d-c-preview-1775912565.html` —
-keep it in sync if `DESIGN.md` changes.
+visual reference preview file is `~/.hermes/operator-desk-preview.html`
+— keep it in sync if `DESIGN.md` changes.

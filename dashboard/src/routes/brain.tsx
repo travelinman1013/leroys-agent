@@ -13,18 +13,16 @@
 import { createFileRoute, Link } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Brain, RefreshCw, X } from "lucide-react";
+import { RefreshCw, X } from "lucide-react";
 import {
   api,
   subscribeEvents,
   type BrainNode,
   type HermesEvent,
 } from "@/lib/api";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
-import { BrainGraph, BRAIN_NODE_COLORS } from "@/components/BrainGraph";
+import { BrainGraph } from "@/components/BrainGraph";
 
 export const Route = createFileRoute("/brain")({
   component: BrainPage,
@@ -116,62 +114,61 @@ function BrainPage() {
   };
 
   return (
-    <div className="flex h-full flex-col">
-      {/* Header */}
-      <header className="flex shrink-0 items-center justify-between border-b bg-card/30 p-4">
+    <div className="flex h-full flex-col bg-bg">
+      {/* Header — page stamp + ONE BIG NUMBER (node count) */}
+      <header className="grid shrink-0 grid-cols-[1fr_auto] items-end gap-6 border-b border-rule px-10 pb-6 pt-9">
         <div>
-          <h1 className="flex items-center gap-2 text-2xl font-semibold tracking-tight">
-            <Brain className="size-6 text-violet-400" />
-            Brain
+          <h1 className="page-stamp text-[56px]">
+            the <em>brain</em>
           </h1>
-          <p className="text-sm text-muted-foreground">
-            Hermes' typed knowledge graph — memory, sessions, capabilities,
-            and live activity. Click any node for details.
+          <p className="mt-3 font-mono text-[10px] uppercase tracking-marker text-ink-muted">
+            DETERMINISTIC SEED 0x4A · STAR CHART · DRAG TO PAN
           </p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-end gap-8">
           {stats && (
-            <div className="hidden gap-2 text-xs text-muted-foreground md:flex">
-              <StatPill label="memory" value={stats.memory} />
-              <StatPill label="sessions" value={stats.session} />
-              <StatPill label="skills" value={stats.skill} />
-              <StatPill label="tools" value={stats.tool} />
-              <StatPill label="mcp" value={stats.mcp} />
-              <StatPill label="cron" value={stats.cron} />
+            <div className="text-right">
+              <div className="font-display text-[72px] font-bold leading-none tracking-big tabular-nums text-oxide">
+                {stats.memory + stats.session + stats.skill + stats.tool + stats.mcp + stats.cron}
+              </div>
+              <div className="mt-2 font-mono text-[10px] uppercase tracking-marker text-ink-muted">
+                NODES · {stats.edges} EDGES
+              </div>
             </div>
           )}
           <Button
-            size="sm"
+            size="icon"
             variant="ghost"
             onClick={() => graph.refetch()}
             disabled={graph.isFetching}
-            title="Refetch graph (server cache buckets requests every 5s)"
+            title="Refetch graph"
           >
-            <RefreshCw className={cn("size-4", graph.isFetching && "animate-spin")} />
+            <RefreshCw className={cn("size-3.5", graph.isFetching && "animate-spin")} />
           </Button>
         </div>
       </header>
 
-      {/* Filter chips */}
-      <div className="flex shrink-0 items-center gap-2 border-b bg-card/10 p-2">
+      {/* Filter chips — type/shape legend, no color */}
+      <div className="flex shrink-0 items-center gap-3 border-b border-rule bg-bg-alt px-10 py-3">
+        <span className="font-mono text-[10px] uppercase tracking-marker text-ink-faint">
+          ─── FILTER BY TYPE ──
+        </span>
         {ALL_TYPES.map((type) => {
           const active = visibleTypes.has(type);
+          const count = stats?.[type] ?? 0;
           return (
             <button
               key={type}
               onClick={() => toggleType(type)}
               className={cn(
-                "flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs transition-colors",
+                "flex items-baseline gap-2 rounded-sm border px-2.5 py-1 font-mono text-[10px] uppercase tracking-marker transition-colors duration-120 ease-operator",
                 active
-                  ? "border-foreground/30 bg-secondary text-secondary-foreground"
-                  : "border-border text-muted-foreground hover:bg-secondary/40",
+                  ? "border-oxide-edge bg-oxide-wash text-oxide"
+                  : "border-rule-strong text-ink-faint hover:border-oxide-edge hover:text-ink",
               )}
             >
-              <span
-                className="size-2 rounded-full"
-                style={{ backgroundColor: BRAIN_NODE_COLORS[type] }}
-              />
-              {TYPE_LABELS[type]}
+              <span>{TYPE_LABELS[type]}</span>
+              <span className="tabular-nums">{count}</span>
             </button>
           );
         })}
@@ -181,13 +178,14 @@ function BrainPage() {
       <div className="relative flex min-h-0 flex-1">
         <div className="relative min-h-0 flex-1">
           {graph.isLoading && (
-            <div className="absolute inset-0 grid place-items-center text-sm text-muted-foreground">
-              Loading brain snapshot…
+            <div className="absolute inset-0 grid place-items-center font-mono text-[11px] uppercase tracking-marker text-ink-muted">
+              loading brain snapshot
+              <span className="loading-cursor ml-2" />
             </div>
           )}
           {graph.error && (
-            <div className="absolute inset-0 grid place-items-center text-sm text-destructive">
-              Failed to load: {String(graph.error)}
+            <div className="absolute inset-0 grid place-items-center font-mono text-[11px] uppercase tracking-marker text-danger">
+              failed to load: {String(graph.error)}
             </div>
           )}
           {graph.data && (
@@ -202,7 +200,7 @@ function BrainPage() {
         </div>
 
         {selected && (
-          <div className="w-80 shrink-0 overflow-y-auto border-l bg-card/40 p-4">
+          <div className="w-80 shrink-0 overflow-y-auto border-l border-rule bg-bg-alt p-6">
             <BrainNodeDetailCard
               node={selected}
               onClose={() => setSelected(null)}
@@ -217,14 +215,6 @@ function BrainPage() {
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
-
-function StatPill({ label, value }: { label: string; value: number }) {
-  return (
-    <span className="rounded-md border border-border/60 bg-card/50 px-2 py-0.5 font-mono">
-      {label} <span className="text-foreground">{value}</span>
-    </span>
-  );
-}
 
 /**
  * Translate a HermesEvent into a brain graph node ID. Returns null when
@@ -283,38 +273,37 @@ function BrainNodeDetailCard({
 }) {
   const meta = node.metadata as Record<string, unknown>;
   return (
-    <Card className="border-border/60">
-      <CardHeader className="pb-2">
-        <div className="flex items-start justify-between gap-2">
-          <CardTitle className="flex items-center gap-2 text-sm">
-            <span
-              className="size-3 rounded-full"
-              style={{ backgroundColor: BRAIN_NODE_COLORS[node.type] }}
-            />
+    <div className="border border-rule bg-bg p-5">
+      <div className="flex items-start justify-between gap-2 border-b border-rule pb-3">
+        <div className="min-w-0">
+          <div className="font-mono text-[10px] uppercase tracking-marker text-oxide">
+            {node.type}
+          </div>
+          <div className="mt-1 break-words font-stamp text-[28px] italic leading-tight text-ink">
             {node.label}
-          </CardTitle>
-          <Button size="sm" variant="ghost" onClick={onClose} className="h-6 w-6 p-0">
-            <X className="size-3.5" />
-          </Button>
+          </div>
         </div>
-        <Badge variant="secondary" className="mt-1 w-fit font-mono text-[10px]">
-          {node.type}
-        </Badge>
-      </CardHeader>
-      <CardContent className="space-y-3 pt-0 text-xs">
+        <button
+          onClick={onClose}
+          className="text-ink-muted transition-colors duration-120 ease-operator hover:text-oxide"
+          aria-label="close"
+        >
+          <X className="size-4" />
+        </button>
+      </div>
+      <div className="mt-4 space-y-3">
         <MetadataList meta={meta} />
-
         {node.type === "session" && (
           <Link
             to="/sessions/$id"
             params={{ id: node.id.replace(/^session:/, "") }}
-            className="inline-flex items-center text-xs text-cyan-400 hover:underline"
+            className="inline-flex items-center font-mono text-[11px] uppercase tracking-marker text-oxide transition-colors duration-120 ease-operator hover:text-oxide-hover"
           >
-            View transcript →
+            VIEW TRANSCRIPT →
           </Link>
         )}
-      </CardContent>
-    </Card>
+      </div>
+    </div>
   );
 }
 
@@ -323,14 +312,20 @@ function MetadataList({ meta }: { meta: Record<string, unknown> }) {
     ([, v]) => v !== null && v !== undefined && v !== "",
   );
   if (entries.length === 0) {
-    return <p className="text-muted-foreground">No metadata.</p>;
+    return (
+      <p className="font-mono text-[10px] uppercase tracking-marker text-ink-faint">
+        no metadata
+      </p>
+    );
   }
   return (
     <dl className="space-y-1.5">
       {entries.map(([k, v]) => (
-        <div key={k} className="grid grid-cols-3 gap-2">
-          <dt className="col-span-1 truncate text-muted-foreground">{k}</dt>
-          <dd className="col-span-2 break-words font-mono text-[11px] text-foreground">
+        <div key={k} className="grid grid-cols-3 gap-3 border-b border-rule/60 py-1">
+          <dt className="col-span-1 truncate font-mono text-[10px] uppercase tracking-marker text-ink-muted">
+            {k}
+          </dt>
+          <dd className="col-span-2 break-words font-mono text-[11px] tabular-nums text-ink">
             {formatMetaValue(v)}
           </dd>
         </div>

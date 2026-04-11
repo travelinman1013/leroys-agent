@@ -1,17 +1,25 @@
 /**
- * BrainGraph — force-directed visualization of Hermes' typed knowledge graph.
+ * BrainGraph — Operator's Desk star chart.
  *
- * Wraps react-force-graph-2d (canvas) and adds:
- *   - Type-based node coloring with a stable palette per node type
- *   - Pulse halo animation when a node ID is in the `pulses` set
- *   - Click → onNodeClick callback (used by brain.tsx for the detail card)
- *   - Layout settles in ~3 seconds via cooldownTicks
+ * Replaces the previous react-force-graph-2d "blob" with a deterministic
+ * seeded SVG layout. Read it like a Palomar plate. See DESIGN.md §6 row
+ * `/brain` and §10 (decisions log: "Brain renders as star chart with
+ * deterministic seeded layout").
  *
- * Lives in dashboard/src/components/ — used only by routes/brain.tsx.
+ *   - Layout: stable hash → polar coordinates per node id, packed into a
+ *     16:9 viewport. No force iterations, no jitter, no animation drift.
+ *   - Edges: hairlines at 16% ink opacity.
+ *   - Nodes: oxide crosshair / dot / hollow ring depending on type. Active
+ *     pulse renders a faint oxide halo on top.
+ *   - Labels: tiny mono, ink @ ~70% opacity. RA/Dec chrome corners.
+ *   - Interaction: pan via drag, click → onNodeClick.
  */
-import { useEffect, useMemo, useRef } from "react";
-import ForceGraph2D from "react-force-graph-2d";
-import type { BrainGraph as BrainGraphData, BrainNode, BrainEdge } from "@/lib/api";
+
+import { useMemo, useRef, useState, useCallback } from "react";
+import type {
+  BrainGraph as BrainGraphData,
+  BrainNode,
+} from "@/lib/api";
 
 type Props = {
   graph: BrainGraphData;
@@ -21,23 +29,70 @@ type Props = {
   className?: string;
 };
 
-// Tailwind palette equivalents (oklch values) for each node type. Kept here
-// instead of in lib/utils so the dashboard's existing eventColorClass is
-// not overloaded with brain-specific entries.
-const NODE_COLORS: Record<BrainNode["type"], string> = {
-  memory: "#fbbf24",   // amber-400
-  session: "#22d3ee",  // cyan-400
-  skill: "#a78bfa",    // violet-400
-  tool: "#34d399",     // emerald-400
-  mcp: "#fb7185",      // rose-400
-  cron: "#fb923c",     // orange-400
+const VIEW_W = 1280;
+const VIEW_H = 720;
+const PADDING = 90;
+
+// Node shape vocabulary — Operator's Desk anti-rainbow rule (DESIGN.md §4 r3).
+type Shape = "dot" | "ring" | "crosshair";
+const SHAPE: Record<BrainNode["type"], Shape> = {
+  memory: "dot",
+  session: "crosshair",
+  skill: "ring",
+  tool: "dot",
+  mcp: "ring",
+  cron: "crosshair",
 };
 
-const EDGE_COLOR = "rgba(148, 163, 184, 0.35)"; // slate-400/35
-const PULSE_COLOR = "rgba(255, 255, 255, 0.9)";
+const OXIDE = "#C96B2C";
+const INK = "#E7E2D8";
+const RULE = "#2D3531";
+const RULE_STRONG = "#3B4540";
+const FAINT = "#5E5A52";
 
-type FGNode = BrainNode & { x?: number; y?: number; vx?: number; vy?: number };
-type FGLink = BrainEdge;
+/**
+ * Cheap deterministic hash → 32-bit float in [0, 1). Stable across renders
+ * because it depends only on the node id string. Switching the seed prefix
+ * gives a different layout for the same graph (the chosen seed is `0x4A`
+ * to match the preview chrome).
+ */
+function hash01(str: string, salt: number): number {
+  let h = 0x811c9dc5 ^ salt;
+  for (let i = 0; i < str.length; i++) {
+    h ^= str.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  // squish to [0, 1)
+  return ((h >>> 0) % 0x100000) / 0x100000;
+}
+
+type LaidOutNode = BrainNode & { x: number; y: number; r: number };
+
+function layout(nodes: BrainNode[]): LaidOutNode[] {
+  // Polar packing: each node lands at (rho, theta) drawn from two hashes.
+  // Square-root mapping on rho gives even areal density across the disc.
+  const cx = VIEW_W / 2;
+  const cy = VIEW_H / 2;
+  // Use a slightly oblong radius so the disc fills the 16:9 stage.
+  const rxMax = (VIEW_W - PADDING * 2) / 2;
+  const ryMax = (VIEW_H - PADDING * 2) / 2;
+
+  // Sort by weight DESC so heavy nodes hash first → tend to land near the center.
+  const sorted = [...nodes].sort((a, b) => (b.weight ?? 1) - (a.weight ?? 1));
+
+  return sorted.map((n, idx) => {
+    const u = hash01(n.id, 0x4a);
+    const v = hash01(n.id, 0x4a + 1);
+    // Heavy nodes get pulled inward; light nodes drift to the edge.
+    const inwardBias = idx < 8 ? 0.4 : 1;
+    const rho = Math.sqrt(u) * inwardBias;
+    const theta = v * Math.PI * 2;
+    const x = cx + Math.cos(theta) * rho * rxMax;
+    const y = cy + Math.sin(theta) * rho * ryMax;
+    const r = Math.max(1.6, Math.log((n.weight ?? 1) + 1) * 2.4);
+    return { ...n, x, y, r };
+  });
+}
 
 export function BrainGraph({
   graph,
@@ -46,98 +101,222 @@ export function BrainGraph({
   visibleTypes,
   className,
 }: Props) {
-  const fgRef = useRef<unknown>(null);
-
-  // Filter the graph by visibleTypes — keep edges only when both endpoints
-  // are still visible after filtering. The filter runs over a fresh data
-  // copy each render, but typing is intentionally loose since
-  // react-force-graph mutates the node objects in place to add x/y/vx/vy.
+  // Filter & lay out — both stable for a given graph + visibleTypes pair.
   const data = useMemo(() => {
     const visibleNodes = graph.nodes.filter((n) => visibleTypes.has(n.type));
     const visibleIds = new Set(visibleNodes.map((n) => n.id));
-    const visibleLinks = graph.edges.filter(
+    const visibleEdges = graph.edges.filter(
       (e) => visibleIds.has(e.source) && visibleIds.has(e.target),
     );
-    return {
-      nodes: visibleNodes as FGNode[],
-      links: visibleLinks as FGLink[],
-    };
+    const laid = layout(visibleNodes);
+    const byId = new Map(laid.map((n) => [n.id, n]));
+    return { nodes: laid, edges: visibleEdges, byId };
   }, [graph, visibleTypes]);
 
-  // Pulse animation: re-render at ~30fps while there are active pulses
-  // so the halo visibly fades. We don't do timestamp tweening here — the
-  // brain.tsx page just removes pulses from the Set after a 2-second
-  // setTimeout, so re-rendering on each tick is enough.
-  useEffect(() => {
-    if (pulses.size === 0) return;
-    const handle = setInterval(() => {
-      // Force a refresh by toggling a no-op cooldown nudge.
-      // react-force-graph re-paints automatically when its data prop
-      // changes, but for pulse halos we just need a paint loop.
-      const fg = fgRef.current as { refresh?: () => void } | null;
-      fg?.refresh?.();
-    }, 33);
-    return () => clearInterval(handle);
-  }, [pulses]);
+  // Pan state (viewBox translate). Zoom is a single user gesture deferred
+  // to v2 — for now the layout is always tuned to fit the viewport.
+  const [pan, setPan] = useState({ x: 0, y: 0 });
+  const dragging = useRef<{ startX: number; startY: number; px: number; py: number } | null>(null);
+  const svgRef = useRef<SVGSVGElement>(null);
+
+  const onPointerDown = useCallback((e: React.PointerEvent) => {
+    dragging.current = { startX: e.clientX, startY: e.clientY, px: pan.x, py: pan.y };
+    (e.target as Element).setPointerCapture?.(e.pointerId);
+  }, [pan.x, pan.y]);
+
+  const onPointerMove = useCallback((e: React.PointerEvent) => {
+    if (!dragging.current) return;
+    const dx = e.clientX - dragging.current.startX;
+    const dy = e.clientY - dragging.current.startY;
+    setPan({ x: dragging.current.px + dx, y: dragging.current.py + dy });
+  }, []);
+
+  const onPointerUp = useCallback(() => {
+    dragging.current = null;
+  }, []);
+
+  const resetPan = useCallback(() => setPan({ x: 0, y: 0 }), []);
+
+  const transform = `translate(${pan.x}, ${pan.y})`;
 
   return (
     <div className={className}>
-      <ForceGraph2D
-        ref={fgRef as never}
-        graphData={data}
-        nodeId="id"
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        linkSource={"source" as any}
-        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-        linkTarget={"target" as any}
-        backgroundColor="rgba(0,0,0,0)"
-        linkColor={() => EDGE_COLOR}
-        linkWidth={(link: object) => Math.min(3, Math.max(0.5, ((link as FGLink).weight ?? 1) / 2))}
-        nodeRelSize={4}
-        nodeVal={(node: object) => {
-          const n = node as FGNode;
-          const w = n.weight ?? 1;
-          return Math.max(1, Math.log(w + 1) * 4);
-        }}
-        cooldownTicks={100}
-        d3VelocityDecay={0.35}
-        onNodeClick={(node: object) => onNodeClick?.(node as BrainNode)}
-        nodeCanvasObject={(node: object, ctx: CanvasRenderingContext2D, scale: number) => {
-          const n = node as FGNode;
-          const radius = Math.max(3, Math.log((n.weight ?? 1) + 1) * 4);
-          const x = n.x ?? 0;
-          const y = n.y ?? 0;
+      <svg
+        ref={svgRef}
+        viewBox={`0 0 ${VIEW_W} ${VIEW_H}`}
+        preserveAspectRatio="xMidYMid meet"
+        className="block h-full w-full select-none touch-none"
+        onPointerDown={onPointerDown}
+        onPointerMove={onPointerMove}
+        onPointerUp={onPointerUp}
+        onPointerCancel={onPointerUp}
+        onDoubleClick={resetPan}
+        style={{ background: "#131716", cursor: dragging.current ? "grabbing" : "grab" }}
+      >
+        <defs>
+          <pattern id="brain-grid" width="60" height="60" patternUnits="userSpaceOnUse">
+            <path d="M60 0H0V60" fill="none" stroke={RULE} strokeWidth="0.5" />
+          </pattern>
+        </defs>
 
-          // Pulse halo (drawn UNDER the node so the dot stays visible)
-          if (pulses.has(n.id)) {
-            ctx.beginPath();
-            ctx.arc(x, y, radius + 6, 0, 2 * Math.PI);
-            ctx.fillStyle = PULSE_COLOR;
-            ctx.globalAlpha = 0.35;
-            ctx.fill();
-            ctx.globalAlpha = 1;
-          }
+        <rect width={VIEW_W} height={VIEW_H} fill="url(#brain-grid)" opacity="0.6" />
 
-          // Node body
-          ctx.beginPath();
-          ctx.arc(x, y, radius, 0, 2 * Math.PI);
-          ctx.fillStyle = NODE_COLORS[n.type] ?? "#94a3b8";
-          ctx.fill();
+        {/* coordinate axes (dashed cross-hairs) */}
+        <g stroke={RULE_STRONG} strokeWidth="0.5">
+          <line
+            x1="0"
+            y1={VIEW_H / 2}
+            x2={VIEW_W}
+            y2={VIEW_H / 2}
+            strokeDasharray="2,6"
+          />
+          <line
+            x1={VIEW_W / 2}
+            y1="0"
+            x2={VIEW_W / 2}
+            y2={VIEW_H}
+            strokeDasharray="2,6"
+          />
+        </g>
 
-          // Label only when zoomed in enough to read it (avoids screen
-          // clutter at default zoom levels)
-          if (scale > 1.5) {
-            ctx.font = `${10 / scale}px sans-serif`;
-            ctx.fillStyle = "rgba(226, 232, 240, 0.85)";
-            ctx.textAlign = "center";
-            ctx.textBaseline = "top";
-            const label = (n.label || n.id).slice(0, 24);
-            ctx.fillText(label, x, y + radius + 1);
-          }
-        }}
-      />
+        <g transform={transform}>
+          {/* edges — single hairline pass at 16% opacity */}
+          <g stroke={INK} strokeOpacity="0.16" strokeWidth="0.7" fill="none">
+            {data.edges.map((e, i) => {
+              const a = data.byId.get(e.source);
+              const b = data.byId.get(e.target);
+              if (!a || !b) return null;
+              return (
+                <line
+                  key={`e-${i}`}
+                  x1={a.x}
+                  y1={a.y}
+                  x2={b.x}
+                  y2={b.y}
+                />
+              );
+            })}
+          </g>
+
+          {/* pulse halos (oxide, behind nodes) */}
+          {data.nodes
+            .filter((n) => pulses.has(n.id))
+            .map((n) => (
+              <circle
+                key={`p-${n.id}`}
+                cx={n.x}
+                cy={n.y}
+                r={n.r + 6}
+                fill={OXIDE}
+                fillOpacity="0.32"
+              />
+            ))}
+
+          {/* nodes */}
+          <g fill={OXIDE} stroke={OXIDE}>
+            {data.nodes.map((n) => (
+              <NodeMark
+                key={n.id}
+                node={n}
+                onClick={() => onNodeClick?.(n)}
+              />
+            ))}
+          </g>
+
+          {/* labels — only the heaviest get a rendered label */}
+          <g fill={INK} fillOpacity="0.78" fontFamily="ui-monospace, JetBrains Mono, monospace" fontSize="11">
+            {data.nodes.slice(0, 18).map((n) => (
+              <text
+                key={`l-${n.id}`}
+                x={n.x + n.r + 6}
+                y={n.y - n.r - 2}
+                pointerEvents="none"
+              >
+                {(n.label || n.id).slice(0, 24).toUpperCase()}
+              </text>
+            ))}
+          </g>
+        </g>
+
+        {/* RA/Dec chrome corners (overlay, not affected by pan) */}
+        <g fill={FAINT} fontFamily="ui-monospace, JetBrains Mono, monospace" fontSize="9" letterSpacing="1.5">
+          <text x="22" y="26" textAnchor="start">
+            BRAIN · KNOWLEDGE GRAPH · DETERMINISTIC SEED 0x4A
+          </text>
+          <text x={VIEW_W - 22} y="26" textAnchor="end">
+            RA 12h ─ Dec +47°
+          </text>
+          <text x="22" y={VIEW_H - 18} textAnchor="start">
+            DRAG · DOUBLE-CLICK TO RESET
+          </text>
+          <text x={VIEW_W - 22} y={VIEW_H - 18} textAnchor="end">
+            N={data.nodes.length} · E={data.edges.length}
+          </text>
+        </g>
+      </svg>
     </div>
   );
 }
 
-export const BRAIN_NODE_COLORS = NODE_COLORS;
+function NodeMark({
+  node,
+  onClick,
+}: {
+  node: LaidOutNode;
+  onClick: () => void;
+}) {
+  const shape = SHAPE[node.type];
+  const r = node.r;
+  const arm = r + 4;
+  return (
+    <g
+      onClick={(e) => {
+        e.stopPropagation();
+        onClick();
+      }}
+      style={{ cursor: "pointer" }}
+    >
+      {shape === "dot" && <circle cx={node.x} cy={node.y} r={r} />}
+      {shape === "ring" && (
+        <circle
+          cx={node.x}
+          cy={node.y}
+          r={r}
+          fill="none"
+          stroke={OXIDE}
+          strokeWidth="0.9"
+        />
+      )}
+      {shape === "crosshair" && (
+        <>
+          <circle cx={node.x} cy={node.y} r={Math.max(1.4, r - 0.4)} />
+          <line
+            x1={node.x - arm}
+            y1={node.y}
+            x2={node.x + arm}
+            y2={node.y}
+            strokeWidth="0.6"
+          />
+          <line
+            x1={node.x}
+            y1={node.y - arm}
+            x2={node.x}
+            y2={node.y + arm}
+            strokeWidth="0.6"
+          />
+        </>
+      )}
+    </g>
+  );
+}
+
+// Legacy export retained for brain.tsx imports — every type maps to oxide
+// because color is no longer the differentiator (DESIGN.md §4 rule 3).
+export const BRAIN_NODE_COLORS: Record<BrainNode["type"], string> = {
+  memory: OXIDE,
+  session: OXIDE,
+  skill: OXIDE,
+  tool: OXIDE,
+  mcp: OXIDE,
+  cron: OXIDE,
+};

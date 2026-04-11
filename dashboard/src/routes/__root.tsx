@@ -13,11 +13,11 @@ export const Route = createRootRouteWithContext<RouterContext>()({
 
 function RootLayout() {
   return (
-    <div className="flex h-full flex-col">
+    <div className="flex h-full flex-col bg-bg text-ink">
       <StatusHeader />
       <div className="flex flex-1 overflow-hidden">
         <SidebarNav />
-        <main className="flex-1 overflow-y-auto">
+        <main className="relative flex-1 overflow-y-auto">
           <Outlet />
         </main>
       </div>

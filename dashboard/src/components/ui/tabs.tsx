@@ -11,7 +11,8 @@ const TabsList = React.forwardRef<
   <TabsPrimitive.List
     ref={ref}
     className={cn(
-      "inline-flex h-9 items-center justify-center rounded-lg bg-muted p-1 text-muted-foreground",
+      // Operator's Desk: hairline rule under tabs, no rounded chrome.
+      "inline-flex items-center justify-center gap-6 border-b border-rule font-mono text-[11px] uppercase tracking-marker text-ink-muted",
       className,
     )}
     {...props}
@@ -26,7 +27,8 @@ const TabsTrigger = React.forwardRef<
   <TabsPrimitive.Trigger
     ref={ref}
     className={cn(
-      "inline-flex items-center justify-center whitespace-nowrap rounded-md px-3 py-1 text-sm font-medium ring-offset-background transition-all focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:pointer-events-none disabled:opacity-50 data-[state=active]:bg-background data-[state=active]:text-foreground data-[state=active]:shadow",
+      // patch-bay tab: hairline indicator on the active state, oxide ink.
+      "relative inline-flex items-center justify-center whitespace-nowrap py-2.5 text-[11px] uppercase tracking-marker transition-colors duration-120 ease-operator focus-visible:outline-none focus-visible:text-oxide disabled:pointer-events-none disabled:opacity-50 hover:text-ink data-[state=active]:text-oxide data-[state=active]:after:absolute data-[state=active]:after:inset-x-0 data-[state=active]:after:-bottom-px data-[state=active]:after:h-px data-[state=active]:after:bg-oxide",
       className,
     )}
     {...props}

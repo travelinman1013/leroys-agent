@@ -51,10 +51,7 @@ export default defineConfig({
             "@radix-ui/react-tabs",
             "@radix-ui/react-tooltip",
           ],
-          // Brain-viz graph library lives in its own chunk so it doesn't
-          // bloat the main bundle for users on other routes (lazy-loaded
-          // alongside the /brain route via TanStack Router code-splitting).
-          graph: ["react-force-graph-2d"],
+          // (the brain viz now uses inline SVG — no force-graph dep)
         },
       },
     },
