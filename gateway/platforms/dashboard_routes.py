@@ -217,7 +217,7 @@ class DashboardRoutes:
             "uptime_seconds": time.time() - self._started_at,
             "host": self._adapter._host,
             "port": self._adapter._port,
-            "sandboxed": bool(os.environ.get("HERMES_SANDBOXED")) or _detect_sandbox_exec(),
+            "sandboxed": bool(os.environ.get("HERMES_SANDBOXED")) or _detect_seatbelt_sandbox(),
         }
 
         # Model name from config.yaml
@@ -580,7 +580,7 @@ class DashboardRoutes:
             checks.append({"name": "dashboard token", "ok": False, "detail": str(exc)})
 
         # Sandbox
-        sandboxed = _detect_sandbox_exec()
+        sandboxed = _detect_seatbelt_sandbox()
         checks.append({"name": "sandbox-exec", "ok": sandboxed,
                        "detail": "running under Seatbelt" if sandboxed else "not sandboxed"})
 
@@ -721,7 +721,7 @@ def _get_hermes_version() -> str:
     return "unknown"
 
 
-def _detect_sandbox_exec() -> bool:
+def _detect_seatbelt_sandbox() -> bool:
     """Best-effort detection that we're running under macOS sandbox-exec.
 
     The Phase 4 wrapper (``scripts/sandbox/hermes-gateway-sandboxed``) does
