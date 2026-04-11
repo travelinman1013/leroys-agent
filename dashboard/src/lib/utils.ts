@@ -30,6 +30,48 @@ export function relTimeFromIso(iso: string | null | undefined): string {
   }
 }
 
+/**
+ * Compact relative time for dense-scan tables.
+ *
+ *   < 5s    → "now"
+ *   < 1m    → "12s"
+ *   < 1h    → "45m"
+ *   < 1d    → "4h"
+ *   < 7d    → "2d"
+ *   < 30d   → "3w"
+ *   < 365d  → "6mo"   (two-letter to disambiguate from minutes)
+ *   ≥ 365d  → "2y"
+ *
+ * Positive deltas render without a suffix (the column header like
+ * "LAST" already implies "ago"). Negative deltas (future timestamps
+ * for scheduled cron jobs) render with a leading "in ". Matches the
+ * approvals history WHEN column density goal per Maxwell's feedback
+ * after Commit 3b.
+ */
+export function compactRelTimeFromUnix(
+  unix: number | null | undefined,
+): string {
+  if (unix === null || unix === undefined || unix === 0) return "—";
+  const nowMs = Date.now();
+  const thenMs = unix * 1000;
+  const diffSec = Math.round((nowMs - thenMs) / 1000);
+  const future = diffSec < 0;
+  const abs = Math.abs(diffSec);
+
+  let value: string;
+  if (abs < 5) value = "now";
+  else if (abs < 60) value = `${abs}s`;
+  else if (abs < 3_600) value = `${Math.floor(abs / 60)}m`;
+  else if (abs < 86_400) value = `${Math.floor(abs / 3_600)}h`;
+  else if (abs < 604_800) value = `${Math.floor(abs / 86_400)}d`;
+  else if (abs < 2_592_000) value = `${Math.floor(abs / 604_800)}w`;
+  else if (abs < 31_536_000) value = `${Math.floor(abs / 2_592_000)}mo`;
+  else value = `${Math.floor(abs / 31_536_000)}y`;
+
+  if (value === "now") return value;
+  return future ? `in ${value}` : value;
+}
+
 export function formatUnix(unix: number | null | undefined, fmt = "PPpp"): string {
   if (!unix) return "—";
   try {

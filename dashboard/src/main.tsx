@@ -23,9 +23,19 @@ const queryClient = new QueryClient({
   },
 });
 
-// TanStack Router — client-side routing
+// TanStack Router — client-side routing.
+//
+// The dashboard is served under the /dashboard/ path prefix (see the
+// aiohttp static mount + SPA fallback in gateway/platforms/dashboard_routes.py).
+// Without ``basepath``, every <Link to="/foo"> would emit an href of
+// ``/foo`` instead of ``/dashboard/foo``, which (a) leaks outside the
+// dashboard prefix the moment the user clicks, (b) 404s on hard refresh
+// once the URL bar reads ``/foo``, and (c) breaks bookmarks. The
+// loopback same-origin CORS fix in api_server.py complements this — both
+// are required for the dashboard to survive a hard refresh.
 const router = createRouter({
   routeTree,
+  basepath: "/dashboard",
   defaultPreload: "intent",
   context: { queryClient },
 });

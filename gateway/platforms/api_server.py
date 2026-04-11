@@ -345,14 +345,29 @@ class APIServerAdapter(BasePlatformAdapter):
         return headers
 
     def _origin_allowed(self, origin: str) -> bool:
-        """Allow non-browser clients and explicitly configured browser origins."""
+        """Allow non-browser clients, same-origin loopback, and configured origins.
+
+        The dashboard binds loopback-only (see security rules in CLAUDE.md).
+        When ``_cors_origins`` is empty, we still allow same-origin requests
+        from ``http://127.0.0.1:<port>`` / ``http://localhost:<port>`` /
+        ``http://[::1]:<port>`` because browsers attach an ``Origin`` header
+        to module script and ``fetch()`` requests even on same-origin. The
+        previous "empty allowlist = deny any Origin" default 403'd the
+        dashboard's own asset requests. Explicit allowlists still override
+        loopback auto-allow.
+        """
         if not origin:
             return True
 
-        if not self._cors_origins:
-            return False
+        if self._cors_origins:
+            return "*" in self._cors_origins or origin in self._cors_origins
 
-        return "*" in self._cors_origins or origin in self._cors_origins
+        loopback_same_origin = {
+            f"http://127.0.0.1:{self._port}",
+            f"http://localhost:{self._port}",
+            f"http://[::1]:{self._port}",
+        }
+        return origin in loopback_same_origin
 
     # ------------------------------------------------------------------
     # Auth helper

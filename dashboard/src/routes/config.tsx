@@ -14,9 +14,27 @@ import { useEffect, useState } from "react";
 import { api } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Select } from "@/components/ui/select";
 import { useApiMutation } from "@/lib/mutations";
 import { useNotify } from "@/lib/notifications";
 import { useConfirm } from "@/lib/confirm";
+import { useTheme, type Theme } from "@/lib/theme";
+import { cn } from "@/lib/utils";
+
+// Validation bounds for numeric fields. Server-side enforcement lives
+// in `apply_config_mutations`; these are UX guardrails so the SAVE
+// button disables before a round-trip fails.
+const COMPRESSION_THRESHOLD_MIN = 0.1;
+const COMPRESSION_THRESHOLD_MAX = 0.95;
+const COMPRESSION_RATIO_MIN = 0.1;
+const COMPRESSION_RATIO_MAX = 0.9;
+const MAX_TOOL_OUTPUT_MIN = 500;
+const MAX_TOOL_OUTPUT_MAX = 20000;
+
+function inRange(v: unknown, min: number, max: number): boolean {
+  const n = typeof v === "number" ? v : Number(v);
+  return Number.isFinite(n) && n >= min && n <= max;
+}
 
 export const Route = createFileRoute("/config")({
   component: ConfigPage,
@@ -133,28 +151,33 @@ function ConfigPage() {
 
       <div className="grid grid-cols-1 gap-10 px-10 pb-16 lg:grid-cols-2">
         <ConfigCard title="Approvals">
-          <Field label="Mode">
-            <select
+          <Field label="Mode" hint="manual / smart / off">
+            <Select
               value={String(editing["approvals.mode"] ?? "manual")}
               onChange={(e) => update("approvals.mode", e.target.value)}
-              className="h-8 border border-rule bg-bg px-2 font-mono text-[11px] uppercase text-ink"
+              className="max-w-[180px]"
             >
               <option value="manual">manual</option>
               <option value="smart">smart</option>
               <option value="off">off</option>
-            </select>
+            </Select>
           </Field>
-          <Field label="Non-interactive">
-            <select
-              value={String(editing["approvals.non_interactive_policy"] ?? "guarded")}
+          <Field
+            label="Non-interactive"
+            hint="guarded (recommended) · allow"
+          >
+            <Select
+              value={String(
+                editing["approvals.non_interactive_policy"] ?? "guarded",
+              )}
               onChange={(e) =>
                 update("approvals.non_interactive_policy", e.target.value)
               }
-              className="h-8 border border-rule bg-bg px-2 font-mono text-[11px] uppercase text-ink"
+              className="max-w-[180px]"
             >
               <option value="guarded">guarded</option>
               <option value="allow">allow</option>
-            </select>
+            </Select>
           </Field>
           <SaveButton
             onClick={() =>
@@ -169,30 +192,52 @@ function ConfigPage() {
         </ConfigCard>
 
         <ConfigCard title="Compression">
-          <Field label="Threshold (0–1)">
+          <Field
+            label="Threshold"
+            hint={`${COMPRESSION_THRESHOLD_MIN} – ${COMPRESSION_THRESHOLD_MAX} · ratio of context`}
+            invalid={
+              editing["compression.threshold"] !== undefined &&
+              !inRange(
+                editing["compression.threshold"],
+                COMPRESSION_THRESHOLD_MIN,
+                COMPRESSION_THRESHOLD_MAX,
+              )
+            }
+          >
             <Input
               type="number"
               step={0.05}
-              min={0.1}
-              max={0.95}
+              min={COMPRESSION_THRESHOLD_MIN}
+              max={COMPRESSION_THRESHOLD_MAX}
               value={String(editing["compression.threshold"] ?? "")}
               onChange={(e) =>
                 update("compression.threshold", Number(e.target.value))
               }
-              className="h-8 max-w-[120px]"
+              className="h-9 max-w-[120px]"
             />
           </Field>
-          <Field label="Target ratio">
+          <Field
+            label="Target ratio"
+            hint={`${COMPRESSION_RATIO_MIN} – ${COMPRESSION_RATIO_MAX} · of the window after compaction`}
+            invalid={
+              editing["compression.target_ratio"] !== undefined &&
+              !inRange(
+                editing["compression.target_ratio"],
+                COMPRESSION_RATIO_MIN,
+                COMPRESSION_RATIO_MAX,
+              )
+            }
+          >
             <Input
               type="number"
               step={0.05}
-              min={0.1}
-              max={0.9}
+              min={COMPRESSION_RATIO_MIN}
+              max={COMPRESSION_RATIO_MAX}
               value={String(editing["compression.target_ratio"] ?? "")}
               onChange={(e) =>
                 update("compression.target_ratio", Number(e.target.value))
               }
-              className="h-8 max-w-[120px]"
+              className="h-9 max-w-[120px]"
             />
           </Field>
           <SaveButton
@@ -203,16 +248,39 @@ function ConfigPage() {
               })
             }
             isPending={save.isPending}
+            disabled={
+              !inRange(
+                editing["compression.threshold"],
+                COMPRESSION_THRESHOLD_MIN,
+                COMPRESSION_THRESHOLD_MAX,
+              ) ||
+              !inRange(
+                editing["compression.target_ratio"],
+                COMPRESSION_RATIO_MIN,
+                COMPRESSION_RATIO_MAX,
+              )
+            }
           />
         </ConfigCard>
 
         <ConfigCard title="Code execution">
-          <Field label="Max tool output (tokens)">
+          <Field
+            label="Max tool output"
+            hint={`${MAX_TOOL_OUTPUT_MIN} – ${MAX_TOOL_OUTPUT_MAX} tokens · per tool call`}
+            invalid={
+              editing["code_execution.max_tool_output"] !== undefined &&
+              !inRange(
+                editing["code_execution.max_tool_output"],
+                MAX_TOOL_OUTPUT_MIN,
+                MAX_TOOL_OUTPUT_MAX,
+              )
+            }
+          >
             <Input
               type="number"
               step={100}
-              min={500}
-              max={20000}
+              min={MAX_TOOL_OUTPUT_MIN}
+              max={MAX_TOOL_OUTPUT_MAX}
               value={String(editing["code_execution.max_tool_output"] ?? "")}
               onChange={(e) =>
                 update(
@@ -220,7 +288,7 @@ function ConfigPage() {
                   Number(e.target.value),
                 )
               }
-              className="h-8 max-w-[120px]"
+              className="h-9 max-w-[120px]"
             />
           </Field>
           <SaveButton
@@ -231,8 +299,17 @@ function ConfigPage() {
               })
             }
             isPending={save.isPending}
+            disabled={
+              !inRange(
+                editing["code_execution.max_tool_output"],
+                MAX_TOOL_OUTPUT_MIN,
+                MAX_TOOL_OUTPUT_MAX,
+              )
+            }
           />
         </ConfigCard>
+
+        <AppearanceCard />
 
         <ConfigCard title="Backups">
           <ul className="space-y-1.5">
@@ -294,13 +371,40 @@ function ConfigCard({
   );
 }
 
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
+function Field({
+  label,
+  hint,
+  invalid,
+  children,
+}: {
+  label: string;
+  hint?: string;
+  invalid?: boolean;
+  children: React.ReactNode;
+}) {
   return (
-    <label className="grid grid-cols-[140px_1fr] items-center gap-3">
-      <span className="font-mono text-[10px] uppercase tracking-marker text-ink-muted">
+    <label className="grid grid-cols-[140px_1fr] items-start gap-3 pt-1">
+      <span
+        className={cn(
+          "pt-2 font-mono text-[10px] uppercase tracking-marker",
+          invalid ? "text-danger" : "text-ink-muted",
+        )}
+      >
         {label}
       </span>
-      {children}
+      <div>
+        {children}
+        {hint && (
+          <p
+            className={cn(
+              "mt-1.5 font-mono text-[10px] tracking-marker",
+              invalid ? "text-danger" : "text-ink-faint",
+            )}
+          >
+            {hint}
+          </p>
+        )}
+      </div>
     </label>
   );
 }
@@ -308,9 +412,11 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
 function SaveButton({
   onClick,
   isPending,
+  disabled,
 }: {
   onClick: () => void;
   isPending?: boolean;
+  disabled?: boolean;
 }) {
   return (
     <div className="flex justify-end pt-2">
@@ -318,10 +424,84 @@ function SaveButton({
         size="sm"
         variant="outline"
         onClick={onClick}
-        disabled={isPending}
+        disabled={isPending || disabled}
       >
         {isPending ? "SAVING…" : "SAVE"}
       </Button>
     </div>
+  );
+}
+
+/*
+  AppearanceCard — houses the dark/light toggle that previously lived
+  in StatusHeader. DESIGN.md §9 anti-slop pledge explicitly forbids a
+  dark-mode toggle in header chrome: "toggle lives in settings, not
+  chrome." The Operator's Desk light + dark modes ship as "separate
+  instruments, not an accessibility preference" (DESIGN.md §4), so
+  the card reads "APPEARANCE · INSTRUMENT" and the controls are a
+  pair of segmented buttons (DARK / LIGHT) rather than a toggle
+  switch — the switch framing implies an on/off state where one
+  direction is the "default" and the other is the "accessibility"
+  mode. Segmented buttons signal "pick the instrument you want."
+
+  Changes apply instantly (no save button). Persists to localStorage
+  via `useTheme`, and the `bootstrapTheme()` call in main.tsx
+  applies the stored value before React paints to avoid a
+  dark→light flash on reload.
+*/
+function AppearanceCard() {
+  const { theme, setTheme } = useTheme();
+
+  return (
+    <ConfigCard title="Appearance · Instrument">
+      <Field label="Theme">
+        <div className="flex gap-2">
+          <ThemePill
+            theme="dark"
+            active={theme === "dark"}
+            onClick={() => setTheme("dark")}
+            label="Dark"
+          />
+          <ThemePill
+            theme="light"
+            active={theme === "light"}
+            onClick={() => setTheme("light")}
+            label="Light"
+          />
+        </div>
+      </Field>
+      <p className="font-mono text-[10px] uppercase tracking-marker text-ink-faint">
+        applies instantly · persisted per browser
+      </p>
+    </ConfigCard>
+  );
+}
+
+function ThemePill({
+  theme,
+  active,
+  onClick,
+  label,
+}: {
+  theme: Theme;
+  active: boolean;
+  onClick: () => void;
+  label: string;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      aria-pressed={active}
+      aria-label={`${label} instrument`}
+      className={cn(
+        "h-8 border px-3 font-mono text-[10px] uppercase tracking-marker transition-colors duration-120 ease-operator",
+        active
+          ? "border-oxide-edge bg-oxide-wash text-oxide"
+          : "border-rule text-ink-2 hover:border-oxide-edge hover:text-ink",
+      )}
+    >
+      {theme === "dark" ? "◐" : "◑"} {label}
+    </button>
   );
 }

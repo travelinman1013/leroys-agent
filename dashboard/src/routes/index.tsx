@@ -12,6 +12,7 @@ import { api } from "@/lib/api";
 import { EventStream } from "@/components/EventStream";
 import { ApprovalCard } from "@/components/ApprovalCard";
 import { compactNumber, formatUptime } from "@/lib/utils";
+import { useThemedPalette } from "@/lib/theme";
 
 export const Route = createFileRoute("/")({
   component: HomeInbox,
@@ -174,7 +175,7 @@ function HomeInbox() {
         >
           <Link
             to="/brain"
-            className="block aspect-[1.6/1] w-full border border-rule bg-[#1A1F1D] transition-colors duration-120 ease-operator hover:border-oxide-edge"
+            className="block aspect-[1.6/1] w-full border border-rule bg-bg-alt transition-colors duration-120 ease-operator hover:border-oxide-edge"
           >
             <BrainInsetSvg />
           </Link>
@@ -310,17 +311,23 @@ function PanelEmpty({ children }: { children: React.ReactNode }) {
   );
 }
 
-/** Tiny static brain inset for the right rail — matches preview §04 right rail. */
+/** Tiny static brain inset for the right rail — matches preview §04 right rail.
+ *
+ * Uses `useThemedPalette()` so the stroke / fill values follow the active
+ * theme. Previously the colors were hardcoded dark-mode hexes, so the inset
+ * stayed dark even after the /config Appearance toggle flipped the rest of
+ * the app to the bone-colored light instrument. P8 light-mode audit finding. */
 function BrainInsetSvg() {
+  const p = useThemedPalette();
   return (
     <svg viewBox="0 0 560 350" preserveAspectRatio="xMidYMid slice">
       <defs>
         <pattern id="g1" width="40" height="40" patternUnits="userSpaceOnUse">
-          <path d="M40 0H0V40" fill="none" stroke="#2D3531" strokeWidth="0.5" />
+          <path d="M40 0H0V40" fill="none" stroke={p.rule} strokeWidth="0.5" />
         </pattern>
       </defs>
       <rect width="560" height="350" fill="url(#g1)" opacity="0.5" />
-      <g stroke="#E7E2D8" strokeOpacity="0.18" strokeWidth="0.6">
+      <g stroke={p.ink} strokeOpacity="0.18" strokeWidth="0.6">
         <line x1="80" y1="60" x2="180" y2="120" />
         <line x1="180" y1="120" x2="280" y2="80" />
         <line x1="180" y1="120" x2="240" y2="220" />
@@ -334,7 +341,7 @@ function BrainInsetSvg() {
         <line x1="500" y1="180" x2="400" y2="140" />
         <line x1="80" y1="60" x2="60" y2="180" />
       </g>
-      <g fill="#C96B2C" stroke="#C96B2C">
+      <g fill={p.oxide} stroke={p.oxide}>
         <g>
           <circle cx="280" cy="80" r="2.5" />
           <line x1="272" y1="80" x2="288" y2="80" strokeWidth="0.6" />
@@ -370,13 +377,13 @@ function BrainInsetSvg() {
           <circle cx="80" cy="60" r="1.6" />
         </g>
       </g>
-      <g fill="#E7E2D8" fontFamily="ui-monospace,JetBrains Mono" fontSize="8">
+      <g fill={p.ink} fillOpacity="0.78" fontFamily="ui-monospace,JetBrains Mono" fontSize="8">
         <text x="290" y="76">HERMES</text>
         <text x="190" y="116">ARCH</text>
         <text x="250" y="216">RECON</text>
         <text x="350" y="196">SANDBOX</text>
       </g>
-      <text x="14" y="20" fill="#5E5A52" fontFamily="ui-monospace,JetBrains Mono" fontSize="8">
+      <text x="14" y="20" fill={p.inkFaint} fontFamily="ui-monospace,JetBrains Mono" fontSize="8">
         RA 12h ─ Dec +47°
       </text>
     </svg>

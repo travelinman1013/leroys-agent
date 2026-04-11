@@ -93,6 +93,27 @@ export function EventStream({ className, compact = false }: Props) {
     }
   }, [events.length, autoScroll]);
 
+  // Per-category live counts. Each event is counted against the
+  // first category whose pattern list matches (patterns are
+  // mutually exclusive in practice — a `tool.*` event never also
+  // starts with `memory.`). Unrecognized types don't count against
+  // any category, matching the behavior of `matchesActiveCats`.
+  // Displayed inside each chip so the operator can see "where the
+  // noise is coming from" without toggling chips on and off.
+  const catCounts = useMemo(() => {
+    const counts = new Map<CategoryLabel, number>();
+    for (const cat of EVENT_CATEGORIES) counts.set(cat.label, 0);
+    for (const e of events) {
+      for (const cat of EVENT_CATEGORIES) {
+        if (cat.patterns.some((p) => e.type === p || e.type.startsWith(p))) {
+          counts.set(cat.label, (counts.get(cat.label) ?? 0) + 1);
+          break;
+        }
+      }
+    }
+    return counts;
+  }, [events]);
+
   // Filter pipeline: chip categories → text/regex
   const filtered = useMemo(() => {
     let base = events.filter((e) => matchesActiveCats(e.type));
@@ -123,23 +144,36 @@ export function EventStream({ className, compact = false }: Props) {
 
   return (
     <div className={cn("flex h-full flex-col", className)}>
-      {/* Chip filter row */}
+      {/* Chip filter row — each chip shows its live count so the
+          operator can see which category is dominating the buffer
+          without toggling others off (matches the /brain route's
+          "160 NODES · 9 EDGES" stamp pattern per DESIGN.md §6). */}
       <div className="flex flex-wrap items-center gap-1.5 border-b border-rule px-4 py-2">
         {EVENT_CATEGORIES.map((cat) => {
           const active = isCatActive(cat.label);
+          const count = catCounts.get(cat.label) ?? 0;
           return (
             <button
               key={cat.label}
               type="button"
               onClick={() => toggleCat(cat.label)}
+              aria-pressed={active}
               className={cn(
-                "border px-2 py-0.5 font-mono text-[10px] uppercase tracking-marker transition-colors duration-120 ease-operator",
+                "inline-flex items-baseline gap-1.5 border px-2 py-0.5 font-mono text-[10px] uppercase tracking-marker transition-colors duration-120 ease-operator",
                 active
                   ? "border-oxide-edge bg-oxide-wash text-oxide"
                   : "border-rule-strong text-ink-faint hover:border-oxide-edge hover:text-ink",
               )}
             >
-              {cat.label}
+              <span>{cat.label}</span>
+              <span
+                className={cn(
+                  "tabular-nums",
+                  active ? "text-oxide-deep" : "text-ink-faint",
+                )}
+              >
+                {count}
+              </span>
             </button>
           );
         })}

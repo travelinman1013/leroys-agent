@@ -2037,8 +2037,64 @@ def register_dashboard_routes(
     app.router.add_post("/api/dashboard/brain/import", routes.handle_brain_memory_import)
 
     # Static UI bundle
+    #
+    # Split into (1) a real static mount for hashed Vite assets and
+    # (2) an SPA-fallback catch-all that serves ``index.html`` for every
+    # other ``/dashboard/*`` URL. Without the fallback, a hard refresh on
+    # a client-side route like ``/dashboard/sessions`` 404s at the aiohttp
+    # layer, and bare ``/dashboard/`` lands on a directory listing instead
+    # of the React entry point. The previous ``show_index=True`` behavior
+    # exposed a listing of the build directory to the browser.
+    #
+    # The catch-all verifies that arbitrary file requests stay inside
+    # ``static_dir`` via a realpath check — the fallback only kicks in
+    # when the requested path does NOT resolve to a real file. Paths
+    # with a file extension that do not exist return 404 so the browser
+    # sees a proper missing-asset error (instead of HTML that would
+    # confuse a <script> or <img> loader).
     if static_dir is not None and static_dir.is_dir():
-        app.router.add_static("/dashboard/", path=str(static_dir), show_index=True, append_version=True)
+        assets_dir = static_dir / "assets"
+        if assets_dir.is_dir():
+            app.router.add_static(
+                "/dashboard/assets/",
+                path=str(assets_dir),
+                append_version=True,
+            )
+
+        async def _dashboard_spa(request: "web.Request") -> "web.Response":
+            tail = request.match_info.get("tail", "")
+            # Fast refusal of traversal attempts — never resolve ``..``
+            if ".." in tail.split("/"):
+                return web.Response(status=404, text="Not Found")
+            candidate: Optional[Path] = None
+            if tail:
+                try:
+                    resolved = (static_dir / tail).resolve()
+                    root = static_dir.resolve()
+                    # resolved must be root itself or strictly inside it
+                    if resolved == root or str(resolved).startswith(str(root) + os.sep):
+                        if resolved.is_file():
+                            candidate = resolved
+                except OSError:
+                    candidate = None
+            if candidate is not None:
+                return web.FileResponse(path=candidate)
+            # SPA fallback: extensioned requests that did not resolve to a
+            # real file are genuine 404s (missing assets). Anything else
+            # is a client-side route and should boot the SPA.
+            last_segment = tail.rsplit("/", 1)[-1] if tail else ""
+            if "." in last_segment:
+                return web.Response(status=404, text="Not Found")
+            index_path = static_dir / "index.html"
+            if not index_path.is_file():
+                return web.Response(status=404, text="Dashboard bundle not present")
+            response = web.FileResponse(path=index_path)
+            response.headers["Cache-Control"] = "no-store"
+            return response
+
+        app.router.add_get("/dashboard", _dashboard_spa)
+        app.router.add_get("/dashboard/", _dashboard_spa)
+        app.router.add_get(r"/dashboard/{tail:.*}", _dashboard_spa)
         logger.info("Dashboard UI mounted from %s", static_dir)
     else:
         logger.info("Dashboard UI bundle not present; only /api/dashboard/* routes are active")

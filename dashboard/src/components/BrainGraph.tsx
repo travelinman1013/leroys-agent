@@ -20,6 +20,7 @@ import type {
   BrainGraph as BrainGraphData,
   BrainNode,
 } from "@/lib/api";
+import { useThemedPalette } from "@/lib/theme";
 
 type Props = {
   graph: BrainGraphData;
@@ -44,11 +45,11 @@ const SHAPE: Record<BrainNode["type"], Shape> = {
   cron: "crosshair",
 };
 
-const OXIDE = "#C96B2C";
-const INK = "#E7E2D8";
-const RULE = "#2D3531";
-const RULE_STRONG = "#3B4540";
-const FAINT = "#5E5A52";
+// Palette constants previously hardcoded dark-mode values
+// (`#C96B2C` / `#E7E2D8` / ...). They now come from
+// `useThemedPalette()` inside the component so the canvas flips
+// with the Appearance toggle in /config. See DESIGN.md §4 for
+// the full Bone & Iron Oxide token set.
 
 /**
  * Cheap deterministic hash → 32-bit float in [0, 1). Stable across renders
@@ -101,6 +102,13 @@ export function BrainGraph({
   visibleTypes,
   className,
 }: Props) {
+  const palette = useThemedPalette();
+  const OXIDE = palette.oxide;
+  const INK = palette.ink;
+  const RULE = palette.rule;
+  const RULE_STRONG = palette.ruleStrong;
+  const FAINT = palette.inkFaint;
+
   // Filter & lay out — both stable for a given graph + visibleTypes pair.
   const data = useMemo(() => {
     const visibleNodes = graph.nodes.filter((n) => visibleTypes.has(n.type));
@@ -151,7 +159,7 @@ export function BrainGraph({
         onPointerUp={onPointerUp}
         onPointerCancel={onPointerUp}
         onDoubleClick={resetPan}
-        style={{ background: "#131716", cursor: dragging.current ? "grabbing" : "grab" }}
+        style={{ background: palette.bgAlt, cursor: dragging.current ? "grabbing" : "grab" }}
       >
         <defs>
           <pattern id="brain-grid" width="60" height="60" patternUnits="userSpaceOnUse">
@@ -218,6 +226,7 @@ export function BrainGraph({
               <NodeMark
                 key={n.id}
                 node={n}
+                oxide={OXIDE}
                 onClick={() => onNodeClick?.(n)}
               />
             ))}
@@ -260,9 +269,11 @@ export function BrainGraph({
 
 function NodeMark({
   node,
+  oxide,
   onClick,
 }: {
   node: LaidOutNode;
+  oxide: string;
   onClick: () => void;
 }) {
   const shape = SHAPE[node.type];
@@ -283,7 +294,7 @@ function NodeMark({
           cy={node.y}
           r={r}
           fill="none"
-          stroke={OXIDE}
+          stroke={oxide}
           strokeWidth="0.9"
         />
       )}
@@ -309,14 +320,3 @@ function NodeMark({
     </g>
   );
 }
-
-// Legacy export retained for brain.tsx imports — every type maps to oxide
-// because color is no longer the differentiator (DESIGN.md §4 rule 3).
-export const BRAIN_NODE_COLORS: Record<BrainNode["type"], string> = {
-  memory: OXIDE,
-  session: OXIDE,
-  skill: OXIDE,
-  tool: OXIDE,
-  mcp: OXIDE,
-  cron: OXIDE,
-};
