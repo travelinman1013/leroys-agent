@@ -127,7 +127,7 @@ flowchart TB
 
     launchd -->|RunAtLoad + KeepAlive| plist
     plist -->|exec /usr/bin/python3<br/>hermes-gateway-sandboxed| wrapper
-    wrapper -.->|read .env<br/>(unsandboxed)| envfile
+    wrapper -.->|read .env<br/>&#40;unsandboxed&#41;| envfile
     wrapper -->|execvp w/ env vars in os.environ| sbexec
     sbexec -->|apply -f| profile
     sbexec -->|execvp hermes gateway run| hermes
@@ -717,12 +717,12 @@ flowchart LR
     bus -.->|async writer task| tee
     bus -.->|per-subscriber queue| sse
 
-    dispatch -.->|start_tool_span<br/>(no-op if disabled)| otel
+    dispatch -.->|start_tool_span<br/>&#40;no-op if disabled&#41;| otel
     otel -.->|OTLP gRPC :4317| Phoenix>"Arize Phoenix<br/>(optional)"]
 
     handshake -->|mint/return token| ui
     ui -->|Authorization: Bearer| rest
-    ui -->|Authorization: Bearer<br/>(streaming fetch)| sse
+    ui -->|Authorization: Bearer<br/>&#40;streaming fetch&#41;| sse
     ui -->|GET static| static
 ```
 
