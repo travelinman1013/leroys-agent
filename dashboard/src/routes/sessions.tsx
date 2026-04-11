@@ -194,39 +194,30 @@ function SessionsList() {
 
       {/*
         V1 (viewport overflow) + D1/D2 (dead row click surface + weak
-        title affordance) from ashen-tempering-ibis §1. Three changes
-        stacked:
+        title affordance) from ashen-tempering-ibis §1 and Maxwell's
+        follow-up feedback after Commit 3:
 
-        1. Horizontal scroll container. The table has 10 columns and a
-           ~1120px natural width. At 1024×768 (and often at 1280 with
-           the sidebar + chrome) the rightmost 3-4 columns clipped
-           past the viewport with no visible scroll affordance. The
-           wrapper now owns horizontal scroll, and a `min-w`
-           on the table enforces the full column width so the scroll
-           actually has something to scroll. A right-edge fade
-           (`sessions-table-fade` in index.css) makes the clip
-           visible — the macOS overlay scrollbar is invisible at rest
-           and the user cannot tell otherwise.
+        Commit 3 used a horizontal-scroll container with a `min-w`
+        on the table and a right-edge fade. Maxwell pushed back —
+        he wants zero horizontal scroll, all 10 columns fitted into
+        whatever viewport width is available, matching the /approvals
+        layout where cells wrap their own text across multiple lines
+        (e.g. "about 4 hours ago" → 4 lines at narrow widths).
 
-        2. Sticky header. Without `position: sticky`, vertically
-           scrolling past row 20 loses the column labels. The new
-           wrapper has `sticky top-0` on the `<thead>` background row
-           so the labels hold as the user scrolls.
-
-        3. Full-row click surface. Maxwell reported that clicking a
-           row title did nothing — it actually did navigate, but the
-           Outlet fix landed in the previous commit. Separately, only
-           the ID and TITLE text nodes were `<Link>`s; the SRC, MODEL,
-           MSGS, TOK, COST, LAST cells and inter-cell whitespace had
-           no click target. Now the whole row navigates on click via
-           `useNavigate`; checkbox and action buttons stop propagation
-           so they keep their own behavior. Keyboard a11y: row is
-           `role="link"`, `tabIndex={0}`, responds to Enter.
+        Changes vs Commit 3:
+        - dropped `min-w-[1120px]` on the table — it now shrinks
+          to fit its container
+        - dropped the `overflow-x-auto` / `relative` / fade sibling
+          wrapper — no scroll container
+        - dropped `max-w-[420px] truncate` on the TITLE cell — it
+          wraps naturally at `break-word` now
+        - tightened cell padding from `px-4 py-3` to `px-3 py-2.5`
+          so more content fits before any cell has to wrap at all
+        - unchanged from Commit 3: sticky thead, whole-row click
+          with keyboard a11y, title / id group-hover affordances
       */}
       <div className="px-10 pb-16">
-        <div className="relative">
-          <div className="overflow-x-auto">
-            <table className="w-full min-w-[1120px] border-collapse font-mono text-[12px] tabular-nums text-ink">
+        <table className="w-full table-auto border-collapse font-mono text-[12px] tabular-nums text-ink [&_td]:break-words">
             <thead className="sticky top-0 z-10 bg-bg">
               <tr>
                 <Th align="left">
@@ -267,10 +258,10 @@ function SessionsList() {
                         goDetail();
                       }
                     }}
-                    className="group cursor-pointer border-b border-rule transition-colors duration-120 ease-operator hover:bg-oxide-wash focus-visible:bg-oxide-wash focus-visible:outline-none"
+                    className="group cursor-pointer border-b border-rule align-top transition-colors duration-120 ease-operator hover:bg-oxide-wash focus-visible:bg-oxide-wash focus-visible:outline-none"
                   >
                     <td
-                      className="px-4 py-3"
+                      className="px-3 py-2.5"
                       onClick={(e) => e.stopPropagation()}
                     >
                       <input
@@ -281,32 +272,32 @@ function SessionsList() {
                         className="accent-oxide"
                       />
                     </td>
-                    <td className="px-4 py-3 text-ink-faint group-hover:text-oxide">
+                    <td className="px-3 py-2.5 text-ink-faint group-hover:text-oxide">
                       {sid.slice(0, 8)}
                     </td>
-                    <td className="max-w-[420px] truncate px-4 py-3 text-ink group-hover:text-oxide group-hover:underline group-hover:decoration-rule group-hover:underline-offset-4">
+                    <td className="px-3 py-2.5 text-ink group-hover:text-oxide group-hover:underline group-hover:decoration-rule group-hover:underline-offset-4">
                       {s.title || s.preview || "(no preview)"}
                     </td>
-                    <td className="px-4 py-3 text-ink-2">{s.source}</td>
-                    <td className="px-4 py-3 text-ink-2">
+                    <td className="px-3 py-2.5 text-ink-2">{s.source}</td>
+                    <td className="px-3 py-2.5 text-ink-2">
                       {s.model ? String(s.model).split("/").pop() : "—"}
                     </td>
-                    <td className="px-4 py-3 text-right text-ink">
+                    <td className="px-3 py-2.5 text-right text-ink">
                       {compactNumber(s.message_count)}
                     </td>
-                    <td className="px-4 py-3 text-right text-ink">
+                    <td className="px-3 py-2.5 text-right text-ink">
                       {compactNumber(
                         (s.input_tokens ?? 0) + (s.output_tokens ?? 0),
                       )}
                     </td>
-                    <td className="px-4 py-3 text-right text-ink-2">
+                    <td className="px-3 py-2.5 text-right text-ink-2">
                       {formatCost(s.estimated_cost_usd)}
                     </td>
-                    <td className="px-4 py-3 text-right text-ink-faint">
+                    <td className="px-3 py-2.5 text-right text-ink-faint">
                       {relTimeFromUnix(s.last_active ?? s.started_at)}
                     </td>
                     <td
-                      className="px-4 py-3 text-right"
+                      className="px-3 py-2.5 text-right"
                       onClick={(e) => e.stopPropagation()}
                     >
                       <a
@@ -339,9 +330,6 @@ function SessionsList() {
               })}
             </tbody>
           </table>
-          </div>
-          <div aria-hidden className="scroll-fade-right" />
-        </div>
         {sessions.length === 0 && !isLoading && (
           <p className="mt-6 font-mono text-[11px] uppercase tracking-marker text-ink-faint">
             no sessions match
@@ -361,7 +349,7 @@ function Th({
 }) {
   return (
     <th
-      className="border-b border-rule px-4 py-3.5 text-[10px] font-medium uppercase tracking-marker text-ink-muted"
+      className="border-b border-rule px-3 py-3 text-[10px] font-medium uppercase tracking-marker text-ink-muted"
       style={{ textAlign: align }}
     >
       {children}
