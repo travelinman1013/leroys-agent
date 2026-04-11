@@ -5,7 +5,12 @@
  * throughout, hairline borders, no row shadows.
  */
 
-import { createFileRoute, Link } from "@tanstack/react-router";
+import {
+  createFileRoute,
+  Link,
+  Outlet,
+  useMatchRoute,
+} from "@tanstack/react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
 import { api } from "@/lib/api";
@@ -27,6 +32,18 @@ function SessionsList() {
   const queryClient = useQueryClient();
   const confirm = useConfirm();
   const notify = useNotify();
+  // Session detail (`/sessions/$id`) is registered as a child of this
+  // route in `routeTree.gen.ts`. Without an explicit <Outlet />, the
+  // parent layout always rendered the list — clicking a session title
+  // updated the URL to `/sessions/<id>` but the view never swapped.
+  // That was Maxwell's "clicking the title doesn't lead anywhere"
+  // report. We render the child exclusively when one is matched
+  // (REPLACE master-detail: the list is dense enough that a
+  // side-by-side at 1024 would starve both panes). The match lookup
+  // MUST happen inside the same render pass as every other hook —
+  // React's rules of hooks require a stable hook order, so the
+  // early-return comes AFTER all hook calls below.
+  const matchRoute = useMatchRoute();
 
   const [filters, setFilters] = useState<SessionFilterState>({
     q: "",
@@ -123,6 +140,12 @@ function SessionsList() {
     }
     notify.success(`Triggered ${ids.length} downloads`);
   };
+
+  // Swap the list out for the child when a detail route is active.
+  // All hooks above have run on every render — safe to early-return.
+  if (matchRoute({ to: "/sessions/$id" })) {
+    return <Outlet />;
+  }
 
   return (
     <div className="bg-bg">
