@@ -1004,6 +1004,143 @@ class DashboardRoutes:
             results.append(row)
         return _json_ok({"results": results, "action": action})
 
+    # ==================================================================
+    # F2 — Brain/Memory Editor (Dashboard v2)
+    # ==================================================================
+
+    @require_dashboard_auth
+    async def handle_brain_memory_add(self, request: "web.Request") -> "web.Response":
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        store = (body.get("store") or "").strip()
+        content = body.get("content")
+        target = self._memory_target_from_store(store)
+        if target is None:
+            return _json_err(ValueError("store must be 'MEMORY.md' or 'USER.md'"), 400)
+        if not content or not isinstance(content, str):
+            return _json_err(ValueError("content (str) required"), 400)
+        try:
+            from tools.memory_tool import MemoryStore
+            store_obj = MemoryStore()
+            store_obj.load_from_disk()
+            result = store_obj.add(target, content)
+            if not result.get("success"):
+                return _json_err(ValueError(result.get("error", "add failed")), 400)
+            return _json_ok({"ok": True, "result": result})
+        except Exception as exc:
+            return _json_err(exc)
+
+    @require_dashboard_auth
+    async def handle_brain_memory_replace(self, request: "web.Request") -> "web.Response":
+        store_param = request.query.get("store") or "MEMORY.md"
+        target = self._memory_target_from_store(store_param)
+        if target is None:
+            return _json_err(ValueError("store query must be MEMORY.md or USER.md"), 400)
+        hash8 = request.match_info.get("hash", "")
+        if not hash8:
+            return _json_err(ValueError("hash required"), 400)
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        new_content = body.get("content")
+        if not new_content or not isinstance(new_content, str):
+            return _json_err(ValueError("content (str) required"), 400)
+        try:
+            from tools.memory_tool import MemoryStore
+            store_obj = MemoryStore()
+            store_obj.load_from_disk()
+            old_entry = store_obj.find_entry_by_hash(target, hash8)
+            if old_entry is None:
+                return _json_err(LookupError("no entry matches hash"), 404)
+            result = store_obj.replace(target, old_entry, new_content)
+            if not result.get("success"):
+                return _json_err(ValueError(result.get("error", "replace failed")), 400)
+            return _json_ok({"ok": True, "result": result})
+        except Exception as exc:
+            return _json_err(exc)
+
+    @require_dashboard_auth
+    async def handle_brain_memory_delete(self, request: "web.Request") -> "web.Response":
+        store_param = request.query.get("store") or "MEMORY.md"
+        target = self._memory_target_from_store(store_param)
+        if target is None:
+            return _json_err(ValueError("store query must be MEMORY.md or USER.md"), 400)
+        hash8 = request.match_info.get("hash", "")
+        if not hash8:
+            return _json_err(ValueError("hash required"), 400)
+        try:
+            from tools.memory_tool import MemoryStore
+            store_obj = MemoryStore()
+            store_obj.load_from_disk()
+            entry = store_obj.find_entry_by_hash(target, hash8)
+            if entry is None:
+                return _json_err(LookupError("no entry matches hash"), 404)
+            result = store_obj.remove(target, entry)
+            if not result.get("success"):
+                return _json_err(ValueError(result.get("error", "remove failed")), 400)
+            return _json_ok({"ok": True, "result": result})
+        except Exception as exc:
+            return _json_err(exc)
+
+    @require_dashboard_auth
+    async def handle_brain_memory_export(self, request: "web.Request") -> "web.Response":
+        store_param = request.query.get("store") or "both"
+        try:
+            from tools.memory_tool import MemoryStore
+            store_obj = MemoryStore()
+            store_obj.load_from_disk()
+            payload: Dict[str, Any] = {}
+            if store_param in ("MEMORY.md", "memory", "both"):
+                payload["MEMORY.md"] = {
+                    "raw": store_obj.export_raw("memory"),
+                    "entries": list(store_obj.memory_entries),
+                }
+            if store_param in ("USER.md", "user", "both"):
+                payload["USER.md"] = {
+                    "raw": store_obj.export_raw("user"),
+                    "entries": list(store_obj.user_entries),
+                }
+            return _json_ok(payload)
+        except Exception as exc:
+            return _json_err(exc)
+
+    @require_dashboard_auth
+    async def handle_brain_memory_import(self, request: "web.Request") -> "web.Response":
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        store_param = body.get("store") or ""
+        target = self._memory_target_from_store(store_param)
+        if target is None:
+            return _json_err(ValueError("store must be 'MEMORY.md' or 'USER.md'"), 400)
+        raw = body.get("raw_content")
+        if not isinstance(raw, str):
+            return _json_err(ValueError("raw_content (str) required"), 400)
+        mode = (body.get("mode") or "replace").lower()
+        try:
+            from tools.memory_tool import MemoryStore
+            store_obj = MemoryStore()
+            store_obj.load_from_disk()
+            result = store_obj.import_raw(target, raw, mode=mode)
+            if not result.get("success"):
+                return _json_err(ValueError(result.get("error", "import failed")), 400)
+            return _json_ok({"ok": True, "result": result})
+        except Exception as exc:
+            return _json_err(exc)
+
+    @staticmethod
+    def _memory_target_from_store(store: str) -> Optional[str]:
+        s = (store or "").strip().upper()
+        if s in ("MEMORY.MD", "MEMORY"):
+            return "memory"
+        if s in ("USER.MD", "USER"):
+            return "user"
+        return None
+
     @require_dashboard_auth
     async def handle_brain_graph(self, request: "web.Request") -> "web.Response":
         """Return the brain visualization snapshot.
@@ -1230,6 +1367,16 @@ def register_dashboard_routes(
     app.router.add_get(
         "/api/dashboard/brain/node/{type}/{id}", routes.handle_brain_node,
     )
+    # F2 — Brain/Memory Editor (Dashboard v2)
+    app.router.add_post("/api/dashboard/brain/memory", routes.handle_brain_memory_add)
+    app.router.add_put(
+        "/api/dashboard/brain/memory/{hash}", routes.handle_brain_memory_replace
+    )
+    app.router.add_delete(
+        "/api/dashboard/brain/memory/{hash}", routes.handle_brain_memory_delete
+    )
+    app.router.add_get("/api/dashboard/brain/export", routes.handle_brain_memory_export)
+    app.router.add_post("/api/dashboard/brain/import", routes.handle_brain_memory_import)
 
     # Static UI bundle
     if static_dir is not None and static_dir.is_dir():

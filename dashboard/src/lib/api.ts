@@ -343,6 +343,44 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body),
     }),
+
+  // F2 — Brain/Memory Editor
+  addMemory: (body: { store: "MEMORY.md" | "USER.md"; content: string }) =>
+    apiFetch<{ ok: boolean }>("/api/dashboard/brain/memory", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  replaceMemory: (
+    hash: string,
+    store: "MEMORY.md" | "USER.md",
+    content: string,
+  ) =>
+    apiFetch<{ ok: boolean }>(
+      `/api/dashboard/brain/memory/${encodeURIComponent(hash)}?store=${encodeURIComponent(store)}`,
+      { method: "PUT", body: JSON.stringify({ content }) },
+    ),
+
+  deleteMemory: (hash: string, store: "MEMORY.md" | "USER.md") =>
+    apiFetch<{ ok: boolean }>(
+      `/api/dashboard/brain/memory/${encodeURIComponent(hash)}?store=${encodeURIComponent(store)}`,
+      { method: "DELETE" },
+    ),
+
+  exportMemory: (store: "MEMORY.md" | "USER.md" | "both" = "both") =>
+    apiFetch<Record<string, { raw: string; entries: string[] }>>(
+      `/api/dashboard/brain/export?store=${encodeURIComponent(store)}`,
+    ),
+
+  importMemory: (body: {
+    store: "MEMORY.md" | "USER.md";
+    raw_content: string;
+    mode?: "replace" | "append";
+  }) =>
+    apiFetch<{ ok: boolean }>("/api/dashboard/brain/import", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
 };
 
 // --------------------------------------------------------------------------
