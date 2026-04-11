@@ -285,6 +285,64 @@ export const api = {
     apiFetch<{ node: BrainNode }>(
       `/api/dashboard/brain/node/${encodeURIComponent(type)}/${encodeURIComponent(id)}`,
     ),
+
+  // F1 — Session Control Plane (Dashboard v2)
+  searchSessions: (opts: {
+    q?: string;
+    source?: string;
+    from?: number;
+    to?: number;
+    limit?: number;
+    offset?: number;
+  } = {}) => {
+    const params = new URLSearchParams();
+    if (opts.q) params.set("q", opts.q);
+    if (opts.source) params.set("source", opts.source);
+    if (opts.from !== undefined) params.set("from", String(opts.from));
+    if (opts.to !== undefined) params.set("to", String(opts.to));
+    if (opts.limit) params.set("limit", String(opts.limit));
+    if (opts.offset) params.set("offset", String(opts.offset));
+    const qs = params.toString();
+    return apiFetch<{ sessions: SessionListRow[]; limit: number; offset: number }>(
+      `/api/dashboard/sessions/search${qs ? `?${qs}` : ""}`,
+    );
+  },
+
+  deleteSession: (id: string) =>
+    apiFetch<{ deleted: boolean; id: string }>(
+      `/api/dashboard/sessions/${encodeURIComponent(id)}`,
+      { method: "DELETE" },
+    ),
+
+  exportSessionUrl: (id: string, format: "json" | "md" = "json") =>
+    `/api/dashboard/sessions/${encodeURIComponent(id)}/export?format=${format}`,
+
+  forkSession: (id: string, body: { up_to_turn?: number; title?: string }) =>
+    apiFetch<{ id: string; parent_id: string }>(
+      `/api/dashboard/sessions/${encodeURIComponent(id)}/fork`,
+      { method: "POST", body: JSON.stringify(body) },
+    ),
+
+  injectMessage: (id: string, body: { content: string; role?: "user" | "system" }) =>
+    apiFetch<{ id: string; message_id: number }>(
+      `/api/dashboard/sessions/${encodeURIComponent(id)}/inject`,
+      { method: "POST", body: JSON.stringify(body) },
+    ),
+
+  reopenSession: (id: string) =>
+    apiFetch<{ id: string; reopened: boolean }>(
+      `/api/dashboard/sessions/${encodeURIComponent(id)}/reopen`,
+      { method: "POST" },
+    ),
+
+  bulkSessions: (body: { ids: string[]; action: "delete" | "export" }) =>
+    apiFetch<{
+      results: Array<{ id: string; ok: boolean; error?: string; message_count?: number }>;
+      action: string;
+    }>("/api/dashboard/sessions/bulk", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
 };
 
 // --------------------------------------------------------------------------

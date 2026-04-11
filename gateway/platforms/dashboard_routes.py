@@ -744,6 +744,266 @@ class DashboardRoutes:
     # GET /api/dashboard/brain/graph — typed knowledge graph snapshot
     # ------------------------------------------------------------------
 
+    # ==================================================================
+    # F1 — Session Control Plane (Dashboard v2)
+    # ==================================================================
+
+    @require_dashboard_auth
+    async def handle_session_search(self, request: "web.Request") -> "web.Response":
+        """Search sessions with optional title query, source, and date range.
+
+        Query params:
+            q: substring against title
+            source: exact match against ``source`` column
+            from / to: unix timestamps
+            limit / offset: pagination
+        """
+        try:
+            limit = max(1, min(200, int(request.query.get("limit", "50"))))
+            offset = max(0, int(request.query.get("offset", "0")))
+        except ValueError:
+            return _json_err(ValueError("limit/offset must be integers"), 400)
+        q = request.query.get("q") or None
+        source = request.query.get("source") or None
+        try:
+            t_from = float(request.query["from"]) if "from" in request.query else None
+            t_to = float(request.query["to"]) if "to" in request.query else None
+        except ValueError:
+            return _json_err(ValueError("from/to must be numeric unix ts"), 400)
+        try:
+            from hermes_state import SessionDB
+            db = SessionDB()
+            rows = db.search_sessions(
+                source=source,
+                limit=limit,
+                offset=offset,
+                q=q,
+                started_after=t_from,
+                started_before=t_to,
+            )
+            for r in rows:
+                if r.get("title"):
+                    r["title"] = redact_text(r["title"])
+            return _json_ok({"sessions": rows, "limit": limit, "offset": offset})
+        except Exception as exc:
+            return _json_err(exc)
+
+    @require_dashboard_auth
+    async def handle_delete_session(self, request: "web.Request") -> "web.Response":
+        session_id = request.match_info.get("id", "")
+        if not session_id:
+            return _json_err(ValueError("session id required"), 400)
+        try:
+            from hermes_state import SessionDB
+            db = SessionDB()
+            ok = db.delete_session(session_id)
+            if not ok:
+                return _json_err(LookupError("session not found"), 404)
+            try:
+                from gateway.event_bus import publish as _publish_event
+                _publish_event(
+                    "session.deleted",
+                    session_id=session_id,
+                    data={"resolver": "dashboard"},
+                )
+            except Exception:
+                pass
+            return _json_ok({"deleted": True, "id": session_id})
+        except Exception as exc:
+            return _json_err(exc)
+
+    @require_dashboard_auth
+    async def handle_export_session(self, request: "web.Request") -> "web.Response":
+        session_id = request.match_info.get("id", "")
+        fmt = (request.query.get("format") or "json").lower()
+        if not session_id:
+            return _json_err(ValueError("session id required"), 400)
+        try:
+            from hermes_state import SessionDB
+            db = SessionDB()
+            if fmt == "md" or fmt == "markdown":
+                md = db.render_session_markdown(session_id)
+                if md is None:
+                    return _json_err(LookupError("session not found"), 404)
+                return web.Response(
+                    text=md,
+                    content_type="text/markdown",
+                    headers={
+                        "Content-Disposition":
+                            f'attachment; filename="{session_id}.md"',
+                    },
+                )
+            data = db.export_session(session_id)
+            if data is None:
+                return _json_err(LookupError("session not found"), 404)
+            try:
+                from gateway.event_bus import publish as _publish_event
+                _publish_event(
+                    "session.exported",
+                    session_id=session_id,
+                    data={"format": fmt},
+                )
+            except Exception:
+                pass
+            return web.json_response(
+                data,
+                headers={
+                    "Content-Disposition":
+                        f'attachment; filename="{session_id}.json"',
+                },
+            )
+        except Exception as exc:
+            return _json_err(exc)
+
+    @require_dashboard_auth
+    async def handle_fork_session(self, request: "web.Request") -> "web.Response":
+        session_id = request.match_info.get("id", "")
+        if not session_id:
+            return _json_err(ValueError("session id required"), 400)
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        up_to_turn = body.get("up_to_turn")
+        title = body.get("title")
+        try:
+            up_to_turn_idx = int(up_to_turn) if up_to_turn is not None else None
+        except (TypeError, ValueError):
+            return _json_err(ValueError("up_to_turn must be an integer"), 400)
+        try:
+            from hermes_state import SessionDB
+            db = SessionDB()
+            src = db.get_session(session_id)
+            if not src:
+                return _json_err(LookupError("source session not found"), 404)
+            if src.get("ended_at") is None:
+                return _json_err(
+                    ValueError("cannot fork an active session — wait for it to end"),
+                    409,
+                )
+            new_id = db.fork_session(
+                session_id, up_to_turn_idx=up_to_turn_idx, title=title,
+            )
+            try:
+                from gateway.event_bus import publish as _publish_event
+                _publish_event(
+                    "session.forked",
+                    session_id=new_id,
+                    data={"parent_id": session_id, "up_to_turn": up_to_turn_idx},
+                )
+            except Exception:
+                pass
+            return _json_ok({"id": new_id, "parent_id": session_id})
+        except Exception as exc:
+            return _json_err(exc)
+
+    @require_dashboard_auth
+    async def handle_inject_message(self, request: "web.Request") -> "web.Response":
+        session_id = request.match_info.get("id", "")
+        if not session_id:
+            return _json_err(ValueError("session id required"), 400)
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        content = body.get("content")
+        role = body.get("role", "user")
+        if not content or not isinstance(content, str):
+            return _json_err(ValueError("content (str) required"), 400)
+        if role not in ("user", "system"):
+            return _json_err(ValueError("role must be 'user' or 'system'"), 400)
+        try:
+            from hermes_state import SessionDB
+            db = SessionDB()
+            session = db.get_session(session_id)
+            if not session:
+                return _json_err(LookupError("session not found"), 404)
+            # Reopen if ended, then append
+            if session.get("ended_at") is not None:
+                db.reopen_session(session_id)
+            msg_id = db.append_message(
+                session_id=session_id, role=role, content=content,
+            )
+            try:
+                from gateway.event_bus import publish as _publish_event
+                _publish_event(
+                    "session.injected",
+                    session_id=session_id,
+                    data={"message_id": msg_id, "role": role},
+                )
+            except Exception:
+                pass
+            return _json_ok({"id": session_id, "message_id": msg_id})
+        except Exception as exc:
+            return _json_err(exc)
+
+    @require_dashboard_auth
+    async def handle_reopen_session(self, request: "web.Request") -> "web.Response":
+        session_id = request.match_info.get("id", "")
+        if not session_id:
+            return _json_err(ValueError("session id required"), 400)
+        try:
+            from hermes_state import SessionDB
+            db = SessionDB()
+            session = db.get_session(session_id)
+            if not session:
+                return _json_err(LookupError("session not found"), 404)
+            db.reopen_session(session_id)
+            try:
+                from gateway.event_bus import publish as _publish_event
+                _publish_event(
+                    "session.reopened",
+                    session_id=session_id,
+                    data={"resolver": "dashboard"},
+                )
+            except Exception:
+                pass
+            return _json_ok({"id": session_id, "reopened": True})
+        except Exception as exc:
+            return _json_err(exc)
+
+    @require_dashboard_auth
+    async def handle_session_bulk(self, request: "web.Request") -> "web.Response":
+        """Bulk action over a list of session IDs.
+
+        Body: ``{ids: [...], action: "delete" | "export"}``.
+        Returns ``{results: [{id, ok, error?}, ...]}``.
+        """
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        ids = body.get("ids") or []
+        action = (body.get("action") or "").lower()
+        if not isinstance(ids, list) or not ids:
+            return _json_err(ValueError("ids (non-empty list) required"), 400)
+        if action not in ("delete", "export"):
+            return _json_err(ValueError("action must be 'delete' or 'export'"), 400)
+
+        from hermes_state import SessionDB
+        db = SessionDB()
+        results: list[dict] = []
+        for raw_id in ids:
+            sid = str(raw_id)
+            row = {"id": sid, "ok": False}
+            try:
+                if action == "delete":
+                    deleted = db.delete_session(sid)
+                    row["ok"] = deleted
+                    if not deleted:
+                        row["error"] = "not found"
+                else:  # export
+                    data = db.export_session(sid)
+                    if data is None:
+                        row["error"] = "not found"
+                    else:
+                        row["ok"] = True
+                        row["message_count"] = len(data.get("messages", []))
+            except Exception as exc:
+                row["error"] = str(exc)
+            results.append(row)
+        return _json_ok({"results": results, "action": action})
+
     @require_dashboard_auth
     async def handle_brain_graph(self, request: "web.Request") -> "web.Response":
         """Return the brain visualization snapshot.
@@ -944,8 +1204,17 @@ def register_dashboard_routes(
     app.router.add_get("/api/dashboard/handshake", routes.handle_handshake)
     app.router.add_get("/api/dashboard/state", routes.handle_state)
     app.router.add_get("/api/dashboard/sessions", routes.handle_sessions)
+    # F1 — Static segments (search/bulk) MUST be registered BEFORE the
+    # dynamic /sessions/{id} route so aiohttp matches them first.
+    app.router.add_get("/api/dashboard/sessions/search", routes.handle_session_search)
+    app.router.add_post("/api/dashboard/sessions/bulk", routes.handle_session_bulk)
     app.router.add_get("/api/dashboard/sessions/{id}", routes.handle_session_detail)
     app.router.add_get("/api/dashboard/sessions/{id}/events", routes.handle_session_events)
+    app.router.add_delete("/api/dashboard/sessions/{id}", routes.handle_delete_session)
+    app.router.add_get("/api/dashboard/sessions/{id}/export", routes.handle_export_session)
+    app.router.add_post("/api/dashboard/sessions/{id}/fork", routes.handle_fork_session)
+    app.router.add_post("/api/dashboard/sessions/{id}/inject", routes.handle_inject_message)
+    app.router.add_post("/api/dashboard/sessions/{id}/reopen", routes.handle_reopen_session)
     app.router.add_get("/api/dashboard/approvals", routes.handle_list_approvals)
     app.router.add_post("/api/dashboard/approvals/{session_key}", routes.handle_resolve_approval)
     app.router.add_get("/api/dashboard/tools", routes.handle_tools)
@@ -955,6 +1224,7 @@ def register_dashboard_routes(
     app.router.add_get("/api/dashboard/config", routes.handle_config)
     app.router.add_get("/api/dashboard/recent", routes.handle_recent)
     app.router.add_get("/api/dashboard/events", routes.handle_events)
+
     # Brain visualization (Wave-1 R1 of stateful-noodling-reddy plan)
     app.router.add_get("/api/dashboard/brain/graph", routes.handle_brain_graph)
     app.router.add_get(
