@@ -88,14 +88,32 @@ function HealthPage() {
           </ul>
         </section>
 
-        {/* Runtime config */}
-        <section>
+        {/*
+          Runtime config.
+
+          The `min-w-0` on the <section> is load-bearing: CSS grid
+          defaults grid items to `min-width: auto`, which resolves
+          to the content's intrinsic min-content width. With a
+          non-wrapping <pre> inside (JSON with deep nesting → long
+          lines), that intrinsic width is the full length of the
+          widest line — ~2027px measured. Without `min-w-0`, the
+          grid column would size to that width and push `main` into
+          horizontal scroll, dragging sections 03+ off-screen.
+
+          With `min-w-0`, the grid column honors the flex 1fr and
+          the <pre>'s own `overflow-auto` handles horizontal scroll
+          for long JSON lines — which is exactly where the scroll
+          should happen (inside the config block, not the whole
+          page). Matches the fix in ~/.claude/plans/ashen-tempering-ibis.md
+          §2 Commit 4.
+        */}
+        <section className="min-w-0">
           <div className="marker mb-6">
             <span className="marker-num">02</span>
             <span>RUNTIME CONFIG</span>
             <span className="marker-rule" />
           </div>
-          <pre className="max-h-[640px] overflow-auto border border-rule bg-bg-alt p-4 font-mono text-[11px] leading-relaxed tabular-nums text-ink-2">
+          <pre className="max-h-[640px] w-full max-w-full overflow-auto border border-rule bg-bg-alt p-4 font-mono text-[11px] leading-relaxed tabular-nums text-ink-2">
             {config.data
               ? JSON.stringify(config.data.config, null, 2)
               : config.isLoading
