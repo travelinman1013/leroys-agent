@@ -7592,9 +7592,33 @@ class AIAgent:
                         )
                     else:
                         response = self._interruptible_api_call(api_kwargs)
-                    
+
                     api_duration = time.time() - api_start_time
-                    
+
+                    # Dashboard event bus — fail-silent
+                    try:
+                        from gateway.event_bus import publish as _publish_event
+                        _usage = getattr(response, "usage", None)
+                        _publish_event(
+                            "llm.call",
+                            session_id=self.session_id,
+                            data={
+                                "model": getattr(response, "model", None) or self.model,
+                                "provider": self.provider or "unknown",
+                                "latency_ms": int(api_duration * 1000),
+                                "input_tokens": getattr(_usage, "prompt_tokens", None) if _usage else None,
+                                "output_tokens": getattr(_usage, "completion_tokens", None) if _usage else None,
+                                "total_tokens": getattr(_usage, "total_tokens", None) if _usage else None,
+                                "reasoning_tokens": (
+                                    getattr(_usage, "completion_tokens_details", None)
+                                    and getattr(_usage.completion_tokens_details, "reasoning_tokens", None)
+                                ) if _usage else None,
+                                "task": "agent",
+                            },
+                        )
+                    except Exception:
+                        pass
+
                     # Stop thinking spinner silently -- the response box or tool
                     # execution messages that follow are more informative.
                     if thinking_spinner:
@@ -7602,7 +7626,7 @@ class AIAgent:
                         thinking_spinner = None
                     if self.thinking_callback:
                         self.thinking_callback("")
-                    
+
                     if not self.quiet_mode:
                         self._vprint(f"{self.log_prefix}⏱️  API call completed in {api_duration:.2f}s")
                     

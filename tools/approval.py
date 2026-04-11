@@ -268,6 +268,33 @@ def resolve_gateway_approval(session_key: str, choice: str,
     except Exception:
         pass
 
+    # Approval history audit trail (Dashboard v2 W0). Fire-and-forget so a
+    # broken DB never blocks the resolution path. Wait time is computed from
+    # entry.queued_at when present.
+    try:
+        from hermes_state import SessionDB
+        _db = SessionDB()
+        _now = time.time()
+        for entry in targets:
+            queued_at = getattr(entry, "queued_at", None)
+            wait_ms = int((_now - queued_at) * 1000) if queued_at else None
+            try:
+                _db.record_approval(
+                    session_id=session_key,
+                    command=entry.data.get("command", ""),
+                    pattern_key=entry.data.get("pattern_key"),
+                    description=entry.data.get("description"),
+                    choice=choice,
+                    resolver="dashboard" if "dashboard" in (session_key or "") else "gateway",
+                    requested_at=queued_at,
+                    resolved_at=_now,
+                    wait_ms=wait_ms,
+                )
+            except Exception:
+                pass
+    except Exception:
+        pass
+
     return len(targets)
 
 

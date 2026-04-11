@@ -2103,16 +2103,55 @@ def call_llm(
         tools=tools, timeout=effective_timeout, extra_body=extra_body,
         base_url=resolved_base_url)
 
+    # Dashboard event bus — fail-silent llm.call emission for auxiliary
+    # tasks. Captures latency + token usage for the F5 metrics dashboard.
+    def _emit_llm_call(response: Any, latency_ms: int, label_provider: str, label_model: str) -> None:
+        try:
+            import os as _os
+            from gateway.event_bus import publish as _publish_event
+            _usage = getattr(response, "usage", None) if response is not None else None
+            _publish_event(
+                "llm.call",
+                session_id=_os.environ.get("HERMES_SESSION_ID"),
+                data={
+                    "model": getattr(response, "model", None) or label_model,
+                    "provider": label_provider or "unknown",
+                    "latency_ms": latency_ms,
+                    "input_tokens": getattr(_usage, "prompt_tokens", None) if _usage else None,
+                    "output_tokens": getattr(_usage, "completion_tokens", None) if _usage else None,
+                    "total_tokens": getattr(_usage, "total_tokens", None) if _usage else None,
+                    "task": task or "auxiliary",
+                },
+            )
+        except Exception:
+            pass
+
+    _llm_call_start = time.monotonic()
+
     # Handle max_tokens vs max_completion_tokens retry, then payment fallback.
     try:
-        return client.chat.completions.create(**kwargs)
+        _resp = client.chat.completions.create(**kwargs)
+        _emit_llm_call(
+            _resp,
+            int((time.monotonic() - _llm_call_start) * 1000),
+            resolved_provider,
+            final_model,
+        )
+        return _resp
     except Exception as first_err:
         err_str = str(first_err)
         if "max_tokens" in err_str or "unsupported_parameter" in err_str:
             kwargs.pop("max_tokens", None)
             kwargs["max_completion_tokens"] = max_tokens
             try:
-                return client.chat.completions.create(**kwargs)
+                _resp_retry = client.chat.completions.create(**kwargs)
+                _emit_llm_call(
+                    _resp_retry,
+                    int((time.monotonic() - _llm_call_start) * 1000),
+                    resolved_provider,
+                    final_model,
+                )
+                return _resp_retry
             except Exception as retry_err:
                 # If the max_tokens retry also hits a payment error,
                 # fall through to the payment fallback below.
@@ -2121,17 +2160,6 @@ def call_llm(
                 first_err = retry_err
 
         # ── Payment / credit exhaustion fallback ──────────────────────
-        # When the resolved provider returns 402 or a credit-related error,
-        # try alternative providers instead of giving up.  This handles the
-        # common case where a user runs out of OpenRouter credits but has
-        # Codex OAuth or another provider available.
-        #
-        # ── Connection error fallback ────────────────────────────────
-        # When a provider endpoint is unreachable (DNS failure, connection
-        # refused, timeout), try alternative providers.  This handles stale
-        # Codex/OAuth tokens that authenticate but whose endpoint is down,
-        # and providers the user never configured that got picked up by
-        # the auto-detection chain.
         should_fallback = _is_payment_error(first_err) or _is_connection_error(first_err)
         if should_fallback:
             reason = "payment error" if _is_payment_error(first_err) else "connection error"
@@ -2145,7 +2173,14 @@ def call_llm(
                     temperature=temperature, max_tokens=max_tokens,
                     tools=tools, timeout=effective_timeout,
                     extra_body=extra_body)
-                return fb_client.chat.completions.create(**fb_kwargs)
+                _resp_fb = fb_client.chat.completions.create(**fb_kwargs)
+                _emit_llm_call(
+                    _resp_fb,
+                    int((time.monotonic() - _llm_call_start) * 1000),
+                    fb_label,
+                    fb_model,
+                )
+                return _resp_fb
         raise
 
 

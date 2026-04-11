@@ -31,7 +31,7 @@ T = TypeVar("T")
 
 DEFAULT_DB_PATH = get_hermes_home() / "state.db"
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -84,10 +84,27 @@ CREATE TABLE IF NOT EXISTS messages (
     codex_reasoning_items TEXT
 );
 
+CREATE TABLE IF NOT EXISTS approval_history (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id TEXT,
+    command TEXT NOT NULL,
+    pattern_key TEXT,
+    description TEXT,
+    choice TEXT NOT NULL,
+    resolver TEXT NOT NULL,
+    requested_at REAL,
+    resolved_at REAL NOT NULL,
+    wait_ms INTEGER,
+    reason TEXT
+);
+
 CREATE INDEX IF NOT EXISTS idx_sessions_source ON sessions(source);
 CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_started ON sessions(started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, timestamp);
+CREATE INDEX IF NOT EXISTS idx_approval_history_session ON approval_history(session_id);
+CREATE INDEX IF NOT EXISTS idx_approval_history_resolved_at ON approval_history(resolved_at DESC);
+CREATE INDEX IF NOT EXISTS idx_approval_history_pattern ON approval_history(pattern_key);
 """
 
 FTS_SQL = """
@@ -329,6 +346,44 @@ class SessionDB:
                     except sqlite3.OperationalError:
                         pass  # Column already exists
                 cursor.execute("UPDATE schema_version SET version = 6")
+            if current_version < 7:
+                # v7: add approval_history table for the dashboard v2 audit
+                # trail. Existing CREATE TABLE IF NOT EXISTS in SCHEMA_SQL
+                # already provisioned the table on a fresh DB; this branch
+                # only runs on upgrade so we just bump the version (the
+                # schemascript at the top has already created the table
+                # and indexes via executescript above).
+                try:
+                    cursor.execute(
+                        """CREATE TABLE IF NOT EXISTS approval_history (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            session_id TEXT,
+                            command TEXT NOT NULL,
+                            pattern_key TEXT,
+                            description TEXT,
+                            choice TEXT NOT NULL,
+                            resolver TEXT NOT NULL,
+                            requested_at REAL,
+                            resolved_at REAL NOT NULL,
+                            wait_ms INTEGER,
+                            reason TEXT
+                        )"""
+                    )
+                    cursor.execute(
+                        "CREATE INDEX IF NOT EXISTS idx_approval_history_session "
+                        "ON approval_history(session_id)"
+                    )
+                    cursor.execute(
+                        "CREATE INDEX IF NOT EXISTS idx_approval_history_resolved_at "
+                        "ON approval_history(resolved_at DESC)"
+                    )
+                    cursor.execute(
+                        "CREATE INDEX IF NOT EXISTS idx_approval_history_pattern "
+                        "ON approval_history(pattern_key)"
+                    )
+                except sqlite3.OperationalError:
+                    pass
+                cursor.execute("UPDATE schema_version SET version = 7")
 
         # Unique title index — always ensure it exists (safe to run after migrations
         # since the title column is guaranteed to exist at this point)
@@ -1201,6 +1256,123 @@ class SessionDB:
             else:
                 cursor = self._conn.execute("SELECT COUNT(*) FROM messages")
             return cursor.fetchone()[0]
+
+    # =========================================================================
+    # Approval history (Dashboard v2 W0 / F3)
+    # =========================================================================
+
+    def record_approval(
+        self,
+        *,
+        session_id: Optional[str],
+        command: str,
+        pattern_key: Optional[str],
+        description: Optional[str],
+        choice: str,
+        resolver: str,
+        requested_at: Optional[float] = None,
+        resolved_at: Optional[float] = None,
+        wait_ms: Optional[int] = None,
+        reason: Optional[str] = None,
+    ) -> Optional[int]:
+        """Insert a row into ``approval_history`` and return the row id.
+
+        Fire-and-forget: callers wrap this in try/except so a DB write
+        failure can never break the resolution path.
+        """
+        ts_resolved = resolved_at if resolved_at is not None else time.time()
+
+        def _do(conn):
+            cursor = conn.execute(
+                """INSERT INTO approval_history (
+                       session_id, command, pattern_key, description,
+                       choice, resolver, requested_at, resolved_at, wait_ms, reason
+                   ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    session_id, command, pattern_key, description,
+                    choice, resolver, requested_at, ts_resolved, wait_ms, reason,
+                ),
+            )
+            return cursor.lastrowid
+
+        return self._execute_write(_do)
+
+    def list_approval_history(
+        self,
+        *,
+        limit: int = 100,
+        offset: int = 0,
+        session_id: Optional[str] = None,
+        pattern_key: Optional[str] = None,
+        choice: Optional[str] = None,
+        since: Optional[float] = None,
+    ) -> List[Dict[str, Any]]:
+        """Paginated history query for the F3 approvals route."""
+        clauses = []
+        params: list = []
+        if session_id:
+            clauses.append("session_id = ?")
+            params.append(session_id)
+        if pattern_key:
+            clauses.append("pattern_key = ?")
+            params.append(pattern_key)
+        if choice:
+            clauses.append("choice = ?")
+            params.append(choice)
+        if since is not None:
+            clauses.append("resolved_at >= ?")
+            params.append(since)
+        where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
+        sql = (
+            "SELECT id, session_id, command, pattern_key, description, "
+            "choice, resolver, requested_at, resolved_at, wait_ms, reason "
+            f"FROM approval_history{where} "
+            "ORDER BY resolved_at DESC LIMIT ? OFFSET ?"
+        )
+        params.extend([limit, offset])
+        with self._lock:
+            cursor = self._conn.execute(sql, params)
+            return [dict(row) for row in cursor.fetchall()]
+
+    def approval_history_stats(
+        self, *, since: Optional[float] = None
+    ) -> Dict[str, Dict[str, Any]]:
+        """Aggregate approval history into per-pattern stats."""
+        params: list = []
+        where = ""
+        if since is not None:
+            where = " WHERE resolved_at >= ?"
+            params.append(since)
+        sql = (
+            "SELECT pattern_key, choice, COUNT(*) AS n, "
+            "AVG(wait_ms) AS avg_wait_ms "
+            f"FROM approval_history{where} "
+            "GROUP BY pattern_key, choice"
+        )
+        with self._lock:
+            cursor = self._conn.execute(sql, params)
+            rows = list(cursor.fetchall())
+
+        out: Dict[str, Dict[str, Any]] = {}
+        for row in rows:
+            key = row["pattern_key"] or "unknown"
+            entry = out.setdefault(key, {
+                "count": 0, "denied": 0, "approved": 0, "wait_ms_sum": 0.0,
+            })
+            entry["count"] += int(row["n"] or 0)
+            if row["choice"] == "deny":
+                entry["denied"] += int(row["n"] or 0)
+            else:
+                entry["approved"] += int(row["n"] or 0)
+            if row["avg_wait_ms"] is not None:
+                entry["wait_ms_sum"] += float(row["avg_wait_ms"]) * int(row["n"] or 0)
+
+        for key, entry in out.items():
+            cnt = entry["count"] or 1
+            entry["deny_rate"] = entry["denied"] / cnt
+            entry["avg_wait_ms"] = entry["wait_ms_sum"] / cnt
+            entry.pop("wait_ms_sum", None)
+        return out
 
     # =========================================================================
     # Export and cleanup

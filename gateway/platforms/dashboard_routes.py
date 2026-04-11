@@ -50,6 +50,7 @@ keepalive pattern from ``_handle_run_events``.
 from __future__ import annotations
 
 import asyncio
+import functools
 import hmac
 import ipaddress
 import json
@@ -115,6 +116,126 @@ def _redact_secrets(obj: Any) -> Any:
 # tool args, system prompts before they leave the gateway process.
 # Companion to ``_redact_secrets`` (which handles dict-key heuristics).
 from tools.redaction import redact_text  # noqa: E402
+
+
+# ---------------------------------------------------------------------------
+# Dashboard v2 Wave 0 — shared handler scaffolding
+# ---------------------------------------------------------------------------
+
+
+def require_dashboard_auth(fn):
+    """Decorator applying ``self._check_dashboard_auth`` before the handler.
+
+    Saves ~3 lines per handler. Apply to every dashboard route except
+    ``handle_handshake`` (which has its own loopback-only check) and
+    routes that need to differentiate auth modes.
+    """
+    @functools.wraps(fn)
+    async def wrapper(self, request: "web.Request", *args, **kwargs):
+        err = self._check_dashboard_auth(request)
+        if err is not None:
+            return err
+        return await fn(self, request, *args, **kwargs)
+    return wrapper
+
+
+def _json_ok(data: Any, status: int = 200) -> "web.Response":
+    """Standard JSON success response."""
+    return web.json_response(data, status=status)
+
+
+def _json_err(exc: BaseException, status: int = 500) -> "web.Response":
+    """Standard JSON error response. Logs the traceback."""
+    logger.exception("dashboard handler error: %s", exc)
+    return web.json_response(
+        {"error": str(exc) or exc.__class__.__name__}, status=status,
+    )
+
+
+def _tail_read_ndjson(
+    filter_fn=None,
+    limit: int = 500,
+    tail_bytes: int = 1024 * 1024,
+    path: Optional[Path] = None,
+) -> List[Dict[str, Any]]:
+    """Read the tail of ``events.ndjson`` and return parsed events.
+
+    Reused by F3 event search/export plus the legacy session-events
+    handler. Tails ~1 MB by default; the caller can bump ``tail_bytes``
+    for wider scans (the F3 routes set this from a query param).
+
+    Args:
+        filter_fn: Optional callable taking the parsed event dict and
+            returning True to keep, False to drop.
+        limit: Maximum number of events to return (most-recent wins).
+        tail_bytes: Window size at the END of the file to read.
+        path: Override the events.ndjson path (test hook).
+    """
+    from gateway.event_bus import _default_events_path
+    target = path or _default_events_path()
+    out: List[Dict[str, Any]] = []
+    if not target.exists():
+        return out
+    try:
+        with open(target, "rb") as f:
+            try:
+                f.seek(0, os.SEEK_END)
+                size = f.tell()
+                chunk = min(size, tail_bytes)
+                f.seek(size - chunk)
+                tail = f.read().decode("utf-8", errors="replace")
+            except OSError:
+                tail = f.read().decode("utf-8", errors="replace")
+    except OSError:
+        return out
+
+    for line in tail.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            event = json.loads(line)
+        except Exception:
+            continue
+        if filter_fn is None or filter_fn(event):
+            out.append(event)
+    if limit > 0:
+        return out[-limit:]
+    return out
+
+
+def _walk_ndjson_rotation(
+    base_path: Optional[Path] = None,
+    backup_count: int = 3,
+):
+    """Yield NDJSON event dicts in chronological order across rotated files.
+
+    Walks ``events.ndjson.3`` → ``events.ndjson.2`` → ``events.ndjson.1`` →
+    ``events.ndjson`` so a 24h query that spans rotation boundaries reads
+    every event in timestamp order. Used by F5 metrics aggregation.
+    """
+    from gateway.event_bus import _default_events_path
+    base = base_path or _default_events_path()
+    candidates: List[Path] = []
+    for i in range(backup_count, 0, -1):
+        p = base.with_suffix(base.suffix + f".{i}")
+        if p.exists():
+            candidates.append(p)
+    if base.exists():
+        candidates.append(base)
+    for p in candidates:
+        try:
+            with open(p, "r", encoding="utf-8", errors="replace") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        yield json.loads(line)
+                    except Exception:
+                        continue
+        except OSError:
+            continue
 
 
 class DashboardRoutes:
@@ -210,13 +331,10 @@ class DashboardRoutes:
     # GET /api/dashboard/state
     # ------------------------------------------------------------------
 
+    @require_dashboard_auth
     async def handle_state(self, request: "web.Request") -> "web.Response":
         """Current snapshot: active sessions, pending approvals, cron,
         gateway uptime, model name, sandbox status."""
-        auth_err = self._check_dashboard_auth(request)
-        if auth_err:
-            return auth_err
-
         state: Dict[str, Any] = {}
         state["gateway"] = {
             "started_at": self._started_at,
@@ -283,12 +401,9 @@ class DashboardRoutes:
     # GET /api/dashboard/sessions
     # ------------------------------------------------------------------
 
+    @require_dashboard_auth
     async def handle_sessions(self, request: "web.Request") -> "web.Response":
         """Paginated list of sessions with token counts and previews."""
-        auth_err = self._check_dashboard_auth(request)
-        if auth_err:
-            return auth_err
-
         try:
             limit = max(1, min(200, int(request.query.get("limit", "50"))))
             offset = max(0, int(request.query.get("offset", "0")))
@@ -327,11 +442,8 @@ class DashboardRoutes:
     # GET /api/dashboard/sessions/{id}
     # ------------------------------------------------------------------
 
+    @require_dashboard_auth
     async def handle_session_detail(self, request: "web.Request") -> "web.Response":
-        auth_err = self._check_dashboard_auth(request)
-        if auth_err:
-            return auth_err
-
         session_id = request.match_info.get("id", "")
         if not session_id:
             return web.json_response({"error": "session id required"}, status=400)
@@ -375,46 +487,23 @@ class DashboardRoutes:
     # GET /api/dashboard/sessions/{id}/events
     # ------------------------------------------------------------------
 
+    @require_dashboard_auth
     async def handle_session_events(self, request: "web.Request") -> "web.Response":
         """Filter events.ndjson by session_id."""
-        auth_err = self._check_dashboard_auth(request)
-        if auth_err:
-            return auth_err
-
         session_id = request.match_info.get("id", "")
         try:
             limit = max(1, min(1000, int(request.query.get("limit", "200"))))
         except ValueError:
             limit = 200
 
-        events: List[Dict[str, Any]] = []
         try:
-            from gateway.event_bus import _default_events_path
-            path = _default_events_path()
-            if path.exists():
-                # Tail-read the last N lines cheaply
-                with open(path, "rb") as f:
-                    try:
-                        f.seek(0, os.SEEK_END)
-                        size = f.tell()
-                        chunk = min(size, 1024 * 1024)  # 1 MB window
-                        f.seek(size - chunk)
-                        tail = f.read().decode("utf-8", errors="replace")
-                    except OSError:
-                        tail = f.read().decode("utf-8", errors="replace")
-                for line in tail.splitlines():
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        event = json.loads(line)
-                    except Exception:
-                        continue
-                    if event.get("session_id") == session_id:
-                        events.append(event)
-                events = events[-limit:]
+            events = _tail_read_ndjson(
+                filter_fn=lambda e: e.get("session_id") == session_id,
+                limit=limit,
+            )
         except Exception as exc:
             logger.debug("dashboard: session events read failed: %s", exc)
+            events = []
 
         return web.json_response({"events": events})
 
@@ -422,11 +511,8 @@ class DashboardRoutes:
     # GET /api/dashboard/approvals
     # ------------------------------------------------------------------
 
+    @require_dashboard_auth
     async def handle_list_approvals(self, request: "web.Request") -> "web.Response":
-        auth_err = self._check_dashboard_auth(request)
-        if auth_err:
-            return auth_err
-
         try:
             from tools.approval import list_pending_approvals_for_dashboard
             pending = list_pending_approvals_for_dashboard()
@@ -440,6 +526,7 @@ class DashboardRoutes:
     # POST /api/dashboard/approvals/{session_key}
     # ------------------------------------------------------------------
 
+    @require_dashboard_auth
     async def handle_resolve_approval(self, request: "web.Request") -> "web.Response":
         """Resolve a pending approval.
 
@@ -452,10 +539,6 @@ class DashboardRoutes:
             edit     -> rejected (clients should POST a new approval)
             response -> rejected (dashboard doesn't support side-channel yet)
         """
-        auth_err = self._check_dashboard_auth(request)
-        if auth_err:
-            return auth_err
-
         session_key = request.match_info.get("session_key", "")
         if not session_key:
             return web.json_response({"error": "session_key required"}, status=400)
@@ -491,11 +574,8 @@ class DashboardRoutes:
     # GET /api/dashboard/tools
     # ------------------------------------------------------------------
 
+    @require_dashboard_auth
     async def handle_tools(self, request: "web.Request") -> "web.Response":
-        auth_err = self._check_dashboard_auth(request)
-        if auth_err:
-            return auth_err
-
         try:
             from model_tools import registry as _tool_registry
             tool_names = _tool_registry.get_all_tool_names()
@@ -511,11 +591,8 @@ class DashboardRoutes:
     # GET /api/dashboard/skills
     # ------------------------------------------------------------------
 
+    @require_dashboard_auth
     async def handle_skills(self, request: "web.Request") -> "web.Response":
-        auth_err = self._check_dashboard_auth(request)
-        if auth_err:
-            return auth_err
-
         skills: List[Dict[str, Any]] = []
         try:
             from hermes_cli.config import get_hermes_home
@@ -543,11 +620,8 @@ class DashboardRoutes:
     # GET /api/dashboard/mcp
     # ------------------------------------------------------------------
 
+    @require_dashboard_auth
     async def handle_mcp(self, request: "web.Request") -> "web.Response":
-        auth_err = self._check_dashboard_auth(request)
-        if auth_err:
-            return auth_err
-
         mcp_info: List[Dict[str, Any]] = []
         try:
             from hermes_cli.config import load_config
@@ -581,11 +655,8 @@ class DashboardRoutes:
     # GET /api/dashboard/doctor
     # ------------------------------------------------------------------
 
+    @require_dashboard_auth
     async def handle_doctor(self, request: "web.Request") -> "web.Response":
-        auth_err = self._check_dashboard_auth(request)
-        if auth_err:
-            return auth_err
-
         # Cheap "doctor" — report basic health without re-running the full
         # CLI doctor (which prints to stdout and has side effects).
         checks: List[Dict[str, Any]] = []
@@ -639,11 +710,8 @@ class DashboardRoutes:
     # GET /api/dashboard/config
     # ------------------------------------------------------------------
 
+    @require_dashboard_auth
     async def handle_config(self, request: "web.Request") -> "web.Response":
-        auth_err = self._check_dashboard_auth(request)
-        if auth_err:
-            return auth_err
-
         try:
             from hermes_cli.config import load_config
             cfg = load_config() or {}
@@ -656,11 +724,8 @@ class DashboardRoutes:
     # GET /api/dashboard/recent
     # ------------------------------------------------------------------
 
+    @require_dashboard_auth
     async def handle_recent(self, request: "web.Request") -> "web.Response":
-        auth_err = self._check_dashboard_auth(request)
-        if auth_err:
-            return auth_err
-
         try:
             limit = max(1, min(500, int(request.query.get("limit", "100"))))
         except ValueError:
@@ -679,6 +744,7 @@ class DashboardRoutes:
     # GET /api/dashboard/brain/graph — typed knowledge graph snapshot
     # ------------------------------------------------------------------
 
+    @require_dashboard_auth
     async def handle_brain_graph(self, request: "web.Request") -> "web.Response":
         """Return the brain visualization snapshot.
 
@@ -690,9 +756,6 @@ class DashboardRoutes:
         per 5-second window. Wrapped in ``asyncio.to_thread`` so the
         SQLite + filesystem queries don't stall the event loop.
         """
-        auth_err = self._check_dashboard_auth(request)
-        if auth_err:
-            return auth_err
         try:
             from tools.brain_snapshot import build_brain_snapshot
             snapshot = await asyncio.to_thread(build_brain_snapshot)
@@ -705,6 +768,7 @@ class DashboardRoutes:
     # GET /api/dashboard/brain/node/{type}/{id} — single node detail
     # ------------------------------------------------------------------
 
+    @require_dashboard_auth
     async def handle_brain_node(self, request: "web.Request") -> "web.Response":
         """Look up a single node from the current brain snapshot.
 
@@ -713,9 +777,6 @@ class DashboardRoutes:
         click. Returns 404 if the node was not present in the latest
         rebuild (e.g. it was removed since the snapshot was cached).
         """
-        auth_err = self._check_dashboard_auth(request)
-        if auth_err:
-            return auth_err
         node_type = request.match_info.get("type", "")
         node_id = request.match_info.get("id", "")
         if not node_type or not node_id:
@@ -734,16 +795,13 @@ class DashboardRoutes:
     # GET /api/dashboard/events — SSE multiplexer
     # ------------------------------------------------------------------
 
+    @require_dashboard_auth
     async def handle_events(self, request: "web.Request") -> "web.StreamResponse":
         """SSE stream of EventBus events.
 
         Keepalive pattern mirrors ``_handle_run_events`` in api_server.py
         (30s timeout → comment-frame keepalive).
         """
-        auth_err = self._check_dashboard_auth(request)
-        if auth_err:
-            return auth_err
-
         try:
             replay = max(0, min(500, int(request.query.get("replay", "50"))))
         except ValueError:

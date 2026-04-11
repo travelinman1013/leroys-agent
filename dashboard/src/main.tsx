@@ -4,6 +4,8 @@ import { RouterProvider, createRouter } from "@tanstack/react-router";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { routeTree } from "./routeTree.gen";
 import { bootstrapTheme } from "./lib/theme";
+import { ToastProvider } from "./lib/notifications";
+import { ConfirmProvider } from "./lib/confirm";
 import "./index.css";
 
 // Apply Operator's Desk theme before React paints — avoids a dark→light flash
@@ -37,7 +39,11 @@ declare module "@tanstack/react-router" {
 ReactDOM.createRoot(document.getElementById("root")!).render(
   <React.StrictMode>
     <QueryClientProvider client={queryClient}>
-      <RouterProvider router={router} />
+      <ToastProvider>
+        <ConfirmProvider>
+          <RouterProvider router={router} />
+        </ConfirmProvider>
+      </ToastProvider>
     </QueryClientProvider>
   </React.StrictMode>,
 );
