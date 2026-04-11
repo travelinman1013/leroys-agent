@@ -151,6 +151,37 @@
   mask-image: linear-gradient(to bottom, transparent, black 40px);
 }
 
+/* ───── Horizontal scroll fade indicator ─────────────────── */
+/*
+   Used on the sessions list wrapper (and any other dense table
+   that exceeds narrow viewports). macOS overlay scrollbars are
+   invisible at rest, so the user has no affordance that horizontal
+   scroll is available — that's the "half the columns are out of
+   view" report. A 40px fade on the right edge hints there's
+   more content past the clip. Parent must be `relative`; this
+   element is pinned to the right edge via `absolute` so it does
+   not move with the scroll container.
+*/
+.scroll-fade-right {
+  position: absolute;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  width: 40px;
+  pointer-events: none;
+  background: linear-gradient(
+    to left,
+    var(--bg) 0%,
+    var(--bg-alpha-0, rgba(0, 0, 0, 0)) 100%
+  );
+}
+/* Fall back to rgba(bg, 0) by using a second stop on the same
+   surface color. Operators-Desk tokens don't expose an alpha
+   variant, so the linear-gradient ends at fully-transparent black
+   which is visually identical on both the dark and light surface
+   since the opaque side is --bg. */
+
+
 /* ───── Event stream typographic differentiation ──────────── */
 /* No color coding. Categories are differentiated by typography per
    DESIGN.md §3 / §4 (rule 3 — no event rainbow). */

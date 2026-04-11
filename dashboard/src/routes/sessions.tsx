@@ -7,9 +7,9 @@
 
 import {
   createFileRoute,
-  Link,
   Outlet,
   useMatchRoute,
+  useNavigate,
 } from "@tanstack/react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
@@ -32,6 +32,7 @@ function SessionsList() {
   const queryClient = useQueryClient();
   const confirm = useConfirm();
   const notify = useNotify();
+  const navigate = useNavigate();
   // Session detail (`/sessions/$id`) is registered as a child of this
   // route in `routeTree.gen.ts`. Without an explicit <Outlet />, the
   // parent layout always rendered the list — clicking a session title
@@ -191,114 +192,156 @@ function SessionsList() {
         </p>
       )}
 
+      {/*
+        V1 (viewport overflow) + D1/D2 (dead row click surface + weak
+        title affordance) from ashen-tempering-ibis §1. Three changes
+        stacked:
+
+        1. Horizontal scroll container. The table has 10 columns and a
+           ~1120px natural width. At 1024×768 (and often at 1280 with
+           the sidebar + chrome) the rightmost 3-4 columns clipped
+           past the viewport with no visible scroll affordance. The
+           wrapper now owns horizontal scroll, and a `min-w`
+           on the table enforces the full column width so the scroll
+           actually has something to scroll. A right-edge fade
+           (`sessions-table-fade` in index.css) makes the clip
+           visible — the macOS overlay scrollbar is invisible at rest
+           and the user cannot tell otherwise.
+
+        2. Sticky header. Without `position: sticky`, vertically
+           scrolling past row 20 loses the column labels. The new
+           wrapper has `sticky top-0` on the `<thead>` background row
+           so the labels hold as the user scrolls.
+
+        3. Full-row click surface. Maxwell reported that clicking a
+           row title did nothing — it actually did navigate, but the
+           Outlet fix landed in the previous commit. Separately, only
+           the ID and TITLE text nodes were `<Link>`s; the SRC, MODEL,
+           MSGS, TOK, COST, LAST cells and inter-cell whitespace had
+           no click target. Now the whole row navigates on click via
+           `useNavigate`; checkbox and action buttons stop propagation
+           so they keep their own behavior. Keyboard a11y: row is
+           `role="link"`, `tabIndex={0}`, responds to Enter.
+      */}
       <div className="px-10 pb-16">
-        <table className="w-full border-collapse font-mono text-[12px] tabular-nums text-ink">
-          <thead>
-            <tr>
-              <Th align="left">
-                <input
-                  type="checkbox"
-                  checked={allSelected}
-                  onChange={toggleAll}
-                  aria-label="Select all"
-                  className="accent-oxide"
-                />
-              </Th>
-              <Th>ID</Th>
-              <Th>TITLE</Th>
-              <Th>SRC</Th>
-              <Th>MODEL</Th>
-              <Th align="right">MSGS</Th>
-              <Th align="right">TOK</Th>
-              <Th align="right">COST</Th>
-              <Th align="right">LAST</Th>
-              <Th align="right">ACTIONS</Th>
-            </tr>
-          </thead>
-          <tbody>
-            {sessions.map((s) => {
-              const sid = String(s.id);
-              const checked = selected.has(sid);
-              return (
-                <tr
-                  key={sid}
-                  className="border-b border-rule transition-colors duration-120 ease-operator hover:bg-oxide-wash"
-                >
-                  <td className="px-4 py-3">
-                    <input
-                      type="checkbox"
-                      checked={checked}
-                      onChange={() => toggleOne(sid)}
-                      aria-label={`Select ${sid}`}
-                      className="accent-oxide"
-                    />
-                  </td>
-                  <td className="px-4 py-3 text-ink-faint">
-                    <Link
-                      to="/sessions/$id"
-                      params={{ id: sid }}
-                      className="hover:text-oxide"
+        <div className="relative">
+          <div className="overflow-x-auto">
+            <table className="w-full min-w-[1120px] border-collapse font-mono text-[12px] tabular-nums text-ink">
+            <thead className="sticky top-0 z-10 bg-bg">
+              <tr>
+                <Th align="left">
+                  <input
+                    type="checkbox"
+                    checked={allSelected}
+                    onChange={toggleAll}
+                    aria-label="Select all"
+                    className="accent-oxide"
+                  />
+                </Th>
+                <Th>ID</Th>
+                <Th>TITLE</Th>
+                <Th>SRC</Th>
+                <Th>MODEL</Th>
+                <Th align="right">MSGS</Th>
+                <Th align="right">TOK</Th>
+                <Th align="right">COST</Th>
+                <Th align="right">LAST</Th>
+                <Th align="right">ACTIONS</Th>
+              </tr>
+            </thead>
+            <tbody>
+              {sessions.map((s) => {
+                const sid = String(s.id);
+                const checked = selected.has(sid);
+                const goDetail = () =>
+                  navigate({ to: "/sessions/$id", params: { id: sid } });
+                return (
+                  <tr
+                    key={sid}
+                    role="link"
+                    tabIndex={0}
+                    onClick={goDetail}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        goDetail();
+                      }
+                    }}
+                    className="group cursor-pointer border-b border-rule transition-colors duration-120 ease-operator hover:bg-oxide-wash focus-visible:bg-oxide-wash focus-visible:outline-none"
+                  >
+                    <td
+                      className="px-4 py-3"
+                      onClick={(e) => e.stopPropagation()}
                     >
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={() => toggleOne(sid)}
+                        aria-label={`Select ${sid}`}
+                        className="accent-oxide"
+                      />
+                    </td>
+                    <td className="px-4 py-3 text-ink-faint group-hover:text-oxide">
                       {sid.slice(0, 8)}
-                    </Link>
-                  </td>
-                  <td className="max-w-[420px] truncate px-4 py-3 text-ink">
-                    <Link
-                      to="/sessions/$id"
-                      params={{ id: sid }}
-                      className="hover:text-oxide"
-                    >
+                    </td>
+                    <td className="max-w-[420px] truncate px-4 py-3 text-ink group-hover:text-oxide group-hover:underline group-hover:decoration-rule group-hover:underline-offset-4">
                       {s.title || s.preview || "(no preview)"}
-                    </Link>
-                  </td>
-                  <td className="px-4 py-3 text-ink-2">{s.source}</td>
-                  <td className="px-4 py-3 text-ink-2">
-                    {s.model ? String(s.model).split("/").pop() : "—"}
-                  </td>
-                  <td className="px-4 py-3 text-right text-ink">
-                    {compactNumber(s.message_count)}
-                  </td>
-                  <td className="px-4 py-3 text-right text-ink">
-                    {compactNumber(
-                      (s.input_tokens ?? 0) + (s.output_tokens ?? 0),
-                    )}
-                  </td>
-                  <td className="px-4 py-3 text-right text-ink-2">
-                    {formatCost(s.estimated_cost_usd)}
-                  </td>
-                  <td className="px-4 py-3 text-right text-ink-faint">
-                    {relTimeFromUnix(s.last_active ?? s.started_at)}
-                  </td>
-                  <td className="px-4 py-3 text-right">
-                    <a
-                      href={api.exportSessionUrl(sid, "json")}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="font-mono text-[10px] uppercase tracking-marker text-ink-muted hover:text-oxide"
+                    </td>
+                    <td className="px-4 py-3 text-ink-2">{s.source}</td>
+                    <td className="px-4 py-3 text-ink-2">
+                      {s.model ? String(s.model).split("/").pop() : "—"}
+                    </td>
+                    <td className="px-4 py-3 text-right text-ink">
+                      {compactNumber(s.message_count)}
+                    </td>
+                    <td className="px-4 py-3 text-right text-ink">
+                      {compactNumber(
+                        (s.input_tokens ?? 0) + (s.output_tokens ?? 0),
+                      )}
+                    </td>
+                    <td className="px-4 py-3 text-right text-ink-2">
+                      {formatCost(s.estimated_cost_usd)}
+                    </td>
+                    <td className="px-4 py-3 text-right text-ink-faint">
+                      {relTimeFromUnix(s.last_active ?? s.started_at)}
+                    </td>
+                    <td
+                      className="px-4 py-3 text-right"
+                      onClick={(e) => e.stopPropagation()}
                     >
-                      EXPORT
-                    </a>
-                    <button
-                      type="button"
-                      onClick={async () => {
-                        const ok = await confirm({
-                          title: `Delete ${sid.slice(0, 8)}?`,
-                          description: "Cannot be undone.",
-                          destructive: true,
-                          confirmLabel: "DELETE",
-                        });
-                        if (ok) deleteOne.mutate(sid);
-                      }}
-                      className="ml-3 font-mono text-[10px] uppercase tracking-marker text-ink-muted hover:text-danger"
-                    >
-                      DELETE
-                    </button>
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
+                      <a
+                        href={api.exportSessionUrl(sid, "json")}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="font-mono text-[10px] uppercase tracking-marker text-ink-muted hover:text-oxide"
+                      >
+                        EXPORT
+                      </a>
+                      <button
+                        type="button"
+                        onClick={async (e) => {
+                          e.stopPropagation();
+                          const ok = await confirm({
+                            title: `Delete ${sid.slice(0, 8)}?`,
+                            description: "Cannot be undone.",
+                            destructive: true,
+                            confirmLabel: "DELETE",
+                          });
+                          if (ok) deleteOne.mutate(sid);
+                        }}
+                        className="ml-3 font-mono text-[10px] uppercase tracking-marker text-ink-muted hover:text-danger"
+                      >
+                        DELETE
+                      </button>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+          </div>
+          <div aria-hidden className="scroll-fade-right" />
+        </div>
         {sessions.length === 0 && !isLoading && (
           <p className="mt-6 font-mono text-[11px] uppercase tracking-marker text-ink-faint">
             no sessions match
