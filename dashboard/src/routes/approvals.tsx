@@ -134,12 +134,21 @@ function ApprovalsPage() {
                   <span className="font-mono text-[10px] uppercase tracking-marker text-ink-muted">
                     {selected.size} SELECTED
                   </span>
+                  {/*
+                    Disabled state uses explicit `text-ink-faint` +
+                    `border-rule` + `opacity-100` so the buttons read as
+                    "intentionally off, waiting for a selection" rather
+                    than the browser's generic opacity-50 fade (which on
+                    an already-low-contrast `outline` variant made them
+                    nearly invisible per the audit P7 finding).
+                  */}
                   <div className="ml-auto flex items-center gap-2">
                     <Button
                       size="sm"
                       variant="outline"
                       disabled={!selected.size || bulk.isPending}
                       onClick={() => bulk.mutate("once")}
+                      className="disabled:border-rule disabled:text-ink-faint disabled:opacity-100"
                     >
                       ONCE
                     </Button>
@@ -148,6 +157,7 @@ function ApprovalsPage() {
                       variant="outline"
                       disabled={!selected.size || bulk.isPending}
                       onClick={() => bulk.mutate("session")}
+                      className="disabled:border-rule disabled:text-ink-faint disabled:opacity-100"
                     >
                       SESSION
                     </Button>
@@ -156,6 +166,7 @@ function ApprovalsPage() {
                       variant="outline"
                       disabled={!selected.size || bulk.isPending}
                       onClick={() => bulk.mutate("always")}
+                      className="disabled:border-rule disabled:text-ink-faint disabled:opacity-100"
                     >
                       ALWAYS
                     </Button>
@@ -164,6 +175,7 @@ function ApprovalsPage() {
                       variant="destructive"
                       disabled={!selected.size || bulk.isPending}
                       onClick={() => bulk.mutate("deny")}
+                      className="disabled:border-rule disabled:text-ink-faint disabled:opacity-100"
                     >
                       DENY
                     </Button>

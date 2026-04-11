@@ -302,6 +302,17 @@ function SessionsList() {
                         s.last_active ?? s.started_at,
                       )}
                     </td>
+                    {/*
+                      EXPORT stays an <a> because it IS a link to a
+                      downloadable resource — semantic link, not an
+                      action. DELETE stays a <button> because it IS
+                      an action. The audit flagged them as "visually
+                      indistinguishable"; the fix is a leading glyph
+                      on each (`↗` = opens, `×` = removes) so the
+                      user can tell them apart at scan speed without
+                      hover. Both elements share the same size +
+                      spacing so the row rhythm stays uniform.
+                    */}
                     <td
                       className="px-3 py-2.5 text-right"
                       onClick={(e) => e.stopPropagation()}
@@ -310,9 +321,10 @@ function SessionsList() {
                         href={api.exportSessionUrl(sid, "json")}
                         target="_blank"
                         rel="noreferrer"
-                        className="font-mono text-[10px] uppercase tracking-marker text-ink-muted hover:text-oxide"
+                        className="inline-flex items-baseline gap-1 font-mono text-[10px] uppercase tracking-marker text-ink-muted hover:text-oxide"
+                        title="Export session as JSON (opens in new tab)"
                       >
-                        EXPORT
+                        <span aria-hidden>↗</span> EXPORT
                       </a>
                       <button
                         type="button"
@@ -326,9 +338,10 @@ function SessionsList() {
                           });
                           if (ok) deleteOne.mutate(sid);
                         }}
-                        className="ml-3 font-mono text-[10px] uppercase tracking-marker text-ink-muted hover:text-danger"
+                        className="ml-3 inline-flex items-baseline gap-1 font-mono text-[10px] uppercase tracking-marker text-ink-muted hover:text-danger"
+                        title="Delete session (confirm required)"
                       >
-                        DELETE
+                        <span aria-hidden>×</span> DELETE
                       </button>
                     </td>
                   </tr>
