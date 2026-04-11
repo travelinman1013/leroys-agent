@@ -111,6 +111,12 @@ def _redact_secrets(obj: Any) -> Any:
     return obj
 
 
+# Free-form text redactor (regex-based) — applied to message content,
+# tool args, system prompts before they leave the gateway process.
+# Companion to ``_redact_secrets`` (which handles dict-key heuristics).
+from tools.redaction import redact_text  # noqa: E402
+
+
 class DashboardRoutes:
     """Route handler bundle for the dashboard surface.
 
@@ -301,6 +307,17 @@ class DashboardRoutes:
                 offset=offset,
                 include_children=include_children,
             )
+            # Scrub free-form text fields in the preview rows. Titles can
+            # contain pasted user input; first_user_message + last_assistant
+            # are by definition transcript bodies.
+            _PREVIEW_TEXT_FIELDS = (
+                "title", "first_user_message", "last_assistant_message",
+                "preview", "summary",
+            )
+            for r in rows:
+                for col in _PREVIEW_TEXT_FIELDS:
+                    if r.get(col):
+                        r[col] = redact_text(r[col])
             return web.json_response({"sessions": rows, "limit": limit, "offset": offset})
         except Exception as exc:
             logger.exception("dashboard: sessions listing failed")
@@ -325,7 +342,30 @@ class DashboardRoutes:
             meta = db.get_session(session_id)
             if not meta:
                 return web.json_response({"error": "session not found"}, status=404)
-            messages = db.get_messages(session_id)
+
+            # Scrub free-form text columns on the session row. Phase 4
+            # security requirement: nothing leaves this process unredacted.
+            _META_TEXT_FIELDS = (
+                "system_prompt", "model_config", "billing_base_url",
+                "title", "first_user_message", "last_assistant_message",
+            )
+            for col in _META_TEXT_FIELDS:
+                if meta.get(col):
+                    meta[col] = redact_text(meta[col])
+
+            # Scrub every message body, reasoning trace, and tool_calls
+            # JSON blob in place. Defensive copy of each row before mutation
+            # so we don't poison whatever else holds the SessionDB cursor.
+            messages = []
+            for raw in db.get_messages(session_id):
+                m = dict(raw)
+                if m.get("content"):
+                    m["content"] = redact_text(m["content"])
+                if m.get("reasoning"):
+                    m["reasoning"] = redact_text(m["reasoning"])
+                if m.get("tool_calls") and isinstance(m["tool_calls"], str):
+                    m["tool_calls"] = redact_text(m["tool_calls"])
+                messages.append(m)
             return web.json_response({"session": meta, "messages": messages})
         except Exception as exc:
             logger.exception("dashboard: session detail failed")
@@ -636,6 +676,61 @@ class DashboardRoutes:
         return web.json_response({"events": events})
 
     # ------------------------------------------------------------------
+    # GET /api/dashboard/brain/graph — typed knowledge graph snapshot
+    # ------------------------------------------------------------------
+
+    async def handle_brain_graph(self, request: "web.Request") -> "web.Response":
+        """Return the brain visualization snapshot.
+
+        Walks the four runtime knowledge surfaces (memory, sessions,
+        capability registry, scheduled intents) and returns a typed
+        graph of nodes + edges. Pure compute via
+        ``tools.brain_snapshot.build_brain_snapshot``; the in-memory
+        ``lru_cache`` coalesces concurrent requests into a single rebuild
+        per 5-second window. Wrapped in ``asyncio.to_thread`` so the
+        SQLite + filesystem queries don't stall the event loop.
+        """
+        auth_err = self._check_dashboard_auth(request)
+        if auth_err:
+            return auth_err
+        try:
+            from tools.brain_snapshot import build_brain_snapshot
+            snapshot = await asyncio.to_thread(build_brain_snapshot)
+        except Exception as exc:
+            logger.exception("dashboard: brain graph build failed")
+            return web.json_response({"error": str(exc)}, status=500)
+        return web.json_response(snapshot)
+
+    # ------------------------------------------------------------------
+    # GET /api/dashboard/brain/node/{type}/{id} — single node detail
+    # ------------------------------------------------------------------
+
+    async def handle_brain_node(self, request: "web.Request") -> "web.Response":
+        """Look up a single node from the current brain snapshot.
+
+        The dashboard drawer fetches this when the user clicks a node
+        so we don't have to round-trip the whole graph for every
+        click. Returns 404 if the node was not present in the latest
+        rebuild (e.g. it was removed since the snapshot was cached).
+        """
+        auth_err = self._check_dashboard_auth(request)
+        if auth_err:
+            return auth_err
+        node_type = request.match_info.get("type", "")
+        node_id = request.match_info.get("id", "")
+        if not node_type or not node_id:
+            return web.json_response({"error": "type and id required"}, status=400)
+        try:
+            from tools.brain_snapshot import find_node
+            node = await asyncio.to_thread(find_node, node_type, node_id)
+        except Exception as exc:
+            logger.exception("dashboard: brain node lookup failed")
+            return web.json_response({"error": str(exc)}, status=500)
+        if node is None:
+            return web.json_response({"error": "node not found"}, status=404)
+        return web.json_response({"node": node})
+
+    # ------------------------------------------------------------------
     # GET /api/dashboard/events — SSE multiplexer
     # ------------------------------------------------------------------
 
@@ -802,6 +897,11 @@ def register_dashboard_routes(
     app.router.add_get("/api/dashboard/config", routes.handle_config)
     app.router.add_get("/api/dashboard/recent", routes.handle_recent)
     app.router.add_get("/api/dashboard/events", routes.handle_events)
+    # Brain visualization (Wave-1 R1 of stateful-noodling-reddy plan)
+    app.router.add_get("/api/dashboard/brain/graph", routes.handle_brain_graph)
+    app.router.add_get(
+        "/api/dashboard/brain/node/{type}/{id}", routes.handle_brain_node,
+    )
 
     # Static UI bundle
     if static_dir is not None and static_dir.is_dir():

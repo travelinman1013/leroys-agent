@@ -294,6 +294,175 @@ class TestSessionsEndpoints:
 
 
 # ---------------------------------------------------------------------------
+# Redaction integration — secrets must NOT leak through session endpoints
+# ---------------------------------------------------------------------------
+
+
+class TestSessionRedaction:
+    """Integration tests for the Wave-0 R2 transcript redaction.
+
+    These tests insert real rows into a per-test SessionDB (HERMES_HOME is
+    redirected to tmp_path by the autouse fixture) and assert that the
+    response from the dashboard endpoints does not contain known secret
+    patterns.
+    """
+
+    def _seed_session_with_secrets(self, session_id: str = "test-redact-1") -> str:
+        from hermes_state import SessionDB
+        db = SessionDB()
+        db.create_session(
+            session_id=session_id,
+            source="cli",
+            model="test-model",
+            model_config={"api_key": "sk-proj-shouldNotEscape123456789012345"},
+            system_prompt="GITHUB_TOKEN=ghp_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        )
+        db.append_message(
+            session_id=session_id,
+            role="user",
+            content="here is my key: ghp_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        )
+        db.append_message(
+            session_id=session_id,
+            role="assistant",
+            content="email me at maxwell@example.com",
+            reasoning="thinking about ghp_cccccccccccccccccccccccccccccccccccc",
+        )
+        return session_id
+
+    @pytest.mark.asyncio
+    async def test_session_detail_redacts_message_content(self):
+        sid = self._seed_session_with_secrets("test-redact-content")
+        adapter = _make_adapter()
+        app = _make_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get(f"/api/dashboard/sessions/{sid}")
+            assert resp.status == 200, await resp.text()
+            body = await resp.text()
+            # No raw secrets anywhere in the response body
+            assert "ghp_aaa" not in body
+            assert "ghp_bbb" not in body
+            assert "ghp_ccc" not in body
+            assert "maxwell@example.com" not in body
+            # Markers should be present
+            assert "[REDACTED:" in body
+
+    @pytest.mark.asyncio
+    async def test_session_detail_redacts_reasoning_field(self):
+        sid = self._seed_session_with_secrets("test-redact-reasoning")
+        adapter = _make_adapter()
+        app = _make_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get(f"/api/dashboard/sessions/{sid}")
+            data = await resp.json()
+            for msg in data.get("messages", []):
+                if msg.get("reasoning"):
+                    assert "ghp_" not in msg["reasoning"]
+
+    @pytest.mark.asyncio
+    async def test_session_detail_redacts_system_prompt(self):
+        sid = self._seed_session_with_secrets("test-redact-sysprompt")
+        adapter = _make_adapter()
+        app = _make_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get(f"/api/dashboard/sessions/{sid}")
+            data = await resp.json()
+            sp = data.get("session", {}).get("system_prompt") or ""
+            assert "ghp_" not in sp
+            assert "[REDACTED:" in sp
+
+    @pytest.mark.asyncio
+    async def test_sessions_list_preview_is_redacted(self):
+        sid = self._seed_session_with_secrets("test-redact-preview")
+        adapter = _make_adapter()
+        app = _make_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get("/api/dashboard/sessions?limit=10")
+            assert resp.status == 200
+            body = await resp.text()
+            # Even though the preview row only carries first/last messages,
+            # the body of any response that touches this session must not
+            # leak the seeded secrets.
+            assert "ghp_bbb" not in body
+
+
+# ---------------------------------------------------------------------------
+# Brain visualization endpoints (Wave-1 R1 of brain viz plan)
+# ---------------------------------------------------------------------------
+
+
+class TestBrainEndpoints:
+    @pytest.mark.asyncio
+    async def test_brain_graph_returns_envelope(self):
+        adapter = _make_adapter()
+        app = _make_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get("/api/dashboard/brain/graph")
+            assert resp.status == 200, await resp.text()
+            data = await resp.json()
+            assert "nodes" in data
+            assert "edges" in data
+            assert "stats" in data
+            assert "generated_at" in data
+
+    @pytest.mark.asyncio
+    async def test_brain_graph_stats_has_counts(self):
+        adapter = _make_adapter()
+        app = _make_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get("/api/dashboard/brain/graph")
+            data = await resp.json()
+            for key in ("memory", "session", "skill", "tool", "mcp", "cron", "edges"):
+                assert key in data["stats"]
+
+    @pytest.mark.asyncio
+    async def test_brain_graph_includes_seeded_session(self):
+        from hermes_state import SessionDB
+        db = SessionDB()
+        db.create_session(session_id="brain-test-1", source="cli")
+        # Force a fresh snapshot so the cache picks up our new session
+        from tools.brain_snapshot import reset_snapshot_cache
+        reset_snapshot_cache()
+        adapter = _make_adapter()
+        app = _make_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get("/api/dashboard/brain/graph")
+            data = await resp.json()
+            ids = {n["id"] for n in data["nodes"]}
+            assert "session:brain-test-1" in ids
+
+    @pytest.mark.asyncio
+    async def test_brain_node_lookup_returns_node(self):
+        from hermes_state import SessionDB
+        db = SessionDB()
+        db.create_session(session_id="brain-lookup-1", source="cli")
+        from tools.brain_snapshot import reset_snapshot_cache
+        reset_snapshot_cache()
+        adapter = _make_adapter()
+        app = _make_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get(
+                "/api/dashboard/brain/node/session/brain-lookup-1"
+            )
+            assert resp.status == 200, await resp.text()
+            data = await resp.json()
+            assert data["node"]["type"] == "session"
+            assert data["node"]["id"] == "session:brain-lookup-1"
+
+    @pytest.mark.asyncio
+    async def test_brain_node_returns_404_for_missing(self):
+        from tools.brain_snapshot import reset_snapshot_cache
+        reset_snapshot_cache()
+        adapter = _make_adapter()
+        app = _make_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get(
+                "/api/dashboard/brain/node/memory/deadbeef"
+            )
+            assert resp.status == 404
+
+
+# ---------------------------------------------------------------------------
 # Doctor
 # ---------------------------------------------------------------------------
 

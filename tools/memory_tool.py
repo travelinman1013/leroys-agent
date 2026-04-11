@@ -97,6 +97,52 @@ def _scan_memory_content(content: str) -> Optional[str]:
     return None
 
 
+# ---------------------------------------------------------------------------
+# Brain-viz event emit (R4 of the brain visualization plan)
+# Publishes memory mutations to the in-process EventBus so the dashboard
+# /brain route can pulse the corresponding memory node when it lights up.
+# Fail-silent on the import + publish path — memory writes must NEVER break
+# because the dashboard plumbing misbehaved.
+# ---------------------------------------------------------------------------
+
+def _hash_entry(content: str) -> str:
+    import hashlib
+    return hashlib.sha256(content.encode("utf-8", errors="replace")).hexdigest()[:8]
+
+
+def _emit_memory_event(
+    event_type: str,
+    target: str,
+    *,
+    content: str,
+    old_content: Optional[str] = None,
+) -> None:
+    """Best-effort publish of a memory.* event to the in-process bus.
+
+    `target` is "user" or "memory" — translated into the human-friendly
+    store name "USER.md" / "MEMORY.md" so dashboard consumers don't have
+    to memorize the internal target convention.
+    """
+    try:
+        from gateway.event_bus import publish
+        from tools.redaction import redact_text
+
+        store_name = "USER.md" if target == "user" else "MEMORY.md"
+        data: Dict[str, Any] = {
+            "store": store_name,
+            "hash": _hash_entry(content),
+            "preview": redact_text((content or "")[:200]),
+        }
+        if old_content is not None:
+            data["old_hash"] = _hash_entry(old_content)
+        publish(event_type, session_id=None, data=data)
+    except Exception:
+        # The module-level publish() shortcut is already fail-silent, but
+        # the imports themselves could raise during module teardown or in
+        # weird test contexts — wrap defensively.
+        pass
+
+
 class MemoryStore:
     """
     Bounded curated memory with file persistence. One instance per AIAgent.
@@ -238,6 +284,8 @@ class MemoryStore:
             self._set_entries(target, entries)
             self.save_to_disk(target)
 
+        _emit_memory_event("memory.added", target, content=content)
+
         return self._success_response(target, "Entry added.")
 
     def replace(self, target: str, old_text: str, new_content: str) -> Dict[str, Any]:
@@ -292,9 +340,15 @@ class MemoryStore:
                     ),
                 }
 
+            old_content = entries[idx]
             entries[idx] = new_content
             self._set_entries(target, entries)
             self.save_to_disk(target)
+
+        _emit_memory_event(
+            "memory.replaced", target,
+            content=new_content, old_content=old_content,
+        )
 
         return self._success_response(target, "Entry replaced.")
 
@@ -326,9 +380,12 @@ class MemoryStore:
                 # All identical -- safe to remove just the first
 
             idx = matches[0][0]
+            removed_content = entries[idx]
             entries.pop(idx)
             self._set_entries(target, entries)
             self.save_to_disk(target)
+
+        _emit_memory_event("memory.removed", target, content=removed_content)
 
         return self._success_response(target, "Entry removed.")
 

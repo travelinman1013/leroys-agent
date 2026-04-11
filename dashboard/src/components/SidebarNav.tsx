@@ -8,6 +8,7 @@ import {
   Sparkles,
   Network,
   HeartPulse,
+  Brain,
 } from "lucide-react";
 
 type NavItem = {
@@ -18,6 +19,7 @@ type NavItem = {
 
 const items: NavItem[] = [
   { to: "/", label: "Live Console", icon: Activity },
+  { to: "/brain", label: "Brain", icon: Brain },
   { to: "/sessions", label: "Sessions", icon: MessageSquare },
   { to: "/cron", label: "Cron", icon: Clock },
   { to: "/tools", label: "Tools", icon: Wrench },

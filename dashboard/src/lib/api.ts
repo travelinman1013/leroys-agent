@@ -277,6 +277,58 @@ export const api = {
       `/api/jobs/${encodeURIComponent(id)}/run`,
       { method: "POST" },
     ),
+
+  // Brain visualization (Wave-2 R3 of stateful-noodling-reddy plan)
+  brainGraph: () => apiFetch<BrainGraph>("/api/dashboard/brain/graph"),
+
+  brainNode: (type: BrainNodeType, id: string) =>
+    apiFetch<{ node: BrainNode }>(
+      `/api/dashboard/brain/node/${encodeURIComponent(type)}/${encodeURIComponent(id)}`,
+    ),
+};
+
+// --------------------------------------------------------------------------
+// Brain visualization types
+// --------------------------------------------------------------------------
+
+export type BrainNodeType =
+  | "memory"
+  | "session"
+  | "skill"
+  | "tool"
+  | "mcp"
+  | "cron";
+
+export type BrainNode = {
+  id: string;
+  type: BrainNodeType;
+  label: string;
+  weight: number;
+  metadata: Record<string, unknown>;
+};
+
+export type BrainEdge = {
+  source: string;
+  target: string;
+  kind: string;
+  weight: number;
+};
+
+export type BrainStats = {
+  memory: number;
+  session: number;
+  skill: number;
+  tool: number;
+  mcp: number;
+  cron: number;
+  edges: number;
+};
+
+export type BrainGraph = {
+  nodes: BrainNode[];
+  edges: BrainEdge[];
+  stats: BrainStats;
+  generated_at: number;
 };
 
 // --------------------------------------------------------------------------

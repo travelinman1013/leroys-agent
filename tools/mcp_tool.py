@@ -1944,6 +1944,22 @@ def register_mcp_servers(servers: Dict[str, dict]) -> List[str]:
             summary += f" ({failed} failed)"
         logger.info(summary)
 
+    # Brain-viz event (R4): emit one mcp.connected per successfully
+    # connected server. Payload deliberately excludes args/env which can
+    # contain credentials in shell-substitution form.
+    try:
+        from gateway.event_bus import publish
+        for name in connected:
+            publish(
+                "mcp.connected",
+                session_id=None,
+                data={"server_name": name, "tool_count": len(
+                    getattr(_servers[name], "_registered_tool_names", [])
+                )},
+            )
+    except Exception:
+        pass
+
     return _existing_tool_names()
 
 
@@ -2129,6 +2145,17 @@ def shutdown_mcp_servers():
                 )
         with _lock:
             _servers.clear()
+        # Brain-viz event (R4)
+        try:
+            from gateway.event_bus import publish
+            for server in servers_snapshot:
+                publish(
+                    "mcp.disconnected",
+                    session_id=None,
+                    data={"server_name": server.name},
+                )
+        except Exception:
+            pass
 
     with _lock:
         loop = _mcp_loop
