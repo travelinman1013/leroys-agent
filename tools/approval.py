@@ -14,6 +14,7 @@ import os
 import re
 import sys
 import threading
+import time
 import unicodedata
 from typing import Optional
 
@@ -185,12 +186,13 @@ _permanent_approved: set = set()
 
 class _ApprovalEntry:
     """One pending dangerous-command approval inside a gateway session."""
-    __slots__ = ("event", "data", "result")
+    __slots__ = ("event", "data", "result", "queued_at")
 
     def __init__(self, data: dict):
         self.event = threading.Event()
         self.data = data          # command, description, pattern_keys, …
         self.result: Optional[str] = None  # "once"|"session"|"always"|"deny"
+        self.queued_at = time.time()
 
 
 _gateway_queues: dict[str, list] = {}        # session_key → [_ApprovalEntry, …]
@@ -248,7 +250,57 @@ def resolve_gateway_approval(session_key: str, choice: str,
     for entry in targets:
         entry.result = choice
         entry.event.set()
+
+    # Dashboard event bus — fail-silent, never block the approval path.
+    try:
+        from gateway.event_bus import publish as _publish_event
+        for entry in targets:
+            _publish_event(
+                "approval.resolved",
+                session_id=session_key,
+                data={
+                    "choice": choice,
+                    "command": entry.data.get("command"),
+                    "pattern_key": entry.data.get("pattern_key"),
+                    "description": entry.data.get("description"),
+                },
+            )
+    except Exception:
+        pass
+
     return len(targets)
+
+
+def list_pending_approvals_for_dashboard() -> list[dict]:
+    """Return a read-only snapshot of the in-memory approval queue.
+
+    Used by the dashboard `/api/dashboard/state` and `/api/dashboard/approvals`
+    endpoints so the UI can render pending approvals. This mirrors the
+    pattern in ``mcp_serve.py:list_pending_approvals`` and does not
+    mutate state.
+
+    Returns a list of:
+        {
+            "session_key": str,
+            "command": str,
+            "pattern_key": str,
+            "description": str,
+            "queued_at": float,  # unix seconds; best-effort
+        }
+    """
+    snapshot: list[dict] = []
+    with _lock:
+        for session_key, entries in _gateway_queues.items():
+            for entry in entries:
+                data = dict(entry.data or {})
+                snapshot.append({
+                    "session_key": session_key,
+                    "command": data.get("command", ""),
+                    "pattern_key": data.get("pattern_key", ""),
+                    "description": data.get("description", ""),
+                    "queued_at": getattr(entry, "queued_at", None),
+                })
+    return snapshot
 
 
 def has_blocking_approval(session_key: str) -> bool:
@@ -828,6 +880,22 @@ def check_all_command_guards(command: str, env_type: str,
             entry = _ApprovalEntry(approval_data)
             with _lock:
                 _gateway_queues.setdefault(session_key, []).append(entry)
+
+            # Dashboard event bus — fail-silent
+            try:
+                from gateway.event_bus import publish as _publish_event
+                _publish_event(
+                    "approval.requested",
+                    session_id=session_key,
+                    data={
+                        "command": command,
+                        "pattern_key": primary_key,
+                        "pattern_keys": all_keys,
+                        "description": combined_desc,
+                    },
+                )
+            except Exception:
+                pass
 
             # Notify the user (bridges sync agent thread → async gateway)
             try:

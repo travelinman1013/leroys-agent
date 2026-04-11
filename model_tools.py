@@ -21,6 +21,7 @@ Public API (signatures preserved from the original 2,400-line version):
 """
 
 import json
+import time
 import asyncio
 import logging
 import threading
@@ -456,6 +457,36 @@ def _coerce_boolean(value: str):
     return value
 
 
+# --------------------------------------------------------------------------
+# Dashboard event previews — keep tool args/results small enough to ship over
+# SSE without blowing the frame budget. Large strings/dicts get truncated.
+# --------------------------------------------------------------------------
+
+_MAX_PREVIEW_CHARS = 512
+
+
+def _preview_tool_args(args: Any) -> Any:
+    """Return a shallow, size-capped preview of tool arguments for events."""
+    try:
+        s = json.dumps(args, ensure_ascii=False, default=str)
+    except Exception:
+        return str(args)[:_MAX_PREVIEW_CHARS]
+    if len(s) <= _MAX_PREVIEW_CHARS:
+        return args
+    return s[:_MAX_PREVIEW_CHARS] + "…"
+
+
+def _preview_tool_result(result: Any) -> str:
+    """Return a size-capped string preview of a tool result."""
+    try:
+        s = result if isinstance(result, str) else json.dumps(result, ensure_ascii=False, default=str)
+    except Exception:
+        s = str(result)
+    if len(s) <= _MAX_PREVIEW_CHARS:
+        return s
+    return s[:_MAX_PREVIEW_CHARS] + "…"
+
+
 def handle_function_call(
     function_name: str,
     function_args: Dict[str, Any],
@@ -542,6 +573,37 @@ def handle_function_call(
         except Exception:
             pass
 
+        # Dashboard event bus — fail-silent
+        _tool_invoke_start = time.monotonic()
+        try:
+            from gateway.event_bus import publish as _publish_event
+            _publish_event(
+                "tool.invoked",
+                session_id=session_id,
+                data={
+                    "tool": function_name,
+                    "tool_call_id": tool_call_id,
+                    "task_id": task_id,
+                    "args_preview": _preview_tool_args(function_args),
+                },
+            )
+        except Exception:
+            pass
+
+        # R4: optional OpenTelemetry GenAI tool-invoke span (no-op if
+        # traceloop-sdk is not installed or HERMES_OTLP_ENDPOINT is unset).
+        _otel_span_cm = None
+        try:
+            from agent.otel import start_tool_span as _start_tool_span
+            _otel_span_cm = _start_tool_span(
+                function_name,
+                session_id=session_id,
+                tool_call_id=tool_call_id,
+            )
+            _otel_span_cm.__enter__()
+        except Exception:
+            _otel_span_cm = None
+
         if function_name == "execute_code":
             # Prefer the caller-provided list so subagents can't overwrite
             # the parent's tool set via the process-global.
@@ -572,11 +634,60 @@ def handle_function_call(
         except Exception:
             pass
 
+        # Dashboard event bus — fail-silent
+        try:
+            from gateway.event_bus import publish as _publish_event
+            _publish_event(
+                "tool.completed",
+                session_id=session_id,
+                data={
+                    "tool": function_name,
+                    "tool_call_id": tool_call_id,
+                    "task_id": task_id,
+                    "latency_ms": int((time.monotonic() - _tool_invoke_start) * 1000),
+                    "result_preview": _preview_tool_result(result),
+                    "ok": True,
+                },
+            )
+        except Exception:
+            pass
+
+        # R4: close the optional OTel span (success path)
+        if _otel_span_cm is not None:
+            try:
+                _otel_span_cm.__exit__(None, None, None)
+            except Exception:
+                pass
+
         return result
 
     except Exception as e:
         error_msg = f"Error executing {function_name}: {str(e)}"
         logger.error(error_msg)
+        # Dashboard event bus — fail-silent
+        try:
+            from gateway.event_bus import publish as _publish_event
+            _publish_event(
+                "tool.completed",
+                session_id=session_id,
+                data={
+                    "tool": function_name,
+                    "tool_call_id": tool_call_id,
+                    "task_id": task_id,
+                    "latency_ms": int((time.monotonic() - _tool_invoke_start) * 1000)
+                                  if "_tool_invoke_start" in locals() else None,
+                    "error": str(e),
+                    "ok": False,
+                },
+            )
+        except Exception:
+            pass
+        # R4: close the optional OTel span (error path)
+        if "_otel_span_cm" in locals() and _otel_span_cm is not None:
+            try:
+                _otel_span_cm.__exit__(type(e), e, e.__traceback__)
+            except Exception:
+                pass
         return json.dumps({"error": error_msg}, ensure_ascii=False)
 
 

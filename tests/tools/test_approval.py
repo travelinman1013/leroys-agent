@@ -4,6 +4,8 @@ import ast
 from pathlib import Path
 from unittest.mock import patch as mock_patch
 
+import pytest
+
 import tools.approval as approval_module
 from tools.approval import (
     _get_approval_mode,
@@ -33,6 +35,33 @@ class TestNonInteractivePolicy:
     """R2: cron / delegated / background contexts must consult
     approvals.non_interactive_policy instead of unconditionally auto-approving.
     """
+
+    @pytest.fixture(autouse=True)
+    def _reset_approval_globals(self):
+        """Clear the module-level approval caches between tests.
+
+        ``tools/approval.py`` keeps three globals that ``check_all_command_guards``
+        consults BEFORE the smart-approve path runs:
+            * ``_permanent_approved`` — permanent allowlist entries
+            * ``_session_approved`` — per-session approvals
+            * ``_smart_approved_session`` — smart-mode session cache
+
+        Without resetting these, an earlier test in the same xdist worker
+        can leak a "session" or "always" approval for an ``rm`` pattern,
+        and ``test_guarded_smart_denies_via_aux_llm`` then short-circuits
+        to ``approved=True`` before reaching the mocked ``_smart_approve``
+        — manifesting as ``assert True is False``. This was an intermittent
+        CI flake until the Phase 5 R2 cross-test pollution audit caught it.
+        """
+        approval_module._permanent_approved.clear()
+        approval_module._session_approved.clear()
+        if hasattr(approval_module, "_smart_approved_session"):
+            approval_module._smart_approved_session.clear()
+        yield
+        approval_module._permanent_approved.clear()
+        approval_module._session_approved.clear()
+        if hasattr(approval_module, "_smart_approved_session"):
+            approval_module._smart_approved_session.clear()
 
     def _clean_env(self, monkeypatch):
         # Strip the three env vars that mark "interactive" contexts so the

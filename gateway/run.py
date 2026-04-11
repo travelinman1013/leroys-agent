@@ -1046,11 +1046,35 @@ class GatewayRunner:
     async def start(self) -> bool:
         """
         Start the gateway and all configured platform adapters.
-        
+
         Returns True if at least one adapter connected successfully.
         """
         logger.info("Starting Hermes Gateway...")
         logger.info("Session storage: %s", self.config.sessions_dir)
+
+        # Dashboard event bus — attach the singleton to this loop so sync
+        # publish() calls from the agent thread can reach async SSE
+        # subscribers. Fail-silent: the gateway must not fail to boot
+        # because the dashboard plumbing has an issue.
+        try:
+            from gateway.event_bus import get_event_bus as _get_event_bus
+            await _get_event_bus().start()
+            _get_event_bus().publish(
+                "gateway.started",
+                data={"config_sessions_dir": str(self.config.sessions_dir)},
+            )
+        except Exception as _exc:
+            logger.debug("event_bus: startup attach failed: %s", _exc)
+
+        # R4: optional OpenTelemetry / OpenLLMetry initialization. Only
+        # does anything when HERMES_OTLP_ENDPOINT is set AND the
+        # [observability] extras are installed. Fail-silent.
+        try:
+            from agent.otel import init_if_configured as _otel_init
+            if _otel_init():
+                logger.info("Gateway: OpenTelemetry tracing enabled")
+        except Exception as _exc:
+            logger.debug("agent.otel: init_if_configured raised: %s", _exc)
         try:
             from hermes_cli.profiles import get_active_profile_name
             _profile = get_active_profile_name()

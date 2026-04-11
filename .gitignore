@@ -61,3 +61,10 @@ result
 
 # Local archive of old plists
 _archive/
+
+# Dashboard build artifacts (R3)
+/dashboard/node_modules/
+/dashboard/dist/
+/dashboard/src/routeTree.gen.ts
+/dashboard/tsconfig.tsbuildinfo
+/gateway/platforms/api_server_static/
