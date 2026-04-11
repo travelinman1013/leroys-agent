@@ -387,6 +387,82 @@ class TestSessionRedaction:
 
 
 # ---------------------------------------------------------------------------
+# Brain visualization endpoints (Wave-1 R1 of brain viz plan)
+# ---------------------------------------------------------------------------
+
+
+class TestBrainEndpoints:
+    @pytest.mark.asyncio
+    async def test_brain_graph_returns_envelope(self):
+        adapter = _make_adapter()
+        app = _make_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get("/api/dashboard/brain/graph")
+            assert resp.status == 200, await resp.text()
+            data = await resp.json()
+            assert "nodes" in data
+            assert "edges" in data
+            assert "stats" in data
+            assert "generated_at" in data
+
+    @pytest.mark.asyncio
+    async def test_brain_graph_stats_has_counts(self):
+        adapter = _make_adapter()
+        app = _make_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get("/api/dashboard/brain/graph")
+            data = await resp.json()
+            for key in ("memory", "session", "skill", "tool", "mcp", "cron", "edges"):
+                assert key in data["stats"]
+
+    @pytest.mark.asyncio
+    async def test_brain_graph_includes_seeded_session(self):
+        from hermes_state import SessionDB
+        db = SessionDB()
+        db.create_session(session_id="brain-test-1", source="cli")
+        # Force a fresh snapshot so the cache picks up our new session
+        from tools.brain_snapshot import reset_snapshot_cache
+        reset_snapshot_cache()
+        adapter = _make_adapter()
+        app = _make_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get("/api/dashboard/brain/graph")
+            data = await resp.json()
+            ids = {n["id"] for n in data["nodes"]}
+            assert "session:brain-test-1" in ids
+
+    @pytest.mark.asyncio
+    async def test_brain_node_lookup_returns_node(self):
+        from hermes_state import SessionDB
+        db = SessionDB()
+        db.create_session(session_id="brain-lookup-1", source="cli")
+        from tools.brain_snapshot import reset_snapshot_cache
+        reset_snapshot_cache()
+        adapter = _make_adapter()
+        app = _make_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get(
+                "/api/dashboard/brain/node/session/brain-lookup-1"
+            )
+            assert resp.status == 200, await resp.text()
+            data = await resp.json()
+            assert data["node"]["type"] == "session"
+            assert data["node"]["id"] == "session:brain-lookup-1"
+
+    @pytest.mark.asyncio
+    async def test_brain_node_returns_404_for_missing(self):
+        from tools.brain_snapshot import reset_snapshot_cache
+        reset_snapshot_cache()
+        adapter = _make_adapter()
+        app = _make_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get(
+                "/api/dashboard/brain/node/memory/deadbeef"
+            )
+            assert resp.status == 404
+
+
+# ---------------------------------------------------------------------------
 # Doctor
 # ---------------------------------------------------------------------------
 

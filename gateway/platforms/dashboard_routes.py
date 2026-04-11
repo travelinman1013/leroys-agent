@@ -676,6 +676,61 @@ class DashboardRoutes:
         return web.json_response({"events": events})
 
     # ------------------------------------------------------------------
+    # GET /api/dashboard/brain/graph — typed knowledge graph snapshot
+    # ------------------------------------------------------------------
+
+    async def handle_brain_graph(self, request: "web.Request") -> "web.Response":
+        """Return the brain visualization snapshot.
+
+        Walks the four runtime knowledge surfaces (memory, sessions,
+        capability registry, scheduled intents) and returns a typed
+        graph of nodes + edges. Pure compute via
+        ``tools.brain_snapshot.build_brain_snapshot``; the in-memory
+        ``lru_cache`` coalesces concurrent requests into a single rebuild
+        per 5-second window. Wrapped in ``asyncio.to_thread`` so the
+        SQLite + filesystem queries don't stall the event loop.
+        """
+        auth_err = self._check_dashboard_auth(request)
+        if auth_err:
+            return auth_err
+        try:
+            from tools.brain_snapshot import build_brain_snapshot
+            snapshot = await asyncio.to_thread(build_brain_snapshot)
+        except Exception as exc:
+            logger.exception("dashboard: brain graph build failed")
+            return web.json_response({"error": str(exc)}, status=500)
+        return web.json_response(snapshot)
+
+    # ------------------------------------------------------------------
+    # GET /api/dashboard/brain/node/{type}/{id} — single node detail
+    # ------------------------------------------------------------------
+
+    async def handle_brain_node(self, request: "web.Request") -> "web.Response":
+        """Look up a single node from the current brain snapshot.
+
+        The dashboard drawer fetches this when the user clicks a node
+        so we don't have to round-trip the whole graph for every
+        click. Returns 404 if the node was not present in the latest
+        rebuild (e.g. it was removed since the snapshot was cached).
+        """
+        auth_err = self._check_dashboard_auth(request)
+        if auth_err:
+            return auth_err
+        node_type = request.match_info.get("type", "")
+        node_id = request.match_info.get("id", "")
+        if not node_type or not node_id:
+            return web.json_response({"error": "type and id required"}, status=400)
+        try:
+            from tools.brain_snapshot import find_node
+            node = await asyncio.to_thread(find_node, node_type, node_id)
+        except Exception as exc:
+            logger.exception("dashboard: brain node lookup failed")
+            return web.json_response({"error": str(exc)}, status=500)
+        if node is None:
+            return web.json_response({"error": "node not found"}, status=404)
+        return web.json_response({"node": node})
+
+    # ------------------------------------------------------------------
     # GET /api/dashboard/events — SSE multiplexer
     # ------------------------------------------------------------------
 
@@ -842,6 +897,11 @@ def register_dashboard_routes(
     app.router.add_get("/api/dashboard/config", routes.handle_config)
     app.router.add_get("/api/dashboard/recent", routes.handle_recent)
     app.router.add_get("/api/dashboard/events", routes.handle_events)
+    # Brain visualization (Wave-1 R1 of stateful-noodling-reddy plan)
+    app.router.add_get("/api/dashboard/brain/graph", routes.handle_brain_graph)
+    app.router.add_get(
+        "/api/dashboard/brain/node/{type}/{id}", routes.handle_brain_node,
+    )
 
     # Static UI bundle
     if static_dir is not None and static_dir.is_dir():
