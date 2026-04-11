@@ -2373,11 +2373,29 @@ class HubLockFile:
             "updated_at": datetime.now(timezone.utc).isoformat(),
         }
         self.save(data)
+        # Brain-viz event (R4): notify dashboard a skill is now installed.
+        # Payload deliberately excludes `source` and `identifier` because
+        # they can be GH URLs that contain a PAT.
+        try:
+            from gateway.event_bus import publish
+            publish(
+                "skill.installed",
+                session_id=None,
+                data={"skill": name, "trust_level": trust_level},
+            )
+        except Exception:
+            pass
 
     def record_uninstall(self, name: str) -> None:
         data = self.load()
         data["installed"].pop(name, None)
         self.save(data)
+        # Brain-viz event (R4)
+        try:
+            from gateway.event_bus import publish
+            publish("skill.removed", session_id=None, data={"skill": name})
+        except Exception:
+            pass
 
     def get_installed(self, name: str) -> Optional[dict]:
         data = self.load()

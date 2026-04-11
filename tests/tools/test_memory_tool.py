@@ -258,3 +258,72 @@ class TestMemoryToolDispatcher:
     def test_remove_requires_old_text(self, store):
         result = json.loads(memory_tool(action="remove", store=store))
         assert result["success"] is False
+
+
+# =========================================================================
+# Brain-viz event emit-points (Wave-1 R4 of stateful-noodling-reddy plan)
+# =========================================================================
+
+
+class TestMemoryEventEmits:
+    """Verify that MemoryStore mutations publish memory.* events to the
+    in-process EventBus so the dashboard /brain route can pulse the
+    matching memory node."""
+
+    def _drain_recent(self, prefix: str = "memory."):
+        from gateway.event_bus import get_event_bus, reset_event_bus_for_tests
+        bus = get_event_bus()
+        return [e for e in bus.recent_events() if e.get("type", "").startswith(prefix)]
+
+    @pytest.fixture(autouse=True)
+    def _reset_bus(self):
+        from gateway.event_bus import reset_event_bus_for_tests
+        reset_event_bus_for_tests()
+        yield
+        reset_event_bus_for_tests()
+
+    def test_add_emits_memory_added(self, store):
+        result = store.add("memory", "test entry for emit")
+        assert result["success"] is True
+        events = self._drain_recent()
+        assert any(e["type"] == "memory.added" for e in events)
+        added = [e for e in events if e["type"] == "memory.added"][-1]
+        assert added["data"]["store"] == "MEMORY.md"
+        assert "hash" in added["data"]
+        assert "preview" in added["data"]
+        assert len(added["data"]["hash"]) == 8
+
+    def test_add_to_user_uses_user_md_label(self, store):
+        store.add("user", "user preference X")
+        events = self._drain_recent()
+        added = [e for e in events if e["type"] == "memory.added"]
+        assert any(e["data"]["store"] == "USER.md" for e in added)
+
+    def test_replace_emits_memory_replaced(self, store):
+        store.add("memory", "version 1 of fact")
+        result = store.replace("memory", "version 1", "version 2 of fact")
+        assert result["success"] is True
+        events = self._drain_recent()
+        replaced = [e for e in events if e["type"] == "memory.replaced"]
+        assert len(replaced) >= 1
+        assert "hash" in replaced[-1]["data"]
+        assert "old_hash" in replaced[-1]["data"]
+        assert replaced[-1]["data"]["hash"] != replaced[-1]["data"]["old_hash"]
+
+    def test_remove_emits_memory_removed(self, store):
+        store.add("memory", "entry to be removed")
+        result = store.remove("memory", "to be removed")
+        assert result["success"] is True
+        events = self._drain_recent()
+        removed = [e for e in events if e["type"] == "memory.removed"]
+        assert len(removed) >= 1
+        assert removed[-1]["data"]["store"] == "MEMORY.md"
+        assert "hash" in removed[-1]["data"]
+
+    def test_emit_preview_is_redacted(self, store):
+        # Inject a memory entry whose body has a fake GitHub PAT inside
+        store.add("memory", "remember that ghp_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa is the token")
+        events = self._drain_recent()
+        added = [e for e in events if e["type"] == "memory.added"][-1]
+        assert "ghp_aaa" not in added["data"]["preview"]
+        assert "[REDACTED:" in added["data"]["preview"]

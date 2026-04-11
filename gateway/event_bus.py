@@ -33,11 +33,20 @@ Event schema (borrowed from OpenHands V1)
               | "approval.requested" | "approval.resolved"
               | "compaction"
               | "cron.fired"
-              | "session.ended",
+              | "session.ended"
+              # Brain-viz events (Wave-1 R4 of stateful-noodling-reddy plan):
+              | "memory.added" | "memory.replaced" | "memory.removed"
+              | "skill.installed" | "skill.removed"
+              | "mcp.connected" | "mcp.disconnected",
         "ts": "2026-04-10T12:34:56.789012+00:00",
         "session_id": "<optional>",
         "data": { ... }
     }
+
+Note: there is NO runtime whitelist on event types — `publish()` accepts
+any string. The list above is documentation of the types currently emitted
+by code in this repo. Adding a new emit-point requires no changes here
+(though updating this comment is polite).
 
 Sandbox note
 ------------
