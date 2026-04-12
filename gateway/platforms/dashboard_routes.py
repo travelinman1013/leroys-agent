@@ -1269,11 +1269,25 @@ class DashboardRoutes:
             if not isinstance(current_list, list):
                 current_list = []
 
+            expanded_path = os.path.expanduser(path)
+
             if action == "add":
-                if path not in current_list:
-                    current_list.append(path)
+                # Store with tilde for readability if it's under $HOME.
+                store_path = path
+                home = os.path.expanduser("~")
+                if expanded_path.startswith(home + os.sep):
+                    store_path = "~" + expanded_path[len(home):]
+                already = any(
+                    os.path.expanduser(p) == expanded_path
+                    for p in current_list
+                )
+                if not already:
+                    current_list.append(store_path)
             elif action == "remove":
-                current_list = [p for p in current_list if p != path]
+                current_list = [
+                    p for p in current_list
+                    if os.path.expanduser(p) != expanded_path
+                ]
 
             security[target] = current_list
             save_config(cfg)
