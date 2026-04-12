@@ -2297,6 +2297,18 @@ CONFIG_MUTATION_ALLOWLIST = frozenset({
     "mcp_servers.*.disabled",
     "agent.max_turns",
     "agent.reasoning_effort",
+    "security.safe_roots",
+    "security.denied_paths",
+})
+
+# Denied paths that can never be removed via the dashboard. These are
+# the load-bearing security boundaries. Belt-and-suspenders with Seatbelt.
+DENIED_PATHS_REMOVAL_BLOCKLIST = frozenset({
+    "~/.ssh",
+    "~/.hermes/.env",
+    "/etc/passwd",
+    "/etc/shadow",
+    "/etc/sudoers",
 })
 
 # Keys whose values are read once at component init and cached. The dashboard
@@ -2309,6 +2321,8 @@ _CONFIG_INIT_CACHED_KEYS = frozenset({
     "mcp_servers.*.enabled",
     "mcp_servers.*.disabled",
     "agent.max_turns",
+    "security.safe_roots",
+    "security.denied_paths",
 })
 
 # Maximum number of dated backups to retain in ~/.hermes/config_backups/

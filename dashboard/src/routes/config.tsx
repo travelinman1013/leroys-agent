@@ -347,6 +347,16 @@ function ConfigPage() {
             )}
           </ul>
         </ConfigCard>
+
+        <SecurityPathsCard
+          onRestartNeeded={() =>
+            setRestartHint((p) =>
+              p.includes("security.safe_roots")
+                ? p
+                : [...p, "security paths"],
+            )
+          }
+        />
       </div>
     </div>
   );
@@ -503,5 +513,191 @@ function ThemePill({
     >
       {theme === "dark" ? "◐" : "◑"} {label}
     </button>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Security — Path Jail card
+// ---------------------------------------------------------------------------
+
+function SecurityPathsCard({
+  onRestartNeeded,
+}: {
+  onRestartNeeded: () => void;
+}) {
+  const paths = useQuery({
+    queryKey: ["dashboard", "security", "paths"],
+    queryFn: api.securityPaths,
+  });
+
+  const [newSafeRoot, setNewSafeRoot] = useState("");
+  const [newDenied, setNewDenied] = useState("");
+
+  const notify = useNotify();
+  const confirm = useConfirm();
+
+  const mutate = useApiMutation({
+    mutationFn: api.securityPathMutate,
+    successMessage: (data) =>
+      `${data.action === "add" ? "Added" : "Removed"} ${data.path}`,
+    onSuccess: () => {
+      paths.refetch();
+      onRestartNeeded();
+    },
+  });
+
+  const handleAdd = (
+    target: "safe_roots" | "denied_paths",
+    path: string,
+    clearFn: (v: string) => void,
+  ) => {
+    const trimmed = path.trim();
+    if (!trimmed) return;
+    mutate.mutate({ action: "add", target, path: trimmed });
+    clearFn("");
+  };
+
+  const handleRemove = async (
+    target: "safe_roots" | "denied_paths",
+    path: string,
+  ) => {
+    const isBlocked = (paths.data?.removal_blocklist ?? []).some(
+      (b) => b === path,
+    );
+    if (isBlocked) {
+      notify.error(`Cannot remove protected path: ${path}`);
+      return;
+    }
+    const ok = await confirm({
+      title: `Remove ${path}?`,
+      description:
+        target === "safe_roots"
+          ? "Hermes will no longer be able to read/write files under this path."
+          : "This path will no longer be blocked. Hermes will be able to access it.",
+      confirmLabel: "REMOVE",
+    });
+    if (ok) mutate.mutate({ action: "remove", target, path });
+  };
+
+  const blocklist = new Set(paths.data?.removal_blocklist ?? []);
+
+  return (
+    <ConfigCard title="Security · Path Jail">
+      {/* Safe roots */}
+      <div>
+        <div className="mb-2 font-mono text-[10px] uppercase tracking-marker text-ink-muted">
+          ALLOWED PATHS (safe_roots)
+        </div>
+        <p className="mb-3 font-mono text-[10px] tracking-marker text-ink-faint">
+          Hermes can read and write files under these directories.
+        </p>
+        <ul className="space-y-1">
+          {(paths.data?.safe_roots ?? []).map((p) => (
+            <li
+              key={p}
+              className="flex items-center justify-between border-b border-rule/40 py-1 font-mono text-[11px] text-ink"
+            >
+              <span className="min-w-0 truncate">{p}</span>
+              <button
+                type="button"
+                onClick={() => handleRemove("safe_roots", p)}
+                className="shrink-0 pl-3 font-mono text-[10px] uppercase tracking-marker text-ink-faint hover:text-danger"
+              >
+                ×
+              </button>
+            </li>
+          ))}
+        </ul>
+        <div className="mt-2 flex gap-2">
+          <Input
+            placeholder="~/path/to/add"
+            value={newSafeRoot}
+            onChange={(e) => setNewSafeRoot(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter")
+                handleAdd("safe_roots", newSafeRoot, setNewSafeRoot);
+            }}
+            className="h-8 flex-1 font-mono text-[11px]"
+          />
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() =>
+              handleAdd("safe_roots", newSafeRoot, setNewSafeRoot)
+            }
+            disabled={!newSafeRoot.trim()}
+          >
+            ADD
+          </Button>
+        </div>
+      </div>
+
+      {/* Denied paths */}
+      <div className="pt-4">
+        <div className="mb-2 font-mono text-[10px] uppercase tracking-marker text-ink-muted">
+          BLOCKED PATHS (denied_paths)
+        </div>
+        <p className="mb-3 font-mono text-[10px] tracking-marker text-ink-faint">
+          Always blocked, even if under an allowed root. Protected entries
+          cannot be removed.
+        </p>
+        <ul className="space-y-1">
+          {(paths.data?.denied_paths ?? []).map((p) => {
+            const isProtected = blocklist.has(p);
+            return (
+              <li
+                key={p}
+                className="flex items-center justify-between border-b border-rule/40 py-1 font-mono text-[11px] text-ink"
+              >
+                <span className="min-w-0 truncate">
+                  {p}
+                  {isProtected && (
+                    <span className="ml-2 text-[9px] uppercase tracking-marker text-ink-faint">
+                      protected
+                    </span>
+                  )}
+                </span>
+                {!isProtected && (
+                  <button
+                    type="button"
+                    onClick={() => handleRemove("denied_paths", p)}
+                    className="shrink-0 pl-3 font-mono text-[10px] uppercase tracking-marker text-ink-faint hover:text-danger"
+                  >
+                    ×
+                  </button>
+                )}
+              </li>
+            );
+          })}
+        </ul>
+        <div className="mt-2 flex gap-2">
+          <Input
+            placeholder="~/path/to/block"
+            value={newDenied}
+            onChange={(e) => setNewDenied(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter")
+                handleAdd("denied_paths", newDenied, setNewDenied);
+            }}
+            className="h-8 flex-1 font-mono text-[11px]"
+          />
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() =>
+              handleAdd("denied_paths", newDenied, setNewDenied)
+            }
+            disabled={!newDenied.trim()}
+          >
+            ADD
+          </Button>
+        </div>
+      </div>
+
+      <p className="pt-3 font-mono text-[10px] uppercase tracking-marker text-ink-faint">
+        changes require gateway restart · seatbelt profile is a
+        separate kernel-level layer
+      </p>
+    </ConfigCard>
   );
 }

@@ -1197,6 +1197,100 @@ class DashboardRoutes:
             return _json_err(exc)
 
     @require_dashboard_auth
+    async def handle_security_paths(self, request: "web.Request") -> "web.Response":
+        """Get or modify safe_roots and denied_paths.
+
+        GET returns current lists.
+        POST body: ``{action: "add"|"remove", target: "safe_roots"|"denied_paths", path: "..."}``
+        Removal of critical denied_paths is blocked by DENIED_PATHS_REMOVAL_BLOCKLIST.
+        All changes go through the existing backup + save pipeline.
+        """
+        if request.method == "GET":
+            try:
+                from hermes_cli.config import get_safe_roots, get_denied_paths
+                from hermes_cli.config import DENIED_PATHS_REMOVAL_BLOCKLIST
+                return _json_ok({
+                    "safe_roots": get_safe_roots(),
+                    "denied_paths": get_denied_paths(),
+                    "removal_blocklist": sorted(DENIED_PATHS_REMOVAL_BLOCKLIST),
+                })
+            except Exception as exc:
+                return _json_err(exc)
+
+        # POST — add or remove a path
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response({"error": "invalid JSON"}, status=400)
+
+        action = body.get("action", "")
+        target = body.get("target", "")
+        path = body.get("path", "").strip()
+
+        if action not in ("add", "remove"):
+            return web.json_response(
+                {"error": "action must be 'add' or 'remove'"}, status=400
+            )
+        if target not in ("safe_roots", "denied_paths"):
+            return web.json_response(
+                {"error": "target must be 'safe_roots' or 'denied_paths'"},
+                status=400,
+            )
+        if not path:
+            return web.json_response(
+                {"error": "path is required"}, status=400
+            )
+
+        try:
+            from hermes_cli.config import (
+                load_config,
+                save_config,
+                reset_path_jail_cache,
+                DENIED_PATHS_REMOVAL_BLOCKLIST,
+            )
+            from hermes_cli.config import _backup_config_to_dated_file
+
+            # Block removal of critical denied_paths.
+            if action == "remove" and target == "denied_paths":
+                expanded = os.path.expanduser(path)
+                for blocked in DENIED_PATHS_REMOVAL_BLOCKLIST:
+                    blocked_expanded = os.path.expanduser(blocked)
+                    if expanded == blocked_expanded or path == blocked:
+                        return web.json_response(
+                            {"error": f"cannot remove protected path: {path}"},
+                            status=403,
+                        )
+
+            cfg = load_config()
+            _backup_config_to_dated_file(cfg)
+
+            security = cfg.setdefault("security", {})
+            current_list: list = security.get(target, [])
+            if not isinstance(current_list, list):
+                current_list = []
+
+            if action == "add":
+                if path not in current_list:
+                    current_list.append(path)
+            elif action == "remove":
+                current_list = [p for p in current_list if p != path]
+
+            security[target] = current_list
+            save_config(cfg)
+            reset_path_jail_cache()
+
+            return _json_ok({
+                "ok": True,
+                "action": action,
+                "target": target,
+                "path": path,
+                target: current_list,
+                "restart_required": True,
+            })
+        except Exception as exc:
+            return _json_err(exc)
+
+    @require_dashboard_auth
     async def handle_gateway_info(self, request: "web.Request") -> "web.Response":
         info: Dict[str, Any] = {
             "pid": os.getpid(),
@@ -2314,6 +2408,8 @@ def register_dashboard_routes(
     app.router.add_put("/api/dashboard/config", routes.handle_config_put)
     app.router.add_get("/api/dashboard/config/backups", routes.handle_config_backups)
     app.router.add_post("/api/dashboard/config/rollback", routes.handle_config_rollback)
+    app.router.add_get("/api/dashboard/security/paths", routes.handle_security_paths)
+    app.router.add_post("/api/dashboard/security/paths", routes.handle_security_paths)
     app.router.add_get("/api/dashboard/gateway/info", routes.handle_gateway_info)
     app.router.add_get("/api/dashboard/gateway/restart-command", routes.handle_gateway_restart_command)
 

@@ -644,6 +644,30 @@ export const api = {
 
   gatewayRestartCommand: () =>
     apiFetch<{ command: string; note: string }>("/api/dashboard/gateway/restart-command"),
+
+  // Security — path jail
+  securityPaths: () =>
+    apiFetch<{
+      safe_roots: string[];
+      denied_paths: string[];
+      removal_blocklist: string[];
+    }>("/api/dashboard/security/paths"),
+
+  securityPathMutate: (body: {
+    action: "add" | "remove";
+    target: "safe_roots" | "denied_paths";
+    path: string;
+  }) =>
+    apiFetch<{
+      ok: boolean;
+      action: string;
+      target: string;
+      path: string;
+      restart_required: boolean;
+    }>("/api/dashboard/security/paths", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
 };
 
 // --------------------------------------------------------------------------
