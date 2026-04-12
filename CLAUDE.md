@@ -217,10 +217,21 @@ Verify: `hermes mcp list` should show github as enabled.
   ID `e0c86681487d`. 5 business day observation period begins
   2026-04-13.
 
+- **Phase 9a: Search Activation + Research Digest** (deployed 2026-04-12) —
+  Tavily search backend activation (config-only, `tools/web_tools.py:282-361`
+  already implemented), Brave Search MCP server config
+  (`@brave/brave-search-mcp-server`), research-digest workflow harness
+  (`workflow/harnesses/research_digest.py`) fetching HN + arXiv + GitHub
+  trending into vault notes with `defusedxml` XXE protection for arXiv XML,
+  file watcher production hardening (config-driven debounce/excludes, path
+  jail in `_should_ignore`, observer liveness check with auto-restart),
+  path safety defense-in-depth in watch-and-notify `detect_change`. 28 new
+  tests (104 workflow total). Plan at
+  `~/.claude/plans/humming-growing-gray.md`.
+
 ## Planned Phases (not yet implemented)
 
-- **Phase 9a — Brave MCP + research digest + watch-and-notify production**.
-- **Phase 9b — Playwright + CI fixer + E2E harness + backup drill**.
+- **Phase 9b — Playwright + CI fixer + E2E harness + backup drill + `hermes doctor` search check**.
 - **Phase 10 — Dashboard UX audit + consolidation**: Fix three systemic
   problems: (1) route redundancy — /desk vs /sessions, /desk approvals
   vs /approvals, /workflows vs /cron all show overlapping data; audit

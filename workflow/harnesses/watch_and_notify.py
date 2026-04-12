@@ -44,6 +44,27 @@ def detect_change(ctx: Dict[str, Any]) -> Dict[str, Any]:
     if not path:
         raise ValueError("No path in trigger_meta")
 
+    # Path safety check (defense-in-depth — file_watcher._should_ignore is primary)
+    try:
+        from hermes_cli.config import get_safe_roots, get_denied_paths
+        safe_roots = get_safe_roots()
+        denied_paths = get_denied_paths()
+        if safe_roots:
+            from tools.file_tools import validate_path_operation
+            allowed, reason = validate_path_operation(
+                path, "read", safe_roots, denied_paths,
+            )
+            if not allowed:
+                logger.info("watch-and-notify: blocked path %s (%s)", path, reason)
+                return {
+                    "path": path,
+                    "event_type": event_type,
+                    "blocked": True,
+                    "block_reason": reason,
+                }
+    except ImportError:
+        pass
+
     p = Path(path)
     return {
         "path": str(p),
@@ -51,6 +72,7 @@ def detect_change(ctx: Dict[str, Any]) -> Dict[str, Any]:
         "filename": p.name,
         "extension": p.suffix.lower(),
         "parent_dir": str(p.parent),
+        "blocked": False,
     }
 
 
@@ -61,6 +83,15 @@ def detect_change(ctx: Dict[str, Any]) -> Dict[str, Any]:
 def classify_change(ctx: Dict[str, Any]) -> Dict[str, Any]:
     """Rules-based classification with priority assignment."""
     info = ctx.get("detect_change", {})
+
+    # Short-circuit if path was blocked by path jail
+    if info.get("blocked"):
+        return {
+            "classification": "blocked",
+            "priority": "none",
+            "description": f"Blocked: {info.get('block_reason', 'denied path')}",
+        }
+
     path = info.get("path", "")
     ext = info.get("extension", "")
     event_type = info.get("event_type", "")
@@ -124,6 +155,15 @@ def act_on_change(ctx: Dict[str, Any]) -> Dict[str, Any]:
     description = info.get("description", "")
     detect = ctx.get("detect_change", {})
     path = detect.get("path", "")
+
+    # Skip notification for blocked events
+    if classification == "blocked":
+        return {
+            "action": "blocked",
+            "channels": [],
+            "classification": "blocked",
+            "priority": "none",
+        }
 
     channels = ["event_bus"]  # Always publish to event bus
 
