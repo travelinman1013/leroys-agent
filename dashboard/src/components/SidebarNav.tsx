@@ -10,16 +10,17 @@ type NavItem = {
 // patch-bay nav: numbered, mono UPPERCASE, hairline-divided.
 const items: NavItem[] = [
   { to: "/", label: "Live", num: "01" },
-  { to: "/brain", label: "Brain", num: "02" },
-  { to: "/sessions", label: "Sessions", num: "03" },
-  { to: "/approvals", label: "Approvals", num: "04" },
-  { to: "/cron", label: "Cron", num: "05" },
-  { to: "/tools", label: "Tools", num: "06" },
-  { to: "/skills", label: "Skills", num: "07" },
-  { to: "/mcp", label: "MCP", num: "08" },
-  { to: "/health", label: "Health", num: "09" },
-  { to: "/config", label: "Config", num: "10" },
-  { to: "/workflows", label: "Workflows", num: "11" },
+  { to: "/desk", label: "Desk", num: "02" },
+  { to: "/brain", label: "Brain", num: "03" },
+  { to: "/sessions", label: "Sessions", num: "04" },
+  { to: "/approvals", label: "Approvals", num: "05" },
+  { to: "/cron", label: "Cron", num: "06" },
+  { to: "/tools", label: "Tools", num: "07" },
+  { to: "/skills", label: "Skills", num: "08" },
+  { to: "/mcp", label: "MCP", num: "09" },
+  { to: "/health", label: "Health", num: "10" },
+  { to: "/config", label: "Config", num: "11" },
+  { to: "/workflows", label: "Workflows", num: "12" },
 ];
 
 interface SidebarNavProps {

@@ -81,6 +81,16 @@ export type SessionListRow = {
   estimated_cost_usd: number | null;
   preview: string;
   last_active: number;
+  // Phase 8a status enrichment
+  status?: "running" | "idle" | "ended";
+  running_since?: number;
+  session_key?: string;
+};
+
+export type SpawnSessionResponse = {
+  session_id: string;
+  session_key: string | null;
+  status: "spawning";
 };
 
 const TOKEN_KEY = "hermes.dashboard.token";
@@ -694,6 +704,19 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body),
     }),
+
+  // Phase 8a: Session control plane
+  spawnSession: (body: { message: string; title?: string; timeout_seconds?: number }) =>
+    apiFetch<SpawnSessionResponse>("/api/dashboard/sessions", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
+  killSession: (id: string, reason?: string) =>
+    apiFetch<{ session_id: string; killed: boolean; was_running: boolean }>(
+      `/api/dashboard/sessions/${encodeURIComponent(id)}/kill`,
+      { method: "POST", body: JSON.stringify({ reason: reason ?? "dashboard_kill" }) },
+    ),
 
   // Phase 7: Workflow inspectability
   workflowRuns: (opts: { limit?: number; offset?: number; status?: string } = {}) => {
