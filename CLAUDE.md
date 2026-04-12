@@ -219,13 +219,23 @@ Verify: `hermes mcp list` should show github as enabled.
 
 ## Planned Phases (not yet implemented)
 
-- **Phase 5b — Claude Code orchestration tile**: `claude_code_dispatch`
-  tool + `/claude` dashboard route, spawning Claude Code as a sub-agent
-  in isolated git worktrees via `claude-agent-sdk-python`. Plan already
-  drafted in `~/.claude/plans/tranquil-dreaming-dragonfly.md` §R5.
-  Phase 7 winner ported to durable state store.
 - **Phase 9a — Brave MCP + research digest + watch-and-notify production**.
 - **Phase 9b — Playwright + CI fixer + E2E harness + backup drill**.
+- **Phase 10 — Dashboard UX audit + consolidation**: Fix three systemic
+  problems: (1) route redundancy — /desk vs /sessions, /desk approvals
+  vs /approvals, /workflows vs /cron all show overlapping data; audit
+  all overlap and merge or redirect. (2) Brain layout — replace overlay
+  browser with persistent split-pane (tree sidebar always visible next
+  to document reader). (3) Route statefulness — push state into URL
+  search params so every route remembers where you were across refresh,
+  back button, and browser close. Full scope in memory file
+  `project_dashboard_ux_audit.md`.
+- **Phase 5b — Claude Code orchestration tile**: `claude_code_dispatch`
+  tool + `/claude` dashboard route, spawning Claude Code as a sub-agent
+  in isolated git worktrees via `claude-agent-sdk-python`. Key use case:
+  start a long CC task through Hermes, walk away, get Discord
+  notifications when done or when CC needs input, reply via Discord.
+  Plan at `~/.claude/plans/tranquil-dreaming-dragonfly.md` §R5.
 
 ## Design System
 
