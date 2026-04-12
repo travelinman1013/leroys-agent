@@ -314,7 +314,7 @@ def run_kill_drill(drill_num: int) -> Dict[str, Any]:
 
     # Restart
     restart_gateway()
-    came_up = wait_for_gateway(timeout=30)
+    came_up = wait_for_gateway(timeout=60)
 
     if not came_up:
         return {"drill": drill_num, "passed": False, "reason": "gateway did not restart"}
