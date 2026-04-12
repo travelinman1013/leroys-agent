@@ -318,12 +318,14 @@ function SidebarContent({
   onTimelineSelect: (source: string, path: string) => void;
 }) {
   return (
-    <div className="flex h-full flex-col gap-4 overflow-y-auto px-3 py-4">
-      {/* Search */}
-      <BrainSearchBox source={activeSource} onSelect={onSearchSelect} />
+    <div className="flex h-full flex-col px-3 py-4">
+      {/* Search — fixed at top */}
+      <div className="shrink-0 pb-3">
+        <BrainSearchBox source={activeSource} onSelect={onSearchSelect} />
+      </div>
 
-      {/* Sources */}
-      <div>
+      {/* Sources — fixed */}
+      <div className="shrink-0 pb-3">
         <SectionMarker label="SOURCES" className="mb-2" />
         <BrainSourceTabs
           activeSource={activeSource}
@@ -331,23 +333,27 @@ function SidebarContent({
         />
       </div>
 
-      {/* Tree */}
-      <div className="min-h-0 flex-1">
-        <SectionMarker label="TREE" className="mb-2" />
-        <BrainTree
-          source={activeSource}
-          activePath={activePath}
-          onSelect={onSelectPath}
-        />
+      {/* Tree — scrollable, takes available space */}
+      <div className="flex min-h-0 flex-1 flex-col pb-3">
+        <SectionMarker label="TREE" className="mb-2 shrink-0" />
+        <div className="min-h-0 flex-1 overflow-y-auto">
+          <BrainTree
+            source={activeSource}
+            activePath={activePath}
+            onSelect={onSelectPath}
+          />
+        </div>
       </div>
 
-      {/* Timeline */}
-      <div>
-        <SectionMarker label="TIMELINE" className="mb-2" />
-        <BrainTimeline
-          source={activeSource}
-          onSelect={onTimelineSelect}
-        />
+      {/* Timeline — fixed height at bottom, scrollable internally */}
+      <div className="flex h-[200px] shrink-0 flex-col border-t border-rule pt-3">
+        <SectionMarker label="TIMELINE" className="mb-2 shrink-0" />
+        <div className="min-h-0 flex-1 overflow-y-auto">
+          <BrainTimeline
+            source={activeSource}
+            onSelect={onTimelineSelect}
+          />
+        </div>
       </div>
     </div>
   );

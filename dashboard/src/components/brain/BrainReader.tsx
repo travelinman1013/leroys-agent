@@ -52,10 +52,15 @@ export function BrainReader({ source, path }: Props) {
     );
   }
 
-  const { body, frontmatter } = doc.data;
+  const { body, frontmatter, path: docPath } = doc.data;
   const fmEntries = Object.entries(frontmatter).filter(
     ([, v]) => v !== null && v !== undefined && v !== "",
   );
+
+  // Detect whether this is markdown or raw data (json, jsonl, csv, yaml).
+  const ext = (docPath ?? path).split(".").pop()?.toLowerCase() ?? "";
+  const isMarkdown = ext === "md" || ext === "markdown" || ext === "";
+  const isJson = ext === "json" || ext === "jsonl";
 
   return (
     <div className="h-full overflow-y-auto px-10 py-8">
@@ -75,13 +80,40 @@ export function BrainReader({ source, path }: Props) {
           </dl>
         </div>
       )}
-      {body ? (
-        <Prose body={body} />
-      ) : (
+      {!body ? (
         <div className="py-12 text-center font-mono text-[11px] uppercase tracking-marker text-ink-faint">
           empty document
         </div>
+      ) : isMarkdown ? (
+        <Prose body={body} />
+      ) : (
+        <pre className="whitespace-pre-wrap break-words font-mono text-[12px] leading-relaxed text-ink-2">
+          {isJson ? _formatJson(body) : body}
+        </pre>
       )}
     </div>
   );
+}
+
+/** Try to pretty-print JSON/JSONL content for readability. */
+function _formatJson(raw: string): string {
+  // JSONL: each line is a separate JSON object.
+  const lines = raw.split("\n").filter((l) => l.trim());
+  if (lines.length > 1) {
+    return lines
+      .map((line) => {
+        try {
+          return JSON.stringify(JSON.parse(line), null, 2);
+        } catch {
+          return line;
+        }
+      })
+      .join("\n\n");
+  }
+  // Single JSON blob.
+  try {
+    return JSON.stringify(JSON.parse(raw), null, 2);
+  } catch {
+    return raw;
+  }
 }

@@ -50,7 +50,6 @@ export function BrainTree({ source, activePath, onSelect }: Props) {
   return (
     <div
       ref={containerRef}
-      className="overflow-y-auto"
       role="tree"
     >
       {rootChildren.map((node) => (
