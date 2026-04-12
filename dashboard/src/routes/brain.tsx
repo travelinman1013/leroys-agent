@@ -1,474 +1,377 @@
 /**
- * /brain — Hermes' brain visualization.
+ * /brain — Hermes' brain: three-pane document reader + editor.
  *
- * A force-directed graph of typed knowledge nodes (memory / session /
- * skill / tool / mcp / cron) with real-time pulses driven by the
- * existing EventBus SSE multiplexer. The graph itself is rendered by
- * <BrainGraph>; this file owns the page layout, the live event
- * subscription that maps events → node IDs for pulses, the type-filter
- * chips, the inline legend, and the right-side detail card.
+ * Phase 6 R2 — replaces the original star-chart-only page with a
+ * full knowledge-base browser. The star chart moves to a Sheet
+ * accessible via Cmd+G or the header button.
  *
- * Plan reference: ~/.claude/plans/stateful-noodling-reddy.md (Wave 2 / R3)
+ * Layout (>= 1200px): sidebar (cols 1-3) | reader (cols 4-10) | meta (cols 11-12)
+ * < 1200px: sidebar becomes a drawer, < 900px: meta becomes bottom sheet.
+ *
+ * State is internal (activeSource, activePath, editing) — no nested routes.
  */
-import { createFileRoute, Link } from "@tanstack/react-router";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Plus, RefreshCw, X } from "lucide-react";
-import {
-  api,
-  subscribeEvents,
-  type BrainNode,
-  type HermesEvent,
-} from "@/lib/api";
-import { Button } from "@/components/ui/button";
+
+import { createFileRoute } from "@tanstack/react-router";
+import { useQuery } from "@tanstack/react-query";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { Map, PanelLeftClose, PanelLeftOpen } from "lucide-react";
+import { api } from "@/lib/api";
 import { cn } from "@/lib/utils";
-import { BrainGraph } from "@/components/BrainGraph";
-import { BrainSearchBar } from "@/components/BrainSearchBar";
-import { BrainImportExportBar } from "@/components/BrainImportExportBar";
-import { MemoryEditorSheet } from "@/components/MemoryEditorSheet";
-import { useApiMutation } from "@/lib/mutations";
-import { useConfirm } from "@/lib/confirm";
+import { Button } from "@/components/ui/button";
+import {
+  Sheet,
+  SheetContent,
+  SheetHeader,
+  SheetTitle,
+  SheetDescription,
+  SheetBody,
+} from "@/components/ui/sheet";
+
+import { SectionMarker } from "@/components/brain/SectionMarker";
+import { BrainSourceTabs } from "@/components/brain/BrainSourceTabs";
+import { BrainTree } from "@/components/brain/BrainTree";
+import { BrainSearchBox } from "@/components/brain/BrainSearchBox";
+import { BrainTimeline } from "@/components/brain/BrainTimeline";
+import { BrainReader } from "@/components/brain/BrainReader";
+import { BrainEditor } from "@/components/brain/BrainEditor";
+import { BrainMetaPanel } from "@/components/brain/BrainMetaPanel";
+import { BrainGraphSheet } from "@/components/brain/BrainGraphSheet";
 
 export const Route = createFileRoute("/brain")({
   component: BrainPage,
 });
 
-const ALL_TYPES: BrainNode["type"][] = [
-  "memory",
-  "session",
-  "skill",
-  "tool",
-  "mcp",
-  "cron",
-];
-
-const TYPE_LABELS: Record<BrainNode["type"], string> = {
-  memory: "Memory",
-  session: "Sessions",
-  skill: "Skills",
-  tool: "Tools",
-  mcp: "MCP",
-  cron: "Cron",
-};
-
 function BrainPage() {
-  const graph = useQuery({
-    queryKey: ["dashboard", "brain", "graph"],
-    queryFn: api.brainGraph,
-    refetchInterval: 30_000, // server-side lru_cache buckets requests anyway
+  const [activeSource, setActiveSource] = useState("vault");
+  const [activePath, setActivePath] = useState<string | null>(null);
+  const [editing, setEditing] = useState(false);
+  const [graphOpen, setGraphOpen] = useState(false);
+  const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [metaSheetOpen, setMetaSheetOpen] = useState(false);
+
+  // Fetch sources for total count
+  const sources = useQuery({
+    queryKey: ["dashboard", "brain", "sources"],
+    queryFn: api.brainSources,
+    staleTime: 60_000,
   });
 
-  // Selected node detail (null when nothing is open)
-  const [selected, setSelected] = useState<BrainNode | null>(null);
+  const totalDocs = useMemo(() => {
+    if (!sources.data) return 0;
+    return sources.data.reduce((sum, s) => sum + s.count, 0);
+  }, [sources.data]);
 
-  // Type-filter chips — start with everything visible
-  const [visibleTypes, setVisibleTypes] = useState<Set<BrainNode["type"]>>(
-    () => new Set(ALL_TYPES),
-  );
+  // Fetch current doc for meta panel + editor
+  const doc = useQuery({
+    queryKey: ["dashboard", "brain", "doc", activeSource, activePath],
+    queryFn: () => api.brainDoc(activeSource, activePath!),
+    enabled: !!activePath,
+    staleTime: 15_000,
+  });
 
-  // F2: search query for substring filter
-  const [search, setSearch] = useState("");
-
-  // F2: memory editor state — used for both Add and Edit modes
-  const [editor, setEditor] = useState<{
-    open: boolean;
-    mode: "create" | "edit";
-    store: "MEMORY.md" | "USER.md";
-    hash?: string;
-    initialContent?: string;
-  }>({ open: false, mode: "create", store: "MEMORY.md" });
-
-  const filteredGraph = useMemo(() => {
-    if (!graph.data) return graph.data;
-    const needle = search.trim().toLowerCase();
-    if (!needle) return graph.data;
-    const matchingIds = new Set<string>();
-    for (const n of graph.data.nodes) {
-      if (n.label.toLowerCase().includes(needle)) matchingIds.add(n.id);
-    }
-    return {
-      ...graph.data,
-      nodes: graph.data.nodes.filter((n) => matchingIds.has(n.id)),
-      edges: graph.data.edges.filter(
-        (e) => matchingIds.has(e.source) && matchingIds.has(e.target),
-      ),
-    };
-  }, [graph.data, search]);
-
-  // Pulse state — set of node IDs currently glowing. Each pulse self-clears
-  // after 2 seconds. We use a Set instead of an array for O(1) membership
-  // checks inside BrainGraph's per-frame canvas paint.
-  const [pulses, setPulses] = useState<Set<string>>(() => new Set());
-  const pulseTimeouts = useRef<Map<string, number>>(new Map());
-
-  const triggerPulse = useCallback((nodeId: string) => {
-    setPulses((prev) => {
-      const next = new Set(prev);
-      next.add(nodeId);
-      return next;
-    });
-    // Cancel any in-flight clear so a quick second event doesn't end the
-    // pulse early. Then schedule a fresh 2-second timer.
-    const existing = pulseTimeouts.current.get(nodeId);
-    if (existing) window.clearTimeout(existing);
-    const handle = window.setTimeout(() => {
-      setPulses((prev) => {
-        const next = new Set(prev);
-        next.delete(nodeId);
-        return next;
-      });
-      pulseTimeouts.current.delete(nodeId);
-    }, 2000);
-    pulseTimeouts.current.set(nodeId, handle);
+  const handleSelectPath = useCallback((path: string) => {
+    setActivePath(path);
+    setEditing(false);
+    setSidebarOpen(false);
   }, []);
 
-  // Live event subscription — translate each event to a node ID and pulse it
+  const handleSearchSelect = useCallback((source: string, path: string) => {
+    setActiveSource(source);
+    setActivePath(path);
+    setEditing(false);
+    setSidebarOpen(false);
+  }, []);
+
+  const handleTimelineSelect = useCallback((source: string, path: string) => {
+    setActiveSource(source);
+    setActivePath(path);
+    setEditing(false);
+  }, []);
+
+  const handleBacklink = useCallback((path: string) => {
+    setActivePath(path);
+    setEditing(false);
+  }, []);
+
+  const handleEditToggle = useCallback(() => {
+    setEditing((p) => !p);
+  }, []);
+
+  const handleEditorClose = useCallback(() => {
+    setEditing(false);
+  }, []);
+
+  const handleEditorSaved = useCallback(() => {
+    setEditing(false);
+  }, []);
+
+  // Keyboard shortcuts
   useEffect(() => {
-    const cleanup = subscribeEvents((event) => {
-      const nodeId = mapEventToNodeId(event);
-      if (nodeId) triggerPulse(nodeId);
-    }, { replay: 0 });
-    return () => {
-      cleanup();
-      // Clear any pending pulse timers on unmount
-      pulseTimeouts.current.forEach((h) => window.clearTimeout(h));
-      pulseTimeouts.current.clear();
+    const handler = (e: KeyboardEvent) => {
+      const meta = e.metaKey || e.ctrlKey;
+      if (meta && e.key === "g") {
+        e.preventDefault();
+        setGraphOpen((p) => !p);
+      } else if (meta && e.key === "k") {
+        e.preventDefault();
+        // Focus search — sidebar must be visible on mobile
+        setSidebarOpen(true);
+      } else if (meta && e.key === "e" && activePath) {
+        e.preventDefault();
+        setEditing((p) => !p);
+      }
     };
-  }, [triggerPulse]);
-
-  const stats = graph.data?.stats;
-
-  const toggleType = (type: BrainNode["type"]) => {
-    setVisibleTypes((prev) => {
-      const next = new Set(prev);
-      if (next.has(type)) next.delete(type);
-      else next.add(type);
-      return next;
-    });
-  };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [activePath]);
 
   return (
     <div className="flex h-full flex-col bg-bg">
-      {/* Header — page stamp + ONE BIG NUMBER (node count) */}
+      {/* Header */}
       <header className="grid shrink-0 grid-cols-[1fr_auto] items-end gap-6 border-b border-rule px-10 pb-6 pt-9">
         <div>
           <h1 className="page-stamp text-[56px]">
             the <em>brain</em>
           </h1>
           <p className="mt-3 font-mono text-[10px] uppercase tracking-marker text-ink-muted">
-            DETERMINISTIC SEED 0x4A · STAR CHART · DRAG TO PAN
+            KNOWLEDGE BASE BROWSER &middot; CMD+K SEARCH &middot; CMD+G STAR
+            CHART
           </p>
         </div>
-        <div className="flex items-end gap-8">
-          {stats && (
+        <div className="flex items-end gap-6">
+          {totalDocs > 0 && (
             <div className="text-right">
-              <div className="font-display text-[72px] font-bold leading-none tracking-big tabular-nums text-oxide">
-                {stats.memory + stats.session + stats.skill + stats.tool + stats.mcp + stats.cron}
+              <div className="font-display text-[56px] font-bold leading-none tracking-big tabular-nums text-oxide">
+                {totalDocs}
               </div>
               <div className="mt-2 font-mono text-[10px] uppercase tracking-marker text-ink-muted">
-                NODES · {stats.edges} EDGES
+                DOCUMENTS
               </div>
             </div>
           )}
-          <Button
-            size="sm"
-            variant="outline"
-            onClick={() =>
-              setEditor({
-                open: true,
-                mode: "create",
-                store: "MEMORY.md",
-              })
-            }
-          >
-            <Plus className="size-3" />
-            ADD MEMORY
-          </Button>
+          {/* Sidebar toggle (mobile) */}
           <Button
             size="icon"
             variant="ghost"
-            onClick={() => graph.refetch()}
-            disabled={graph.isFetching}
-            title="Refetch graph"
+            className="xl:hidden"
+            onClick={() => setSidebarOpen((p) => !p)}
+            title="Toggle sidebar"
           >
-            <RefreshCw className={cn("size-3.5", graph.isFetching && "animate-spin")} />
+            {sidebarOpen ? (
+              <PanelLeftClose className="size-4" />
+            ) : (
+              <PanelLeftOpen className="size-4" />
+            )}
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => setGraphOpen(true)}
+            title="Star chart (Cmd+G)"
+          >
+            <Map className="size-3" />
+            STAR CHART
           </Button>
         </div>
       </header>
 
-      <BrainImportExportBar />
-      <BrainSearchBar value={search} onChange={setSearch} />
-
-      {/* Filter chips — type/shape legend, no color */}
-      <div className="flex shrink-0 items-center gap-3 border-b border-rule bg-bg-alt px-10 py-3">
-        <span className="font-mono text-[10px] uppercase tracking-marker text-ink-faint">
-          ─── FILTER BY TYPE ──
-        </span>
-        {ALL_TYPES.map((type) => {
-          const active = visibleTypes.has(type);
-          const count = stats?.[type] ?? 0;
-          return (
-            <button
-              key={type}
-              onClick={() => toggleType(type)}
-              className={cn(
-                "flex items-baseline gap-2 rounded-sm border px-2.5 py-1 font-mono text-[10px] uppercase tracking-marker transition-colors duration-120 ease-operator",
-                active
-                  ? "border-oxide-edge bg-oxide-wash text-oxide"
-                  : "border-rule-strong text-ink-faint hover:border-oxide-edge hover:text-ink",
-              )}
-            >
-              <span>{TYPE_LABELS[type]}</span>
-              <span className="tabular-nums">{count}</span>
-            </button>
-          );
-        })}
-      </div>
-
-      {/* Main canvas + selection drawer */}
+      {/* Three-pane layout */}
       <div className="relative flex min-h-0 flex-1">
-        <div className="relative min-h-0 flex-1">
-          {graph.isLoading && (
-            <div className="absolute inset-0 grid place-items-center font-mono text-[11px] uppercase tracking-marker text-ink-muted">
-              loading brain snapshot
-              <span className="loading-cursor ml-2" />
-            </div>
+        {/* Sidebar — visible inline >= 1200px, drawer below */}
+        <aside
+          className={cn(
+            "hidden w-[280px] shrink-0 flex-col border-r border-rule bg-bg-alt xl:flex",
           )}
-          {graph.error && (
-            <div className="absolute inset-0 grid place-items-center font-mono text-[11px] uppercase tracking-marker text-danger">
-              failed to load: {String(graph.error)}
-            </div>
-          )}
-          {filteredGraph && (
-            <BrainGraph
-              graph={filteredGraph}
-              pulses={pulses}
-              visibleTypes={visibleTypes}
-              onNodeClick={setSelected}
-              className="absolute inset-0"
-            />
-          )}
-        </div>
-
-        {selected && (
-          <div className="w-80 shrink-0 overflow-y-auto border-l border-rule bg-bg-alt p-6">
-            <BrainNodeDetailCard
-              node={selected}
-              onClose={() => setSelected(null)}
-              onEdit={(store, hash, content) =>
-                setEditor({
-                  open: true,
-                  mode: "edit",
-                  store,
-                  hash,
-                  initialContent: content,
-                })
-              }
-            />
-          </div>
-        )}
-      </div>
-
-      <MemoryEditorSheet
-        open={editor.open}
-        onOpenChange={(o) => setEditor((p) => ({ ...p, open: o }))}
-        mode={editor.mode}
-        store={editor.store}
-        hash={editor.hash}
-        initialContent={editor.initialContent}
-      />
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// Helpers
-// ---------------------------------------------------------------------------
-
-/**
- * Translate a HermesEvent into a brain graph node ID. Returns null when
- * the event has no matching node (which is fine — most events don't).
- */
-function mapEventToNodeId(event: HermesEvent): string | null {
-  const data = (event.data ?? {}) as Record<string, unknown>;
-  switch (event.type) {
-    case "tool.invoked":
-    case "tool.completed": {
-      const tool = typeof data.tool === "string" ? data.tool : null;
-      return tool ? `tool:${tool}` : null;
-    }
-    case "memory.added":
-    case "memory.replaced":
-    case "memory.removed": {
-      const hash = typeof data.hash === "string" ? data.hash : null;
-      return hash ? `memory:${hash}` : null;
-    }
-    case "session.started":
-    case "session.ended":
-    case "turn.started":
-    case "turn.ended": {
-      return event.session_id ? `session:${event.session_id}` : null;
-    }
-    case "skill.installed":
-    case "skill.removed": {
-      const name = typeof data.skill === "string" ? data.skill : null;
-      return name ? `skill:${name}` : null;
-    }
-    case "mcp.connected":
-    case "mcp.disconnected": {
-      const name = typeof data.server_name === "string" ? data.server_name : null;
-      return name ? `mcp:${name}` : null;
-    }
-    case "cron.fired": {
-      const id = typeof data.job_id === "string" ? data.job_id : null;
-      return id ? `cron:${id}` : null;
-    }
-    default:
-      return null;
-  }
-}
-
-/**
- * Inline node detail card. Shows redacted metadata only — for session
- * nodes it links out to the existing /sessions/$id route (which is
- * also redacted by R2 of the brain viz plan).
- */
-function BrainNodeDetailCard({
-  node,
-  onClose,
-  onEdit,
-}: {
-  node: BrainNode;
-  onClose: () => void;
-  onEdit: (store: "MEMORY.md" | "USER.md", hash: string, content: string) => void;
-}) {
-  const meta = node.metadata as Record<string, unknown>;
-  const queryClient = useQueryClient();
-  const confirm = useConfirm();
-  const isMemory = node.type === "memory";
-
-  // Memory nodes encode their store + hash in metadata: store="MEMORY.md"|"USER.md"
-  // and the hash is the prefix of node.id after "memory:".
-  const memoryStore: "MEMORY.md" | "USER.md" =
-    (meta.store as "MEMORY.md" | "USER.md") || "MEMORY.md";
-  const memoryHash = node.id.replace(/^memory:/, "");
-  const memoryContent = (meta.content as string) || (meta.preview as string) || "";
-
-  const del = useApiMutation({
-    mutationFn: () => api.deleteMemory(memoryHash, memoryStore),
-    successMessage: `Removed entry from ${memoryStore}`,
-    onSuccess: () => {
-      onClose();
-      queryClient.invalidateQueries({
-        queryKey: ["dashboard", "brain", "graph"],
-      });
-    },
-  });
-
-  return (
-    <div className="border border-rule bg-bg p-5">
-      <div className="flex items-start justify-between gap-2 border-b border-rule pb-3">
-        <div className="min-w-0">
-          <div className="font-mono text-[10px] uppercase tracking-marker text-oxide">
-            {node.type}
-          </div>
-          <div className="mt-1 break-words font-stamp text-[28px] italic leading-tight text-ink">
-            {node.label}
-          </div>
-        </div>
-        <button
-          onClick={onClose}
-          className="text-ink-muted transition-colors duration-120 ease-operator hover:text-oxide"
-          aria-label="close"
         >
-          <X className="size-4" />
-        </button>
+          <SidebarContent
+            activeSource={activeSource}
+            activePath={activePath ?? undefined}
+            onSourceChange={setActiveSource}
+            onSelectPath={handleSelectPath}
+            onSearchSelect={handleSearchSelect}
+            onTimelineSelect={handleTimelineSelect}
+          />
+        </aside>
+
+        {/* Sidebar drawer for < 1200px */}
+        <Sheet open={sidebarOpen} onOpenChange={setSidebarOpen}>
+          <SheetContent side="left" width="w-[300px]" className="rounded-none xl:hidden">
+            <SheetHeader>
+              <SheetTitle className="font-mono text-[10px] uppercase tracking-marker">
+                BROWSER
+              </SheetTitle>
+              <SheetDescription className="sr-only">
+                Brain file browser sidebar
+              </SheetDescription>
+            </SheetHeader>
+            <SheetBody className="px-0">
+              <SidebarContent
+                activeSource={activeSource}
+                activePath={activePath ?? undefined}
+                onSourceChange={setActiveSource}
+                onSelectPath={handleSelectPath}
+                onSearchSelect={handleSearchSelect}
+                onTimelineSelect={handleTimelineSelect}
+              />
+            </SheetBody>
+          </SheetContent>
+        </Sheet>
+
+        {/* Center pane — reader or editor */}
+        <main className="flex min-w-0 flex-1 flex-col">
+          {activePath ? (
+            editing && doc.data ? (
+              <BrainEditor
+                source={activeSource}
+                path={activePath}
+                initialContent={doc.data.body}
+                contentHash={doc.data.content_hash}
+                onClose={handleEditorClose}
+                onSaved={handleEditorSaved}
+              />
+            ) : (
+              <BrainReader source={activeSource} path={activePath} />
+            )
+          ) : (
+            <WelcomeState />
+          )}
+        </main>
+
+        {/* Meta panel — inline >= 1200px, bottom sheet on small screens */}
+        {activePath && (
+          <>
+            {/* Desktop meta panel */}
+            <aside className="hidden w-[220px] shrink-0 border-l border-rule bg-bg-alt xl:block">
+              <BrainMetaPanel
+                doc={doc.data ?? null}
+                source={activeSource}
+                onEdit={handleEditToggle}
+                onSelectBacklink={handleBacklink}
+              />
+            </aside>
+
+            {/* Mobile meta trigger */}
+            <div className="absolute bottom-4 right-4 xl:hidden">
+              <Button
+                size="sm"
+                variant="outline"
+                onClick={() => setMetaSheetOpen(true)}
+              >
+                INFO
+              </Button>
+            </div>
+
+            {/* Mobile meta sheet */}
+            <Sheet open={metaSheetOpen} onOpenChange={setMetaSheetOpen}>
+              <SheetContent side="bottom" className="rounded-none xl:hidden">
+                <SheetHeader>
+                  <SheetTitle className="font-mono text-[10px] uppercase tracking-marker">
+                    DOCUMENT INFO
+                  </SheetTitle>
+                  <SheetDescription className="sr-only">
+                    Document metadata and actions
+                  </SheetDescription>
+                </SheetHeader>
+                <SheetBody>
+                  <BrainMetaPanel
+                    doc={doc.data ?? null}
+                    source={activeSource}
+                    onEdit={() => {
+                      setMetaSheetOpen(false);
+                      handleEditToggle();
+                    }}
+                    onSelectBacklink={(p) => {
+                      setMetaSheetOpen(false);
+                      handleBacklink(p);
+                    }}
+                  />
+                </SheetBody>
+              </SheetContent>
+            </Sheet>
+          </>
+        )}
       </div>
-      <div className="mt-4 space-y-3">
-        <MetadataList meta={meta} />
-        {node.type === "session" && (
-          <Link
-            to="/sessions/$id"
-            params={{ id: node.id.replace(/^session:/, "") }}
-            className="inline-flex items-center font-mono text-[11px] uppercase tracking-marker text-oxide transition-colors duration-120 ease-operator hover:text-oxide-hover"
-          >
-            VIEW TRANSCRIPT →
-          </Link>
-        )}
-        {isMemory && (
-          <div className="flex items-center gap-2 pt-3">
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() =>
-                onEdit(memoryStore, memoryHash, memoryContent)
-              }
-            >
-              EDIT
-            </Button>
-            <Button
-              size="sm"
-              variant="destructive"
-              onClick={async () => {
-                const ok = await confirm({
-                  title: "Delete memory entry?",
-                  description: "Cannot be undone.",
-                  destructive: true,
-                  confirmLabel: "DELETE",
-                });
-                if (ok) del.mutate();
-              }}
-              disabled={del.isPending}
-            >
-              DELETE
-            </Button>
-          </div>
-        )}
+
+      {/* Star chart sheet */}
+      <BrainGraphSheet open={graphOpen} onOpenChange={setGraphOpen} />
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Sidebar content — shared between inline and drawer modes
+// ---------------------------------------------------------------------------
+
+function SidebarContent({
+  activeSource,
+  activePath,
+  onSourceChange,
+  onSelectPath,
+  onSearchSelect,
+  onTimelineSelect,
+}: {
+  activeSource: string;
+  activePath?: string;
+  onSourceChange: (source: string) => void;
+  onSelectPath: (path: string) => void;
+  onSearchSelect: (source: string, path: string) => void;
+  onTimelineSelect: (source: string, path: string) => void;
+}) {
+  return (
+    <div className="flex h-full flex-col gap-4 overflow-y-auto px-3 py-4">
+      {/* Search */}
+      <BrainSearchBox source={activeSource} onSelect={onSearchSelect} />
+
+      {/* Sources */}
+      <div>
+        <SectionMarker label="SOURCES" className="mb-2" />
+        <BrainSourceTabs
+          activeSource={activeSource}
+          onSourceChange={onSourceChange}
+        />
+      </div>
+
+      {/* Tree */}
+      <div className="min-h-0 flex-1">
+        <SectionMarker label="TREE" className="mb-2" />
+        <BrainTree
+          source={activeSource}
+          activePath={activePath}
+          onSelect={onSelectPath}
+        />
+      </div>
+
+      {/* Timeline */}
+      <div>
+        <SectionMarker label="TIMELINE" className="mb-2" />
+        <BrainTimeline
+          source={activeSource}
+          onSelect={onTimelineSelect}
+        />
       </div>
     </div>
   );
 }
 
-function MetadataList({ meta }: { meta: Record<string, unknown> }) {
-  const entries = Object.entries(meta).filter(
-    ([, v]) => v !== null && v !== undefined && v !== "",
-  );
-  if (entries.length === 0) {
-    return (
-      <p className="font-mono text-[10px] uppercase tracking-marker text-ink-faint">
-        no metadata
-      </p>
-    );
-  }
-  return (
-    <dl className="space-y-1.5">
-      {entries.map(([k, v]) => (
-        <div key={k} className="grid grid-cols-3 gap-3 border-b border-rule/60 py-1">
-          <dt className="col-span-1 truncate font-mono text-[10px] uppercase tracking-marker text-ink-muted">
-            {k}
-          </dt>
-          <dd className="col-span-2 break-words font-mono text-[11px] tabular-nums text-ink">
-            {formatMetaValue(v)}
-          </dd>
-        </div>
-      ))}
-    </dl>
-  );
-}
+// ---------------------------------------------------------------------------
+// Welcome state — shown when no document is selected
+// ---------------------------------------------------------------------------
 
-function formatMetaValue(v: unknown): string {
-  if (typeof v === "number") {
-    // Heuristic: timestamps in seconds get rendered as ISO strings.
-    if (v > 1_000_000_000 && v < 9_999_999_999) {
-      try {
-        return new Date(v * 1000).toISOString();
-      } catch {
-        return String(v);
-      }
-    }
-    return String(v);
-  }
-  if (typeof v === "string") return v;
-  if (typeof v === "boolean") return v ? "true" : "false";
-  return JSON.stringify(v);
+function WelcomeState() {
+  return (
+    <div className="flex h-full flex-col items-center justify-center gap-4 p-12">
+      <h2 className="page-stamp text-[32px]">
+        select a <em>document</em>
+      </h2>
+      <p className="max-w-md text-center font-body text-[15px] leading-relaxed text-ink-muted">
+        Browse the file tree on the left, or press Cmd+K to search across
+        all sources. Cmd+G opens the star chart.
+      </p>
+      <div className="mt-4 flex gap-6 font-mono text-[10px] uppercase tracking-marker text-ink-faint">
+        <span>CMD+K SEARCH</span>
+        <span>CMD+E EDIT</span>
+        <span>CMD+G GRAPH</span>
+      </div>
+    </div>
+  );
 }
