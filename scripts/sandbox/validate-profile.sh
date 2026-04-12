@@ -34,6 +34,7 @@ for path in \
     "$HOME/.hermes/.env" \
     "$HOME/.hermes" \
     "$HOME/Projects" \
+    "$HOME/brain" \
     "$HOME/os-apps/hermes/venv"; do
     if [[ -e "$path" ]]; then
         real=$(realpath -q "$path" 2>/dev/null || echo "$path")

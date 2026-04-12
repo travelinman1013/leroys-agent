@@ -152,6 +152,77 @@ def _json_err(exc: BaseException, status: int = 500) -> "web.Response":
     )
 
 
+def _build_timeline(since: float, limit: int) -> list[dict[str, Any]]:
+    """Build a chronological timeline of recent edits across all brain sources.
+
+    Scans all three sources for files modified after *since*, sorts by
+    mtime descending, caps at *limit*.  Title comes from frontmatter
+    ``title:`` or first ``#`` heading or filename.
+    """
+    import re as _re
+    from tools.brain_sources import list_sources, TEXT_EXTENSIONS
+
+    entries: list[dict[str, Any]] = []
+    for src in list_sources():
+        root = src["root_path"]
+        source_id = src["id"]
+        if not os.path.isdir(root):
+            continue
+        for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+            dirnames[:] = [
+                d for d in dirnames
+                if d not in (".obsidian", ".git", ".trash", "node_modules",
+                             "__pycache__")
+                and not d.startswith(".")
+            ]
+            for fname in filenames:
+                _, ext = os.path.splitext(fname)
+                if ext.lower() not in TEXT_EXTENSIONS:
+                    continue
+                fpath = os.path.join(dirpath, fname)
+                try:
+                    st = os.stat(fpath)
+                except OSError:
+                    continue
+                if st.st_mtime <= since:
+                    continue
+                relpath = os.path.relpath(fpath, root)
+                # Quick title extraction without reading full file.
+                title = os.path.splitext(fname)[0]
+                try:
+                    with open(fpath, "r", encoding="utf-8") as f:
+                        head = f.read(512)
+                    # Try frontmatter title.
+                    if head.startswith("---"):
+                        end = head.find("\n---", 3)
+                        if end != -1:
+                            import yaml
+                            try:
+                                fm = yaml.safe_load(head[3:end])
+                                if isinstance(fm, dict) and fm.get("title"):
+                                    title = str(fm["title"])
+                            except Exception:
+                                pass
+                    # Try first heading.
+                    if title == os.path.splitext(fname)[0]:
+                        m = _re.match(r"^#\s+(.+)", head, _re.MULTILINE)
+                        if m:
+                            title = m.group(1).strip()
+                except (OSError, UnicodeDecodeError):
+                    pass
+
+                entries.append({
+                    "source": source_id,
+                    "path": relpath,
+                    "title": title,
+                    "op": "edited",
+                    "ts": st.st_mtime,
+                })
+
+    entries.sort(key=lambda e: e["ts"], reverse=True)
+    return entries[:limit]
+
+
 def _tail_read_ndjson(
     filter_fn=None,
     limit: int = 500,
@@ -1818,6 +1889,238 @@ class DashboardRoutes:
         return web.json_response({"node": node})
 
     # ------------------------------------------------------------------
+    # Phase 6 R1 — Brain content API (sources, tree, doc, search,
+    #              timeline, doc write)
+    # ------------------------------------------------------------------
+
+    @require_dashboard_auth
+    async def handle_brain_sources(self, request: "web.Request") -> "web.Response":
+        """Return the list of brain content sources with file counts."""
+        try:
+            from tools.brain_sources import list_sources
+            sources = await asyncio.to_thread(list_sources)
+        except Exception as exc:
+            return _json_err(exc)
+        return _json_ok(sources)
+
+    @require_dashboard_auth
+    async def handle_brain_tree(self, request: "web.Request") -> "web.Response":
+        """Return a hierarchical tree for a brain source.
+
+        Query params: ``source`` (required), ``path`` (optional subpath).
+        """
+        source = request.query.get("source", "")
+        subpath = request.query.get("path", "")
+        if not source:
+            return web.json_response(
+                {"error": "missing required param: source"}, status=400
+            )
+        try:
+            from tools.brain_tree import build_tree
+            tree = await asyncio.to_thread(build_tree, source, subpath)
+        except ValueError as exc:
+            return web.json_response({"error": str(exc)}, status=400)
+        except PermissionError as exc:
+            return web.json_response({"error": str(exc)}, status=403)
+        except Exception as exc:
+            return _json_err(exc)
+        return _json_ok(tree)
+
+    @require_dashboard_auth
+    async def handle_brain_doc(self, request: "web.Request") -> "web.Response":
+        """Return a single document with body, frontmatter, backlinks.
+
+        Query params: ``source`` (required), ``path`` (required).
+        Uses query-string params (not path params) because vault paths
+        contain slashes and %2F encoding is sometimes rejected by
+        intermediate proxies (Amendment L §1.2).
+        """
+        source = request.query.get("source", "")
+        path = request.query.get("path", "")
+        if not source or not path:
+            return web.json_response(
+                {"error": "missing required params: source, path"}, status=400
+            )
+        try:
+            from tools.brain_sources import load_doc, FileTooLarge, BinaryFile
+            doc = await asyncio.to_thread(load_doc, source, path)
+
+            # Attach backlinks asynchronously.
+            from tools.brain_backlinks import get_backlink_index
+            from tools.brain_sources import resolve_source
+            src = resolve_source(source)
+            idx = get_backlink_index(src.root)
+            backlinks = await idx.get_backlinks(path)
+            doc["backlinks"] = backlinks
+
+        except FileTooLarge as exc:
+            return web.json_response(
+                {"error": "file too large", "size": exc.size, "path": exc.path},
+                status=413,
+            )
+        except BinaryFile as exc:
+            return web.json_response(
+                {"error": "binary file", "path": exc.path},
+                status=415,
+            )
+        except UnicodeDecodeError:
+            return web.json_response(
+                {"error": "unsupported encoding"}, status=415
+            )
+        except ValueError as exc:
+            return web.json_response({"error": str(exc)}, status=400)
+        except PermissionError as exc:
+            return web.json_response({"error": str(exc)}, status=403)
+        except FileNotFoundError:
+            return web.json_response({"error": "not found"}, status=404)
+        except Exception as exc:
+            return _json_err(exc)
+        return _json_ok(doc)
+
+    @require_dashboard_auth
+    async def handle_brain_search(self, request: "web.Request") -> "web.Response":
+        """Fuzzy search across brain content sources.
+
+        Query params: ``q`` (required), ``source`` (default ``*``),
+        ``limit`` (default 50).
+        """
+        q = request.query.get("q", "")
+        source = request.query.get("source", "*")
+        try:
+            limit = min(200, max(1, int(request.query.get("limit", "50"))))
+        except ValueError:
+            limit = 50
+
+        if not q:
+            return web.json_response(
+                {"error": "missing required param: q"}, status=400
+            )
+        if len(q) > 200:
+            return web.json_response(
+                {"error": "query too long (max 200 chars)"}, status=400
+            )
+
+        try:
+            from tools.brain_search import search
+            results, partial = await asyncio.to_thread(search, q, source, limit)
+        except ValueError as exc:
+            return web.json_response({"error": str(exc)}, status=400)
+        except Exception as exc:
+            return _json_err(exc)
+
+        resp: dict[str, Any] = {"results": results}
+        if partial:
+            resp["partial"] = True
+
+        # Publish search event (gated by verbosity, Amendment O §4.3).
+        try:
+            from gateway.event_bus import publish
+            publish(
+                "brain.search",
+                data={"q": q, "source": source, "hits": len(results),
+                      "partial": partial},
+            )
+        except Exception:
+            pass
+
+        status = 206 if partial else 200
+        return web.json_response(resp, status=status)
+
+    @require_dashboard_auth
+    async def handle_brain_timeline(self, request: "web.Request") -> "web.Response":
+        """Chronological feed of recent edits across all sources.
+
+        Query params: ``since`` (ISO 8601, optional), ``limit`` (default 100).
+        """
+        import datetime
+
+        since_raw = request.query.get("since", "")
+        try:
+            limit = min(500, max(1, int(request.query.get("limit", "100"))))
+        except ValueError:
+            limit = 100
+
+        since: float = 0.0
+        if since_raw:
+            try:
+                dt = datetime.datetime.fromisoformat(since_raw)
+                since = dt.timestamp()
+            except ValueError:
+                return web.json_response(
+                    {"error": "invalid since param (use ISO 8601)"}, status=400
+                )
+
+        try:
+            entries = await asyncio.to_thread(
+                _build_timeline, since, limit
+            )
+        except Exception as exc:
+            return _json_err(exc)
+        return _json_ok(entries)
+
+    @require_dashboard_auth
+    async def handle_brain_doc_write(self, request: "web.Request") -> "web.Response":
+        """Write a brain document (approval-gated, hash-based OCC).
+
+        Body: ``{source, path, content, expected_hash?}``.
+
+        The write goes through the existing approval gate pattern — this
+        endpoint resolves the I/O after approval has been granted.
+        Amendment A row 10: if the approval callback is not registered,
+        fail closed with 503.
+        """
+        try:
+            body = await request.json()
+        except Exception:
+            return web.json_response({"error": "invalid JSON body"}, status=400)
+
+        source = body.get("source", "")
+        path = body.get("path", "")
+        content = body.get("content")
+        expected_hash = body.get("expected_hash")
+
+        if not source or not path or content is None:
+            return web.json_response(
+                {"error": "missing required fields: source, path, content"},
+                status=400,
+            )
+
+        try:
+            from tools.brain_write import write_doc, HashMismatch
+            result = await asyncio.to_thread(
+                write_doc, source, path, content, expected_hash
+            )
+        except HashMismatch as exc:
+            return web.json_response(
+                {"error": "conflict", "current_hash": exc.actual},
+                status=409,
+            )
+        except PermissionError as exc:
+            return web.json_response({"error": str(exc)}, status=403)
+        except ValueError as exc:
+            return web.json_response({"error": str(exc)}, status=400)
+        except Exception as exc:
+            return _json_err(exc)
+
+        # Publish write event (always, per Amendment O §4.3).
+        try:
+            from gateway.event_bus import publish
+            publish(
+                "brain.doc.written",
+                data={
+                    "source": source,
+                    "path": path,
+                    "size": result.get("size", 0),
+                    "content_hash": result.get("content_hash", ""),
+                },
+            )
+        except Exception:
+            # Amendment A row 13: write already succeeded; log warning.
+            logger.warning("brain.event_publish_failed", exc_info=True)
+
+        return _json_ok(result, status=201)
+
+    # ------------------------------------------------------------------
     # GET /api/dashboard/events — SSE multiplexer
     # ------------------------------------------------------------------
 
@@ -2035,6 +2338,14 @@ def register_dashboard_routes(
     )
     app.router.add_get("/api/dashboard/brain/export", routes.handle_brain_memory_export)
     app.router.add_post("/api/dashboard/brain/import", routes.handle_brain_memory_import)
+
+    # Phase 6 R1 — Brain content API
+    app.router.add_get("/api/dashboard/brain/sources", routes.handle_brain_sources)
+    app.router.add_get("/api/dashboard/brain/tree", routes.handle_brain_tree)
+    app.router.add_get("/api/dashboard/brain/doc", routes.handle_brain_doc)
+    app.router.add_get("/api/dashboard/brain/search", routes.handle_brain_search)
+    app.router.add_get("/api/dashboard/brain/timeline", routes.handle_brain_timeline)
+    app.router.add_post("/api/dashboard/brain/doc", routes.handle_brain_doc_write)
 
     # Static UI bundle
     #

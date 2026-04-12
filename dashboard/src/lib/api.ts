@@ -382,6 +382,47 @@ export const api = {
       body: JSON.stringify(body),
     }),
 
+  // Phase 6 — Brain content API
+  brainSources: () =>
+    apiFetch<BrainSource[]>("/api/dashboard/brain/sources"),
+
+  brainTree: (source: string, path?: string) => {
+    const params = new URLSearchParams({ source });
+    if (path) params.set("path", path);
+    return apiFetch<BrainTreeNode>(
+      `/api/dashboard/brain/tree?${params}`,
+    );
+  },
+
+  brainDoc: (source: string, path: string) =>
+    apiFetch<BrainDoc>(
+      `/api/dashboard/brain/doc?${new URLSearchParams({ source, path })}`,
+    ),
+
+  brainSearch: (q: string, source: string = "*", limit: number = 50) =>
+    apiFetch<{ results: BrainSearchHit[]; partial?: boolean }>(
+      `/api/dashboard/brain/search?${new URLSearchParams({ q, source, limit: String(limit) })}`,
+    ),
+
+  brainTimeline: (since?: string, limit: number = 100) => {
+    const params = new URLSearchParams({ limit: String(limit) });
+    if (since) params.set("since", since);
+    return apiFetch<BrainTimelineEntry[]>(
+      `/api/dashboard/brain/timeline?${params}`,
+    );
+  },
+
+  brainDocWrite: (body: {
+    source: string;
+    path: string;
+    content: string;
+    expected_hash?: string;
+  }) =>
+    apiFetch<BrainDocWriteResult>("/api/dashboard/brain/doc", {
+      method: "POST",
+      body: JSON.stringify(body),
+    }),
+
   // F3 — Live Console v2 + Approval Command Center
   searchEvents: (opts: {
     types?: string[];
@@ -673,6 +714,63 @@ export type BrainGraph = {
   edges: BrainEdge[];
   stats: BrainStats;
   generated_at: number;
+};
+
+// --------------------------------------------------------------------------
+// Phase 6 — Brain content API types
+// --------------------------------------------------------------------------
+
+export type BrainSource = {
+  id: string;
+  label: string;
+  count: number;
+  root_path: string;
+};
+
+export type BrainTreeNode = {
+  name: string;
+  type: "dir" | "file" | "binary";
+  path: string;
+  children?: BrainTreeNode[];
+  count?: number;
+  last_modified?: number;
+  size?: number;
+  permission?: string;
+};
+
+export type BrainDoc = {
+  body: string;
+  frontmatter: Record<string, unknown>;
+  backlinks: string[];
+  path: string;
+  size: number;
+  last_modified: number;
+  content_hash: string;
+};
+
+export type BrainSearchHit = {
+  source: string;
+  path: string;
+  title: string;
+  snippet: string;
+  score: number;
+  last_modified: number;
+};
+
+export type BrainTimelineEntry = {
+  source: string;
+  path: string;
+  title: string;
+  op: string;
+  ts: number;
+};
+
+export type BrainDocWriteResult = {
+  path: string;
+  source: string;
+  content_hash: string;
+  size: number;
+  written: boolean;
 };
 
 // --------------------------------------------------------------------------
