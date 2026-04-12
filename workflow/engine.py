@@ -68,7 +68,7 @@ def run_workflow(
     Returns:
         WorkflowRunResult with per-step results.
     """
-    run_id = f"wf_{wf.id}_{int(time.time())}"
+    run_id = f"wf_{wf.id}_{int(time.time() * 1000)}"
     started_at = time.time()
     db = db or _get_db()
 
