@@ -206,6 +206,17 @@ Verify: `hermes mcp list` should show github as enabled.
   with `spawnSession` + `killSession` + `SessionListRow.status` fields.
   Follows Operator's Desk design system (DESIGN.md).
 
+- **Phase 8c: First Production Workflow** (deployed 2026-04-12) —
+  morning-repo-scan promoted from Phase 7 harness to production cron
+  job. Scans 6 repos (hermes-agent, claude-skills, jazzapedia,
+  jazzapedia-v2, cnario, electric-abacus) for stale PRs and broken CI.
+  Runs weekdays at 6 AM CT, delivers vault note to
+  `~/brain/00_Inbox/repo-scan-YYYY-MM-DD.md` + Discord DM. Vault
+  output directory now configurable via
+  `workflows.morning_repo_scan.vault_dir` in config.yaml. Cron job
+  ID `e0c86681487d`. 5 business day observation period begins
+  2026-04-13.
+
 ## Planned Phases (not yet implemented)
 
 - **Phase 5b — Claude Code orchestration tile**: `claude_code_dispatch`
@@ -213,8 +224,6 @@ Verify: `hermes mcp list` should show github as enabled.
   in isolated git worktrees via `claude-agent-sdk-python`. Plan already
   drafted in `~/.claude/plans/tranquil-dreaming-dragonfly.md` §R5.
   Phase 7 winner ported to durable state store.
-- **Phase 8c — First production workflow**: morning-repo-scan promoted
-  from harness to production. 5 consecutive business days.
 - **Phase 9a — Brave MCP + research digest + watch-and-notify production**.
 - **Phase 9b — Playwright + CI fixer + E2E harness + backup drill**.
 
