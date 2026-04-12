@@ -324,3 +324,397 @@ class TestF1Routes:
             data = await resp.json()
             assert all(r["ok"] for r in data["results"])
             assert {r["message_count"] for r in data["results"]} == {2, 4}
+
+
+# ---------------------------------------------------------------------------
+# Phase 8a — Session Control Plane Tests
+# ---------------------------------------------------------------------------
+
+
+class MockAgent:
+    """Fake agent that records interrupt calls."""
+
+    def __init__(self):
+        self.interrupted_with = None
+
+    def interrupt(self, msg=None):
+        self.interrupted_with = msg
+
+    def get_activity_summary(self):
+        return {
+            "current_tool": "test_tool",
+            "api_call_count": 3,
+            "max_iterations": 30,
+            "seconds_since_activity": 0.5,
+            "last_activity_desc": "running test",
+            "last_activity_ts": time.time(),
+            "budget_used": 3,
+            "budget_max": 30,
+        }
+
+
+class MockSessionStore:
+    """Minimal SessionStore stub for runner bridge tests."""
+
+    def __init__(self):
+        self._entries = {}
+        self._db = None
+
+    def _ensure_loaded(self):
+        pass
+
+    def get_or_create_session(self, source, force_new=False):
+        """Create a fake session entry."""
+        import uuid
+        from types import SimpleNamespace
+        session_id = f"mock_{uuid.uuid4().hex[:8]}"
+        key = f"agent:main:{source.platform.value}:dm:{source.chat_id}"
+        entry = SimpleNamespace(
+            session_id=session_id,
+            session_key=key,
+        )
+        self._entries[key] = entry
+        # Also create in DB if available
+        try:
+            from hermes_state import SessionDB
+            db = SessionDB()
+            db.create_session(session_id, source="dashboard", session_key=key)
+        except Exception:
+            pass
+        return entry
+
+
+class MockRunner:
+    """Minimal GatewayRunner stub for control plane tests."""
+
+    def __init__(self):
+        self._running_agents = {}
+        self._running_agents_ts = {}
+        self._pending_messages = {}
+        self._running = True
+        self.session_store = MockSessionStore()
+
+
+def _make_app_with_runner(runner=None):
+    """Create test app with a mock runner attached to the adapter."""
+    app, adapter = _make_app()
+    if runner is None:
+        runner = MockRunner()
+    adapter.gateway_runner = runner
+    return app, adapter, runner
+
+
+class TestSchemaV9:
+    """R1: Schema v9 migration tests."""
+
+    def test_schema_v9_fresh_db(self, tmp_path):
+        """New DB gets session_key + workflow_run_id columns."""
+        import hermes_state
+        db = hermes_state.SessionDB(db_path=tmp_path / "fresh.db")
+        cols = [
+            c[1] for c in
+            db._conn.execute("PRAGMA table_info(sessions)").fetchall()
+        ]
+        assert "session_key" in cols
+        assert "workflow_run_id" in cols
+
+    def test_schema_v9_migration_from_v8(self, tmp_path):
+        """Existing v8 DB migrates to v9 with new columns."""
+        import hermes_state
+        # First create a fresh DB (gets v9)
+        db_path = tmp_path / "v8.db"
+        db = hermes_state.SessionDB(db_path=db_path)
+        # Downgrade version to 8, remove v9 columns to simulate v8 state
+        db._conn.execute("UPDATE schema_version SET version = 8")
+        try:
+            db._conn.execute("ALTER TABLE sessions DROP COLUMN session_key")
+            db._conn.execute("ALTER TABLE sessions DROP COLUMN workflow_run_id")
+        except Exception:
+            # SQLite < 3.35 doesn't support DROP COLUMN — skip
+            pytest.skip("SQLite version doesn't support DROP COLUMN")
+        db._conn.commit()
+        db._conn.close()
+        # Reopen — should auto-migrate to v9
+        db2 = hermes_state.SessionDB(db_path=db_path)
+        cols = [
+            c[1] for c in
+            db2._conn.execute("PRAGMA table_info(sessions)").fetchall()
+        ]
+        assert "session_key" in cols
+        assert "workflow_run_id" in cols
+        ver = db2._conn.execute("SELECT version FROM schema_version").fetchone()[0]
+        assert ver == 9
+
+    def test_create_session_with_key(self, tmp_path):
+        """create_session stores session_key when provided."""
+        import hermes_state
+        db = hermes_state.SessionDB(db_path=tmp_path / "test.db")
+        db.create_session("s1", "dashboard", session_key="sk_s1")
+        s = db.get_session("s1")
+        assert s["session_key"] == "sk_s1"
+
+    def test_get_session_by_key(self, tmp_path):
+        """get_session_by_key returns the active session for a key."""
+        import hermes_state
+        db = hermes_state.SessionDB(db_path=tmp_path / "test.db")
+        db.create_session("s1", "dashboard", session_key="sk_1")
+        found = db.get_session_by_key("sk_1")
+        assert found is not None
+        assert found["id"] == "s1"
+        # After ending, should return None
+        db.end_session("s1", "done")
+        assert db.get_session_by_key("sk_1") is None
+
+
+class TestSessionControlPlane:
+    """Phase 8a — session status, kill, inject, spawn."""
+
+    @pytest.mark.asyncio
+    async def test_session_list_includes_status(self, tmp_path, monkeypatch):
+        """GET /sessions rows have status field."""
+        import hermes_state
+        monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
+        db = hermes_state.SessionDB(db_path=tmp_path / "state.db")
+        _seed_session(db, "active1", end=False)
+        _seed_session(db, "ended1", end=True)
+
+        app, adapter, runner = _make_app_with_runner()
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get("/api/dashboard/handshake")
+            token = (await resp.json())["token"]
+            h = {"Authorization": f"Bearer {token}"}
+
+            resp = await cli.get("/api/dashboard/sessions", headers=h)
+            assert resp.status == 200
+            data = await resp.json()
+            statuses = {s["id"]: s["status"] for s in data["sessions"]}
+            assert statuses.get("ended1") == "ended"
+            assert statuses.get("active1") == "idle"
+
+    @pytest.mark.asyncio
+    async def test_session_detail_includes_activity(self, tmp_path, monkeypatch):
+        """GET /sessions/{id} returns activity when session is running."""
+        import hermes_state
+        monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
+        db = hermes_state.SessionDB(db_path=tmp_path / "state.db")
+        _seed_session(db, "running1", end=False)
+
+        app, adapter, runner = _make_app_with_runner()
+        mock_agent = MockAgent()
+        runner._running_agents["sk_running1"] = mock_agent
+        runner._running_agents_ts["sk_running1"] = time.time()
+        from types import SimpleNamespace
+        runner.session_store._entries["sk_running1"] = SimpleNamespace(session_id="running1")
+
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get("/api/dashboard/handshake")
+            token = (await resp.json())["token"]
+            h = {"Authorization": f"Bearer {token}"}
+
+            resp = await cli.get("/api/dashboard/sessions/running1", headers=h)
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["session"]["status"] == "running"
+            assert "activity" in data["session"]
+            assert data["session"]["activity"]["current_tool"] == "test_tool"
+
+    @pytest.mark.asyncio
+    async def test_kill_running(self, tmp_path, monkeypatch):
+        """POST /kill interrupts agent and removes from tracking."""
+        import hermes_state
+        monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
+        db = hermes_state.SessionDB(db_path=tmp_path / "state.db")
+        _seed_session(db, "kill1", end=False)
+
+        app, adapter, runner = _make_app_with_runner()
+        mock_agent = MockAgent()
+        runner._running_agents["sk_kill1"] = mock_agent
+        runner._running_agents_ts["sk_kill1"] = time.time()
+        from types import SimpleNamespace
+        runner.session_store._entries["sk_kill1"] = SimpleNamespace(session_id="kill1")
+
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get("/api/dashboard/handshake")
+            token = (await resp.json())["token"]
+            h = {"Authorization": f"Bearer {token}"}
+
+            resp = await cli.post("/api/dashboard/sessions/kill1/kill", json={"reason": "test kill"}, headers=h)
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["killed"] is True
+            assert data["was_running"] is True
+            assert mock_agent.interrupted_with is not None
+            assert "sk_kill1" not in runner._running_agents
+
+    @pytest.mark.asyncio
+    async def test_kill_not_running(self, tmp_path, monkeypatch):
+        """POST /kill returns was_running=false for ended sessions."""
+        import hermes_state
+        monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
+        db = hermes_state.SessionDB(db_path=tmp_path / "state.db")
+        _seed_session(db, "dead1", end=True)
+
+        app, adapter, runner = _make_app_with_runner()
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get("/api/dashboard/handshake")
+            token = (await resp.json())["token"]
+            h = {"Authorization": f"Bearer {token}"}
+
+            resp = await cli.post("/api/dashboard/sessions/dead1/kill", json={}, headers=h)
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["killed"] is False
+            assert data["was_running"] is False
+
+    @pytest.mark.asyncio
+    async def test_kill_sentinel_state(self, tmp_path, monkeypatch):
+        """POST /kill when session is in SENTINEL state still cleans up."""
+        import hermes_state
+        monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
+        db = hermes_state.SessionDB(db_path=tmp_path / "state.db")
+        _seed_session(db, "sentinel1", end=False)
+
+        app, adapter, runner = _make_app_with_runner()
+        sentinel = object()
+        runner._running_agents["sk_sentinel1"] = sentinel
+        from types import SimpleNamespace
+        runner.session_store._entries["sk_sentinel1"] = SimpleNamespace(session_id="sentinel1")
+
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get("/api/dashboard/handshake")
+            token = (await resp.json())["token"]
+            h = {"Authorization": f"Bearer {token}"}
+
+            resp = await cli.post("/api/dashboard/sessions/sentinel1/kill", json={}, headers=h)
+            assert resp.status == 200
+            data = await resp.json()
+            assert data["killed"] is True
+            assert "sk_sentinel1" not in runner._running_agents
+
+    @pytest.mark.asyncio
+    async def test_inject_wakes_agent(self, tmp_path, monkeypatch):
+        """POST /inject calls interrupt when agent is running."""
+        import hermes_state
+        monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
+        db = hermes_state.SessionDB(db_path=tmp_path / "state.db")
+        _seed_session(db, "inject1", end=False)
+
+        app, adapter, runner = _make_app_with_runner()
+        mock_agent = MockAgent()
+        runner._running_agents["sk_inject1"] = mock_agent
+        from types import SimpleNamespace
+        runner.session_store._entries["sk_inject1"] = SimpleNamespace(session_id="inject1")
+
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get("/api/dashboard/handshake")
+            token = (await resp.json())["token"]
+            h = {"Authorization": f"Bearer {token}"}
+
+            resp = await cli.post("/api/dashboard/sessions/inject1/inject", json={"content": "wake up!"}, headers=h)
+            assert resp.status == 200
+            data = await resp.json()
+            assert data.get("delivered_live") is True
+            assert mock_agent.interrupted_with == "wake up!"
+
+    @pytest.mark.asyncio
+    async def test_inject_idle(self, tmp_path, monkeypatch):
+        """POST /inject appends to DB only when no agent running."""
+        import hermes_state
+        monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
+        db = hermes_state.SessionDB(db_path=tmp_path / "state.db")
+        _seed_session(db, "idle1", end=False)
+
+        app, adapter, runner = _make_app_with_runner()
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get("/api/dashboard/handshake")
+            token = (await resp.json())["token"]
+            h = {"Authorization": f"Bearer {token}"}
+
+            resp = await cli.post("/api/dashboard/sessions/idle1/inject", json={"content": "hello idle"}, headers=h)
+            assert resp.status == 200
+            data = await resp.json()
+            assert "delivered_live" not in data
+            assert data["message_id"] is not None
+
+    @pytest.mark.asyncio
+    async def test_spawn_returns_202(self, tmp_path, monkeypatch):
+        """POST /sessions returns 202 with session_id."""
+        import hermes_state
+        monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
+
+        app, adapter, runner = _make_app_with_runner()
+        async def _fake_run_agent(**kwargs):
+            return {"final_response": "done", "api_calls": 1, "completed": True}
+        runner._run_agent = _fake_run_agent
+
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get("/api/dashboard/handshake")
+            token = (await resp.json())["token"]
+            h = {"Authorization": f"Bearer {token}"}
+
+            resp = await cli.post("/api/dashboard/sessions", json={"message": "test spawn", "title": "Test"}, headers=h)
+            assert resp.status == 202
+            data = await resp.json()
+            assert "session_id" in data
+            assert data["status"] == "spawning"
+
+    @pytest.mark.asyncio
+    async def test_spawn_requires_message(self, tmp_path, monkeypatch):
+        """POST /sessions without message returns 400."""
+        import hermes_state
+        monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
+
+        app, adapter, runner = _make_app_with_runner()
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get("/api/dashboard/handshake")
+            token = (await resp.json())["token"]
+            h = {"Authorization": f"Bearer {token}"}
+
+            resp = await cli.post("/api/dashboard/sessions", json={}, headers=h)
+            assert resp.status == 400
+
+    @pytest.mark.asyncio
+    async def test_spawn_concurrent_limit(self, tmp_path, monkeypatch):
+        """POST /sessions returns 429 when concurrent cap reached."""
+        import hermes_state
+        monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
+
+        app, adapter, runner = _make_app_with_runner()
+        for i in range(5):
+            runner._running_agents[f"agent:main:local:dm:dashboard_fake{i}"] = MockAgent()
+
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get("/api/dashboard/handshake")
+            token = (await resp.json())["token"]
+            h = {"Authorization": f"Bearer {token}"}
+
+            resp = await cli.post("/api/dashboard/sessions", json={"message": "should fail"}, headers=h)
+            assert resp.status == 429
+
+    @pytest.mark.asyncio
+    async def test_spawn_timeout_max(self, tmp_path, monkeypatch):
+        """POST /sessions rejects timeout_seconds > MAX."""
+        import hermes_state
+        monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
+
+        app, adapter, runner = _make_app_with_runner()
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.get("/api/dashboard/handshake")
+            token = (await resp.json())["token"]
+            h = {"Authorization": f"Bearer {token}"}
+
+            resp = await cli.post("/api/dashboard/sessions", json={"message": "test", "timeout_seconds": 99999}, headers=h)
+            assert resp.status == 400
+
+    def test_resolve_session_key_empty_store(self, tmp_path, monkeypatch):
+        """Resolver falls back to DB when _entries is empty."""
+        import hermes_state
+        monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", tmp_path / "state.db")
+        db = hermes_state.SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("s1", "dashboard", session_key="sk_fallback")
+
+        from gateway.platforms.dashboard_routes import _resolve_session_key
+        runner = MockRunner()
+        # _entries is empty, should fall back to DB
+        result = _resolve_session_key(runner, "s1")
+        assert result == "sk_fallback"

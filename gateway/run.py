@@ -1152,7 +1152,10 @@ class GatewayRunner:
             adapter.set_message_handler(self._handle_message)
             adapter.set_fatal_error_handler(self._handle_adapter_fatal_error)
             adapter.set_session_store(self.session_store)
-            
+            # Phase 8a: expose runner to dashboard routes for session control plane
+            if platform == Platform.API_SERVER:
+                adapter.gateway_runner = self
+
             # Try to connect
             logger.info("Connecting to %s...", platform.value)
             try:

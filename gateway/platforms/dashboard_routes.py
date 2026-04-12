@@ -152,6 +152,92 @@ def _json_err(exc: BaseException, status: int = 500) -> "web.Response":
     )
 
 
+# ---------------------------------------------------------------------------
+# Phase 8a — session control plane helpers
+# ---------------------------------------------------------------------------
+
+# Sentinel imported for SENTINEL-state checks in kill/inject
+_AGENT_PENDING_SENTINEL = None  # Populated lazily from gateway.run
+
+
+def _get_agent_sentinel():
+    """Lazy import to avoid circular import with gateway.run."""
+    global _AGENT_PENDING_SENTINEL
+    if _AGENT_PENDING_SENTINEL is None:
+        try:
+            from gateway.run import _AGENT_PENDING_SENTINEL as _s
+            _AGENT_PENDING_SENTINEL = _s
+        except ImportError:
+            pass
+    return _AGENT_PENDING_SENTINEL
+
+
+def _resolve_session_key(runner, session_id: str) -> Optional[str]:
+    """Resolve a session_id to its session_key via SessionStore or DB.
+
+    Fast path: iterate the in-memory ``SessionStore._entries`` dict.
+    Slow path: query the ``session_key`` column added in schema v9.
+    """
+    if runner is None:
+        return None
+    store = getattr(runner, "session_store", None)
+    if store is not None:
+        if hasattr(store, '_ensure_loaded'):
+            store._ensure_loaded()
+        for key, entry in getattr(store, '_entries', {}).items():
+            if getattr(entry, 'session_id', None) == session_id:
+                return key
+    # Slow path: DB lookup (v9 session_key column)
+    try:
+        from hermes_state import SessionDB
+        db = SessionDB()
+        session = db.get_session(session_id)
+        if session and session.get("session_key"):
+            return session["session_key"]
+    except Exception:
+        pass
+    return None
+
+
+def _enrich_sessions_with_status(rows: list, runner) -> None:
+    """Annotate session rows with live status from ``_running_agents``.
+
+    Modifies *rows* in place.  Each row gains:
+      - ``status``: ``"running"`` | ``"idle"`` | ``"ended"``
+      - ``running_since``: float timestamp (only when running)
+    """
+    if runner is None:
+        for r in rows:
+            r["status"] = "ended" if r.get("ended_at") else "idle"
+        return
+
+    running_agents = getattr(runner, "_running_agents", {})
+    running_ts = getattr(runner, "_running_agents_ts", {})
+
+    # Build reverse map: session_id → session_key (O(n) once)
+    store = getattr(runner, "session_store", None)
+    sid_to_key: Dict[str, str] = {}
+    if store is not None:
+        if hasattr(store, '_ensure_loaded'):
+            store._ensure_loaded()
+        for key, entry in getattr(store, '_entries', {}).items():
+            sid = getattr(entry, 'session_id', None)
+            if sid:
+                sid_to_key[sid] = key
+
+    for r in rows:
+        sk = r.get("session_key") or sid_to_key.get(r["id"])
+        if sk and sk in running_agents:
+            r["status"] = "running"
+            ts = running_ts.get(sk)
+            if ts:
+                r["running_since"] = ts
+        elif r.get("ended_at"):
+            r["status"] = "ended"
+        else:
+            r["status"] = "idle"
+
+
 def _build_timeline(since: float, limit: int) -> list[dict[str, Any]]:
     """Build a chronological timeline of recent edits across all brain sources.
 
@@ -525,6 +611,9 @@ class DashboardRoutes:
                 for col in _PREVIEW_TEXT_FIELDS:
                     if r.get(col):
                         r[col] = redact_text(r[col])
+            # Phase 8a: enrich with live status from _running_agents
+            runner = getattr(self._adapter, "gateway_runner", None)
+            _enrich_sessions_with_status(rows, runner)
             return web.json_response({"sessions": rows, "limit": limit, "offset": offset})
         except Exception as exc:
             logger.exception("dashboard: sessions listing failed")
@@ -570,6 +659,21 @@ class DashboardRoutes:
                 if m.get("tool_calls") and isinstance(m["tool_calls"], str):
                     m["tool_calls"] = redact_text(m["tool_calls"])
                 messages.append(m)
+
+            # Phase 8a: enrich with live status + activity
+            runner = getattr(self._adapter, "gateway_runner", None)
+            _enrich_sessions_with_status([meta], runner)
+            if meta.get("status") == "running" and runner:
+                _sk = _resolve_session_key(runner, session_id)
+                if _sk:
+                    agent = getattr(runner, "_running_agents", {}).get(_sk)
+                    sentinel = _get_agent_sentinel()
+                    if agent and (sentinel is None or agent is not sentinel):
+                        try:
+                            meta["activity"] = agent.get_activity_summary()
+                        except Exception:
+                            pass
+
             return web.json_response({"session": meta, "messages": messages})
         except Exception as exc:
             logger.exception("dashboard: session detail failed")
@@ -876,6 +980,9 @@ class DashboardRoutes:
             for r in rows:
                 if r.get("title"):
                     r["title"] = redact_text(r["title"])
+            # Phase 8a: enrich with live status
+            runner = getattr(self._adapter, "gateway_runner", None)
+            _enrich_sessions_with_status(rows, runner)
             return _json_ok({"sessions": rows, "limit": limit, "offset": offset})
         except Exception as exc:
             return _json_err(exc)
@@ -1025,7 +1132,24 @@ class DashboardRoutes:
                 )
             except Exception:
                 pass
-            return _json_ok({"id": session_id, "message_id": msg_id})
+            # Phase 8a: deliver to running agent via interrupt if live
+            delivered_live = False
+            runner = getattr(self._adapter, "gateway_runner", None)
+            if runner:
+                _sk = _resolve_session_key(runner, session_id)
+                if _sk and _sk in getattr(runner, "_running_agents", {}):
+                    agent = runner._running_agents.get(_sk)
+                    sentinel = _get_agent_sentinel()
+                    if agent and (sentinel is None or agent is not sentinel):
+                        try:
+                            agent.interrupt(content)
+                            delivered_live = True
+                        except Exception:
+                            pass
+            resp = {"id": session_id, "message_id": msg_id}
+            if delivered_live:
+                resp["delivered_live"] = True
+            return _json_ok(resp)
         except Exception as exc:
             return _json_err(exc)
 
@@ -1053,6 +1177,313 @@ class DashboardRoutes:
             return _json_ok({"id": session_id, "reopened": True})
         except Exception as exc:
             return _json_err(exc)
+
+    # ------------------------------------------------------------------
+    # POST /api/dashboard/sessions/{id}/kill — Phase 8a
+    # ------------------------------------------------------------------
+
+    @require_dashboard_auth
+    async def handle_kill_session(self, request: "web.Request") -> "web.Response":
+        """Kill a running agent session from the dashboard.
+
+        Replicates the /stop pattern from gateway/run.py:1958-1970.
+        """
+        session_id = request.match_info.get("id", "")
+        if not session_id:
+            return _json_err(ValueError("session id required"), 400)
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        reason = body.get("reason", "dashboard_kill")
+
+        runner = getattr(self._adapter, "gateway_runner", None)
+        if not runner:
+            return _json_ok({"session_id": session_id, "killed": False, "was_running": False})
+
+        _sk = _resolve_session_key(runner, session_id)
+        running_agents = getattr(runner, "_running_agents", {})
+
+        if not _sk or _sk not in running_agents:
+            return _json_ok({"session_id": session_id, "killed": False, "was_running": False})
+
+        agent = running_agents.get(_sk)
+        sentinel = _get_agent_sentinel()
+
+        # Interrupt the agent (matches /stop at run.py:1960)
+        if agent and (sentinel is None or agent is not sentinel):
+            try:
+                agent.interrupt(f"Kill requested from dashboard: {reason}")
+            except Exception:
+                pass
+
+        # Force-clean tracking dicts (same pattern as /stop at run.py:1967-1968)
+        # Known race: _run_agent's finally block may also try to delete this key.
+        # That's safe — it checks `if session_key in self._running_agents` first.
+        running_agents.pop(_sk, None)
+        getattr(runner, "_running_agents_ts", {}).pop(_sk, None)
+        getattr(runner, "_pending_messages", {}).pop(_sk, None)
+
+        # End the session in the DB
+        try:
+            from hermes_state import SessionDB
+            db = SessionDB()
+            db.end_session(session_id, reason)
+        except Exception:
+            pass
+
+        # Publish event
+        try:
+            from gateway.event_bus import publish as _publish_event
+            _publish_event(
+                "session.killed",
+                session_id=session_id,
+                data={"session_key": _sk, "reason": reason},
+            )
+        except Exception:
+            pass
+
+        return _json_ok({"session_id": session_id, "killed": True, "was_running": True})
+
+    # ------------------------------------------------------------------
+    # POST /api/dashboard/sessions — Spawn — Phase 8a
+    # ------------------------------------------------------------------
+
+    MAX_CONCURRENT_DASHBOARD_SESSIONS = 5
+    MAX_TIMEOUT_SECONDS = 3600
+    DEFAULT_TIMEOUT_SECONDS = 1800
+
+    @require_dashboard_auth
+    async def handle_spawn_session(self, request: "web.Request") -> "web.Response":
+        """Spawn a new agent session from the dashboard.
+
+        Returns 202 Accepted immediately. The agent runs as a background
+        asyncio task. Monitor via SSE events or the session detail endpoint.
+        """
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+
+        message = body.get("message")
+        if not message or not isinstance(message, str):
+            return _json_err(ValueError("message (str) required"), 400)
+
+        title = body.get("title")
+        timeout_s = body.get("timeout_seconds", self.DEFAULT_TIMEOUT_SECONDS)
+        try:
+            timeout_s = int(timeout_s)
+        except (TypeError, ValueError):
+            timeout_s = self.DEFAULT_TIMEOUT_SECONDS
+        if timeout_s > self.MAX_TIMEOUT_SECONDS:
+            return _json_err(
+                ValueError(f"timeout_seconds exceeds max ({self.MAX_TIMEOUT_SECONDS})"),
+                400,
+            )
+        timeout_s = max(30, timeout_s)  # Floor at 30s
+
+        runner = getattr(self._adapter, "gateway_runner", None)
+        if not runner:
+            return _json_err(RuntimeError("gateway runner not available"), 503)
+
+        # Concurrent session cap
+        running_agents = getattr(runner, "_running_agents", {})
+        dashboard_count = sum(
+            1 for k in running_agents if "dashboard_" in k
+        )
+        if dashboard_count >= self.MAX_CONCURRENT_DASHBOARD_SESSIONS:
+            return web.json_response(
+                {"error": f"concurrent dashboard session limit ({self.MAX_CONCURRENT_DASHBOARD_SESSIONS}) reached"},
+                status=429,
+            )
+
+        # Create session via SessionStore
+        import uuid
+        chat_id = f"dashboard_{uuid.uuid4().hex[:8]}"
+        try:
+            from gateway.config import Platform
+            from gateway.session import SessionSource
+            source = SessionSource(
+                platform=Platform.LOCAL,
+                chat_id=chat_id,
+                chat_type="dm",
+                user_name="operator",
+            )
+        except ImportError:
+            return _json_err(RuntimeError("gateway config unavailable"), 503)
+
+        try:
+            store = runner.session_store
+            entry = store.get_or_create_session(source, force_new=True)
+            session_id = entry.session_id
+            session_key = None
+            # Resolve the session_key that SessionStore generated
+            for k, e in store._entries.items():
+                if e.session_id == session_id:
+                    session_key = k
+                    break
+        except Exception as exc:
+            return _json_err(exc)
+
+        # Set title if provided
+        if title:
+            try:
+                from hermes_state import SessionDB
+                db = SessionDB()
+                db.set_session_title(session_id, title)
+            except Exception:
+                pass
+
+        # Update source to "dashboard" in DB (not "local")
+        try:
+            from hermes_state import SessionDB
+            db = SessionDB()
+            db._execute_write(
+                lambda conn: conn.execute(
+                    "UPDATE sessions SET source = ? WHERE id = ?",
+                    ("dashboard", session_id),
+                )
+            )
+        except Exception:
+            pass
+
+        # Publish spawned event
+        try:
+            from gateway.event_bus import publish as _publish_event
+            _publish_event(
+                "session.spawned",
+                session_id=session_id,
+                data={
+                    "session_key": session_key,
+                    "message_preview": message[:200],
+                    "source": "dashboard",
+                },
+            )
+        except Exception:
+            pass
+
+        # Fire-and-forget: launch the agent in a background task
+        loop = asyncio.get_event_loop()
+        task = loop.create_task(
+            self._spawn_dashboard_agent(
+                runner, source, session_id, session_key, message, timeout_s,
+            )
+        )
+        # Register in background tasks so stop() can cancel it
+        bg_tasks = getattr(runner, "_background_tasks", None)
+        if bg_tasks is not None and isinstance(bg_tasks, set):
+            bg_tasks.add(task)
+            task.add_done_callback(bg_tasks.discard)
+
+        return web.json_response(
+            {"session_id": session_id, "session_key": session_key, "status": "spawning"},
+            status=202,
+        )
+
+    async def _spawn_dashboard_agent(
+        self,
+        runner,
+        source,
+        session_id: str,
+        session_key: Optional[str],
+        message: str,
+        timeout_s: int,
+    ) -> None:
+        """Background task: run an agent for a dashboard-spawned session."""
+        # Abort if gateway is shutting down
+        if not getattr(runner, "_running", True):
+            return
+
+        if not session_key:
+            return
+
+        # Place sentinel to prevent double-spawn
+        sentinel = _get_agent_sentinel()
+        runner._running_agents[session_key] = sentinel
+        runner._running_agents_ts[session_key] = time.time()
+
+        # Timeout watchdog — fires agent.interrupt() after wall-clock limit.
+        # Do NOT use asyncio.wait_for() — it cancels the coroutine but does
+        # NOT kill the thread pool executor thread where the agent runs.
+        agent_holder = [None]
+        watchdog_fired = False
+
+        async def _timeout_watchdog():
+            nonlocal watchdog_fired
+            await asyncio.sleep(timeout_s)
+            agent = agent_holder[0]
+            if agent:
+                watchdog_fired = True
+                try:
+                    agent.interrupt(f"Wall-clock timeout ({timeout_s}s)")
+                except Exception:
+                    pass
+
+        watchdog = asyncio.get_event_loop().create_task(_timeout_watchdog())
+
+        try:
+            # Build context prompt via existing helper
+            context_prompt = ""
+            try:
+                from gateway.session import build_session_context_prompt, SessionContext
+                ctx = SessionContext(source=source)
+                context_prompt = build_session_context_prompt(ctx)
+            except Exception:
+                context_prompt = "Source: Dashboard (operator-spawned session)"
+
+            # Run the agent — _run_agent handles thread pool execution,
+            # progress monitoring, and cleanup in its finally block.
+            result = await runner._run_agent(
+                message=message,
+                context_prompt=context_prompt,
+                history=[],
+                source=source,
+                session_id=session_id,
+                session_key=session_key,
+            )
+
+            # Publish completion event
+            event_type = "session.killed" if watchdog_fired else "session.completed"
+            event_data = {
+                "session_id": session_id,
+                "api_calls": result.get("api_calls", 0) if result else 0,
+            }
+            if watchdog_fired:
+                event_data["reason"] = "timeout"
+            else:
+                resp = (result or {}).get("final_response", "")
+                event_data["response_preview"] = resp[:200] if resp else ""
+            try:
+                from gateway.event_bus import publish as _publish_event
+                _publish_event(event_type, session_id=session_id, data=event_data)
+            except Exception:
+                pass
+
+        except asyncio.CancelledError:
+            # Gateway shutting down — clean up
+            logger.info("Dashboard spawn task cancelled (shutdown): %s", session_id)
+        except Exception as exc:
+            logger.exception("Dashboard spawn failed: %s", exc)
+            try:
+                from gateway.event_bus import publish as _publish_event
+                _publish_event(
+                    "session.killed",
+                    session_id=session_id,
+                    data={"reason": f"error: {exc}"},
+                )
+            except Exception:
+                pass
+        finally:
+            watchdog.cancel()
+            try:
+                await watchdog
+            except asyncio.CancelledError:
+                pass
+            # Safety net: ensure _running_agents is cleaned up even if
+            # _run_agent's finally block didn't fire (e.g., exception before
+            # _run_agent was reached).
+            runner._running_agents.pop(session_key, None)
+            runner._running_agents_ts.pop(session_key, None)
 
     @require_dashboard_auth
     async def handle_session_bulk(self, request: "web.Request") -> "web.Response":
@@ -2419,6 +2850,10 @@ def register_dashboard_routes(
     # dynamic /sessions/{id} route so aiohttp matches them first.
     app.router.add_get("/api/dashboard/sessions/search", routes.handle_session_search)
     app.router.add_post("/api/dashboard/sessions/bulk", routes.handle_session_bulk)
+    # Phase 8a: spawn MUST be registered BEFORE {id} routes — aiohttp
+    # matches routes in registration order, and POST /sessions would be
+    # shadowed by POST /sessions/{id}/... if registered after.
+    app.router.add_post("/api/dashboard/sessions", routes.handle_spawn_session)
     app.router.add_get("/api/dashboard/sessions/{id}", routes.handle_session_detail)
     app.router.add_get("/api/dashboard/sessions/{id}/events", routes.handle_session_events)
     app.router.add_delete("/api/dashboard/sessions/{id}", routes.handle_delete_session)
@@ -2426,6 +2861,7 @@ def register_dashboard_routes(
     app.router.add_post("/api/dashboard/sessions/{id}/fork", routes.handle_fork_session)
     app.router.add_post("/api/dashboard/sessions/{id}/inject", routes.handle_inject_message)
     app.router.add_post("/api/dashboard/sessions/{id}/reopen", routes.handle_reopen_session)
+    app.router.add_post("/api/dashboard/sessions/{id}/kill", routes.handle_kill_session)
     app.router.add_get("/api/dashboard/approvals", routes.handle_list_approvals)
     # F3 — Live Console v2 + Approval Command Center
     app.router.add_get("/api/dashboard/approvals/history", routes.handle_approvals_history)
