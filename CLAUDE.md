@@ -161,19 +161,30 @@ Verify: `hermes mcp list` should show github as enabled.
   sidecar (R4). Details: `architecture.md` §9, plan at
   `~/.claude/plans/tranquil-dreaming-dragonfly.md`.
 
+- **Phase 6: Brain Route v2 + MCP Wave 1** (deployed 2026-04-11) —
+  unified brain content API with 6 backend modules (brain_sources,
+  brain_tree, brain_search, brain_write, brain_backlinks, brain_cache)
+  and 6 new endpoints (R1), three-pane reader UI with Prose typography,
+  tree walker, search, timeline, editor with approval-gated writes (R2),
+  Obsidian MCP eval (@bitbonsai/mcpvault selected) + Filesystem MCP
+  config (R3/R4), control-plane audit for Phase 7/8a (R5). Vitest
+  adopted for frontend tests. Details: plan at
+  `~/.claude/plans/bone-leafing-heron.md`, eval at
+  `.claude/rules/phase-6-obsidian-mcp-eval.md`, audit at
+  `.claude/rules/phase-6-control-plane-audit.md`.
+
 ## Planned Phases (not yet implemented)
 
 - **Phase 5b — Claude Code orchestration tile**: `claude_code_dispatch`
   tool + `/claude` dashboard route, spawning Claude Code as a sub-agent
   in isolated git worktrees via `claude-agent-sdk-python`. Plan already
   drafted in `~/.claude/plans/tranquil-dreaming-dragonfly.md` §R5.
-- **Phase 6 — Autonomous repo scanning pipeline**: Hermes scans
-  configured repos on a schedule, triages findings, opens issues.
-- **Phase 7 — Issue-to-PR automation**: cron-fired pipeline that
-  picks a triaged issue, drafts a fix, runs tests in a worktree,
-  opens a PR for review.
-- **Phase 8 — Model fine-tuning with trajectory export**: serialize
-  gateway sessions into a training corpus.
+- **Phase 7 — Workflow primitives recon**: event-driven triggers,
+  durable state, approval correlation. Depends on 6R5 audit doc.
+- **Phase 8 — Multi-session desk + first workflow**: session fleet
+  control plane, spawn/attach/message/kill endpoints.
+- **Phase 9 — Remaining workflows + MCP wave 2**: Brave Search API,
+  autonomous repo scanning, issue-to-PR automation.
 
 ## Design System
 

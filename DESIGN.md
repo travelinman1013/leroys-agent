@@ -263,7 +263,7 @@ Do **not** add a third theme. Do **not** introduce per-user theming.
 | `/skills` | Dense | Same as tools. Skills are not given preferential treatment — they're a registry, not a marketing surface. |
 | `/mcp` | Dense | Server status grid: name · transport · status dot · tool count · last error |
 | `/health` | Comfortable | Instrument panel — a few real gauges (token budget, model load, sandbox state, event bus depth) in the style of an oscilloscope. Not 12 KPI tiles. |
-| `/brain` | (graphite canvas) | Full-bleed star chart on `#131716`. Crosshair nodes in oxide, hairline edges at 16% opacity, faint coordinate grid, RA/Dec chrome labels in tiny mono. **Deterministic seeded layout** — no force-jitter. Read it like a Palomar plate. |
+| `/brain` | Mixed | Three-pane (3-7-2): dense source tabs + tree + timeline · comfortable markdown reader with Prose typography · dense metadata panel. ONE BIG NUMBER: doc count in 56px Switzer display, oxide. Star chart demoted to Sheet (cmd-g). Page stamp: Instrument Serif italic, first doc title or "brain". |
 
 ### The "ONE BIG NUMBER" principle
 

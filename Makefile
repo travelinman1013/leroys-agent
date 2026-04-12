@@ -2,14 +2,16 @@
 # Everything is scoped to the dashboard + observability stack. Python and
 # test orchestration live in pyproject.toml / pytest, not here.
 
-.PHONY: help dashboard-install dashboard-dev dashboard-build dashboard-clean \
-        phoenix-up phoenix-down phoenix-logs gateway-restart gateway-logs
+.PHONY: help dashboard-install dashboard-dev dashboard-build dashboard-test \
+        dashboard-clean phoenix-up phoenix-down phoenix-logs gateway-restart \
+        gateway-logs
 
 help:
 	@echo "Hermes make targets:"
 	@echo "  dashboard-install    npm install in ./dashboard"
 	@echo "  dashboard-dev        Vite dev server at :5173 (proxies to gateway)"
 	@echo "  dashboard-build      Build + copy bundle to api_server_static/"
+	@echo "  dashboard-test       Run Vitest component tests"
 	@echo "  dashboard-clean      Remove node_modules, dist, api_server_static"
 	@echo "  phoenix-up           Start Arize Phoenix observability sidecar"
 	@echo "  phoenix-down         Stop Phoenix (keeps volume)"
@@ -25,6 +27,9 @@ dashboard-dev: dashboard-install
 
 dashboard-build: dashboard-install
 	cd dashboard && npm run build:bundle
+
+dashboard-test:
+	cd dashboard && npm run test
 
 dashboard-clean:
 	rm -rf dashboard/node_modules dashboard/dist \

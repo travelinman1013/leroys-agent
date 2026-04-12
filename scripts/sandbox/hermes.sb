@@ -60,6 +60,8 @@
   (subpath "/Users/maxwell/os-apps/hermes")              ;; source tree
   (subpath "/Users/maxwell/.hermes")                     ;; agent state
   (subpath "/Users/maxwell/Projects")                    ;; scan target
+  (subpath "/Users/maxwell/brain")                       ;; vault (symlink → LETSGO/MaxVault)
+  (subpath "/Users/maxwell/LETSGO/MaxVault")             ;; vault realpath target
   (subpath "/Users/maxwell/.cache")                      ;; hf, npm
   (subpath "/Users/maxwell/.npm")
   (subpath "/Users/maxwell/.local/state/hermes")         ;; gateway locks (discord-bot-token, etc.)
@@ -75,6 +77,8 @@
   (subpath "/Users/maxwell/.hermes")
   (subpath "/Users/maxwell/.local/state/hermes")         ;; gateway locks
   (subpath "/Users/maxwell/Projects")
+  (subpath "/Users/maxwell/brain")                       ;; vault writes (Phase 6 R1)
+  (subpath "/Users/maxwell/LETSGO/MaxVault")             ;; vault realpath target
   (subpath "/Users/maxwell/.npm")                        ;; npx cache — needed for GitHub MCP startup (npm EPERM masquerades as "root-owned files")
   (subpath "/tmp")
   (subpath "/private/tmp")
