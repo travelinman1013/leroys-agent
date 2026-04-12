@@ -19,6 +19,7 @@ const items: NavItem[] = [
   { to: "/mcp", label: "MCP", num: "08" },
   { to: "/health", label: "Health", num: "09" },
   { to: "/config", label: "Config", num: "10" },
+  { to: "/workflows", label: "Workflows", num: "11" },
 ];
 
 interface SidebarNavProps {

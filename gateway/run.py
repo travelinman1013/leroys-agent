@@ -7661,7 +7661,38 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
         name="cron-ticker",
     )
     cron_thread.start()
-    
+
+    # Phase 7: Resume interrupted workflow runs from previous gateway session.
+    try:
+        from workflow.engine import resume_workflow
+        from hermes_state import SessionDB
+        db = SessionDB()
+        stale_runs = db.get_running_workflow_runs()
+        for run in stale_runs:
+            logger.info("Resuming interrupted workflow run: %s (%s)", run["id"], run["workflow_name"])
+            try:
+                resume_workflow(run["id"], db=db)
+            except Exception as exc:
+                logger.warning("Failed to resume workflow %s: %s", run["id"], exc)
+    except Exception as exc:
+        logger.debug("Workflow resume check skipped: %s", exc)
+
+    # Phase 7: Start file watcher thread (watchdog-based, optional).
+    watcher_stop = threading.Event()
+    watcher_thread = None
+    try:
+        from workflow.file_watcher import start_file_watcher, HAS_WATCHDOG
+        if HAS_WATCHDOG:
+            watcher_thread = threading.Thread(
+                target=start_file_watcher,
+                args=(watcher_stop,),
+                daemon=True,
+                name="file-watcher",
+            )
+            watcher_thread.start()
+    except ImportError:
+        pass
+
     # Wait for shutdown
     await runner.wait_for_shutdown()
 
@@ -7670,9 +7701,12 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
             logger.error("Gateway exiting with failure: %s", runner.exit_reason)
         return False
     
-    # Stop cron ticker cleanly
+    # Stop cron ticker and file watcher cleanly
     cron_stop.set()
     cron_thread.join(timeout=5)
+    watcher_stop.set()
+    if watcher_thread:
+        watcher_thread.join(timeout=5)
 
     # Close MCP server connections
     try:

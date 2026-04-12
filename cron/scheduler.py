@@ -518,6 +518,39 @@ def _build_job_prompt(job: dict) -> str:
     return "\n".join(parts)
 
 
+def _run_workflow_job(job: dict, session_db=None) -> tuple[bool, str, str, Optional[str]]:
+    """Run a workflow-type cron job via the workflow engine.
+
+    Translates between the cron job return shape and the workflow engine's
+    WorkflowRunResult. Reuses the cron delivery pipeline for output.
+    """
+    try:
+        from workflow.harnesses import get_harness
+        from workflow.engine import run_workflow
+    except ImportError as exc:
+        return (False, "", "", f"Workflow engine not available: {exc}")
+
+    workflow_name = job["workflow"]
+    try:
+        wf = get_harness(workflow_name)
+    except KeyError as exc:
+        return (False, "", "", str(exc))
+
+    trigger_meta = {"cron_job_id": job["id"], "cron_job_name": job.get("name", "")}
+    result = run_workflow(wf, trigger_meta=trigger_meta, db=session_db)
+
+    if result.status == "completed":
+        # Build a summary from step outputs
+        summaries = []
+        for sr in result.steps:
+            if sr.output:
+                summaries.append(f"**{sr.step_name}**: {sr.output}")
+        final_response = "\n\n".join(str(s) for s in summaries) if summaries else "Workflow completed."
+        return (True, final_response, final_response, None)
+    else:
+        return (False, "", "", result.error or "Workflow failed")
+
+
 def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
     """
     Execute a single cron job.
@@ -538,6 +571,12 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
     
     job_id = job["id"]
     job_name = job["name"]
+
+    # Phase 7: workflow-type jobs delegate to the workflow engine instead
+    # of building a prompt and running an AIAgent directly.
+    if job.get("workflow"):
+        return _run_workflow_job(job, _session_db)
+
     prompt = _build_job_prompt(job)
     origin = _resolve_origin(job)
     _cron_session_id = f"cron_{job_id}_{_hermes_now().strftime('%Y%m%d_%H%M%S')}"

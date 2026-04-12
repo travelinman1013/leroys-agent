@@ -33,7 +33,7 @@ T = TypeVar("T")
 
 DEFAULT_DB_PATH = get_hermes_home() / "state.db"
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -107,6 +107,36 @@ CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, timestam
 CREATE INDEX IF NOT EXISTS idx_approval_history_session ON approval_history(session_id);
 CREATE INDEX IF NOT EXISTS idx_approval_history_resolved_at ON approval_history(resolved_at DESC);
 CREATE INDEX IF NOT EXISTS idx_approval_history_pattern ON approval_history(pattern_key);
+
+CREATE TABLE IF NOT EXISTS workflow_runs (
+    id TEXT PRIMARY KEY,
+    workflow_id TEXT NOT NULL,
+    workflow_name TEXT NOT NULL,
+    trigger_type TEXT NOT NULL,
+    trigger_meta TEXT,
+    status TEXT NOT NULL DEFAULT 'pending',
+    started_at REAL NOT NULL,
+    ended_at REAL,
+    error TEXT,
+    result_summary TEXT
+);
+
+CREATE TABLE IF NOT EXISTS workflow_checkpoints (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id TEXT NOT NULL REFERENCES workflow_runs(id),
+    step_name TEXT NOT NULL,
+    step_index INTEGER NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    started_at REAL,
+    ended_at REAL,
+    output_summary TEXT,
+    error TEXT,
+    UNIQUE(run_id, step_index)
+);
+
+CREATE INDEX IF NOT EXISTS idx_workflow_runs_status ON workflow_runs(status);
+CREATE INDEX IF NOT EXISTS idx_workflow_runs_started ON workflow_runs(started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_workflow_checkpoints_run ON workflow_checkpoints(run_id);
 """
 
 FTS_SQL = """
@@ -386,6 +416,52 @@ class SessionDB:
                 except sqlite3.OperationalError:
                     pass
                 cursor.execute("UPDATE schema_version SET version = 7")
+            if current_version < 8:
+                # v8: workflow primitives — durable state for multi-step
+                # workflow runs (Phase 7 recon).  Two tables: workflow_runs
+                # tracks each execution, workflow_checkpoints tracks per-step
+                # progress for resume-after-crash.
+                cursor.execute(
+                    """CREATE TABLE IF NOT EXISTS workflow_runs (
+                        id TEXT PRIMARY KEY,
+                        workflow_id TEXT NOT NULL,
+                        workflow_name TEXT NOT NULL,
+                        trigger_type TEXT NOT NULL,
+                        trigger_meta TEXT,
+                        status TEXT NOT NULL DEFAULT 'pending',
+                        started_at REAL NOT NULL,
+                        ended_at REAL,
+                        error TEXT,
+                        result_summary TEXT
+                    )"""
+                )
+                cursor.execute(
+                    """CREATE TABLE IF NOT EXISTS workflow_checkpoints (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        run_id TEXT NOT NULL REFERENCES workflow_runs(id),
+                        step_name TEXT NOT NULL,
+                        step_index INTEGER NOT NULL,
+                        status TEXT NOT NULL DEFAULT 'pending',
+                        started_at REAL,
+                        ended_at REAL,
+                        output_summary TEXT,
+                        error TEXT,
+                        UNIQUE(run_id, step_index)
+                    )"""
+                )
+                cursor.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_workflow_runs_status "
+                    "ON workflow_runs(status)"
+                )
+                cursor.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_workflow_runs_started "
+                    "ON workflow_runs(started_at DESC)"
+                )
+                cursor.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_workflow_checkpoints_run "
+                    "ON workflow_checkpoints(run_id)"
+                )
+                cursor.execute("UPDATE schema_version SET version = 8")
 
         # Unique title index — always ensure it exists (safe to run after migrations
         # since the title column is guaranteed to exist at this point)
@@ -1665,3 +1741,159 @@ class SessionDB:
             return len(session_ids)
 
         return self._execute_write(_do)
+
+    # =========================================================================
+    # Workflow runs (Phase 7)
+    # =========================================================================
+
+    def create_workflow_run(
+        self,
+        run_id: str,
+        workflow_id: str,
+        workflow_name: str,
+        trigger_type: str,
+        trigger_meta: Optional[Dict[str, Any]] = None,
+    ) -> str:
+        """Insert a new workflow_runs row. Returns run_id."""
+        def _do(conn):
+            conn.execute(
+                """INSERT INTO workflow_runs
+                   (id, workflow_id, workflow_name, trigger_type, trigger_meta,
+                    status, started_at)
+                   VALUES (?, ?, ?, ?, ?, 'running', ?)""",
+                (
+                    run_id,
+                    workflow_id,
+                    workflow_name,
+                    trigger_type,
+                    json.dumps(trigger_meta) if trigger_meta else None,
+                    time.time(),
+                ),
+            )
+        self._execute_write(_do)
+        return run_id
+
+    def update_workflow_run(
+        self,
+        run_id: str,
+        status: str,
+        error: Optional[str] = None,
+        result_summary: Optional[str] = None,
+    ) -> None:
+        """Update a workflow run's status and optional error/summary."""
+        def _do(conn):
+            conn.execute(
+                """UPDATE workflow_runs
+                   SET status = ?, ended_at = ?, error = ?, result_summary = ?
+                   WHERE id = ?""",
+                (
+                    status,
+                    time.time() if status in ("completed", "failed", "cancelled") else None,
+                    error,
+                    result_summary,
+                    run_id,
+                ),
+            )
+        self._execute_write(_do)
+
+    def create_checkpoint(
+        self,
+        run_id: str,
+        step_name: str,
+        step_index: int,
+    ) -> None:
+        """Insert a checkpoint row (status=running)."""
+        def _do(conn):
+            conn.execute(
+                """INSERT OR REPLACE INTO workflow_checkpoints
+                   (run_id, step_name, step_index, status, started_at)
+                   VALUES (?, ?, ?, 'running', ?)""",
+                (run_id, step_name, step_index, time.time()),
+            )
+        self._execute_write(_do)
+
+    def update_checkpoint(
+        self,
+        run_id: str,
+        step_index: int,
+        status: str,
+        output_summary: Optional[str] = None,
+        error: Optional[str] = None,
+    ) -> None:
+        """Update a checkpoint's status, output, and error."""
+        def _do(conn):
+            conn.execute(
+                """UPDATE workflow_checkpoints
+                   SET status = ?, ended_at = ?, output_summary = ?, error = ?
+                   WHERE run_id = ? AND step_index = ?""",
+                (status, time.time(), output_summary, error, run_id, step_index),
+            )
+        self._execute_write(_do)
+
+    def get_workflow_run(self, run_id: str) -> Optional[Dict[str, Any]]:
+        """Fetch a single workflow run with its checkpoints."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM workflow_runs WHERE id = ?", (run_id,)
+            ).fetchone()
+            if row is None:
+                return None
+            run = dict(row)
+            if run.get("trigger_meta"):
+                try:
+                    run["trigger_meta"] = json.loads(run["trigger_meta"])
+                except (json.JSONDecodeError, TypeError):
+                    pass
+            checkpoints = self._conn.execute(
+                """SELECT * FROM workflow_checkpoints
+                   WHERE run_id = ? ORDER BY step_index""",
+                (run_id,),
+            ).fetchall()
+            run["checkpoints"] = [dict(c) for c in checkpoints]
+            return run
+
+    def list_workflow_runs(
+        self,
+        limit: int = 50,
+        offset: int = 0,
+        status: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """Paginated list of workflow runs (newest first)."""
+        with self._lock:
+            if status:
+                rows = self._conn.execute(
+                    """SELECT * FROM workflow_runs
+                       WHERE status = ?
+                       ORDER BY started_at DESC LIMIT ? OFFSET ?""",
+                    (status, limit, offset),
+                ).fetchall()
+            else:
+                rows = self._conn.execute(
+                    """SELECT * FROM workflow_runs
+                       ORDER BY started_at DESC LIMIT ? OFFSET ?""",
+                    (limit, offset),
+                ).fetchall()
+            result = []
+            for row in rows:
+                run = dict(row)
+                if run.get("trigger_meta"):
+                    try:
+                        run["trigger_meta"] = json.loads(run["trigger_meta"])
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+                result.append(run)
+            return result
+
+    def get_checkpoints(self, run_id: str) -> List[Dict[str, Any]]:
+        """Fetch all checkpoints for a workflow run, ordered by step_index."""
+        with self._lock:
+            rows = self._conn.execute(
+                """SELECT * FROM workflow_checkpoints
+                   WHERE run_id = ? ORDER BY step_index""",
+                (run_id,),
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    def get_running_workflow_runs(self) -> List[Dict[str, Any]]:
+        """Fetch all workflow runs with status='running'. Used for resume on restart."""
+        return self.list_workflow_runs(limit=100, status="running")
