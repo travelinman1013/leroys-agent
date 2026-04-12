@@ -63,11 +63,12 @@ def test_allowlist_rejects_model_provider():
         cfg_mod.apply_config_mutations({"model.provider": "openai"})
 
 
-def test_allowlist_rejects_security_safe_roots():
-    """security.safe_roots is NOT in the allowlist — only the dashboard
-    config editor can mutate the path jail via a future plan."""
-    with pytest.raises(PermissionError):
-        cfg_mod.apply_config_mutations({"security.safe_roots": ["/tmp"]})
+def test_allowlist_accepts_security_safe_roots(tmp_path, monkeypatch):
+    """security.safe_roots IS in the allowlist (added in Phase 8a)."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "config.yaml").write_text("security: {}\n")
+    out = cfg_mod.apply_config_mutations({"security.safe_roots": ["/tmp"]})
+    assert "security.safe_roots" in out["applied"]
 
 
 def test_allowlist_rejects_arbitrary_top_level():

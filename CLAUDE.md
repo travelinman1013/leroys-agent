@@ -99,10 +99,12 @@ Key pieces:
   rule on `.env` keeps holding). Handshake route bootstraps the token
   on first localhost request.
 - **Frontend** (`dashboard/`) — TanStack Router file-based routes
-  (`/`, `/sessions`, `/sessions/$id`, `/cron`, `/tools`, `/skills`,
-  `/mcp`, `/health`). Live Console is a Dozzle-style event stream
+  (`/`, `/desk`, `/brain`, `/sessions`, `/sessions/$id`, `/approvals`,
+  `/cron`, `/tools`, `/skills`, `/mcp`, `/health`, `/config`,
+  `/workflows`). Live Console is a Dozzle-style event stream
   with regex filter, pause/resume, auto-scroll. ApprovalCard mirrors
   the LangGraph Agent Inbox shape (Once / Session / Always / Deny).
+  `/desk` is the session control plane: spawn, kill, live fleet view.
 - **Makefile** — `make dashboard-build`, `make gateway-restart`,
   `make phoenix-up/down/logs`, `make gateway-logs`.
 
@@ -185,17 +187,32 @@ Verify: `hermes mcp list` should show github as enabled.
   resume, dashboard /workflows route with step accordion. 75 tests.
   Plan at `~/.claude/plans/silly-snuggling-gadget.md`.
 
+- **Phase 8a: Session Control Plane** (deployed 2026-04-12) —
+  session spawn/kill/status from dashboard REST endpoints, live inject
+  via agent interrupt, schema v9 (session_key + workflow_run_id columns),
+  runner bridge for dashboard-to-gateway communication. Watchdog-based
+  timeout (not asyncio.wait_for), concurrent session cap (5), SENTINEL-
+  aware kill. 12 new tests (111 total). Plan at
+  `~/.claude/plans/synthetic-forging-seahorse.md`.
+
+- **Phase 8b: Desk UI + Approval Parity** (deployed 2026-04-12) —
+  `/desk` dashboard route: fleet view with running/recent session split,
+  spawn dialog (message + optional title + timeout picker, Cmd+Enter
+  submit), kill button with confirm on running sessions, live status
+  badges (running pulse / idle / ended), ONE BIG NUMBER (running
+  session count in 72px oxide), SSE-driven auto-refresh, browser
+  Notification API for `approval.requested` events (opt-in toggle in
+  strip header). Sidebar renumbered: Desk is #02. API client extended
+  with `spawnSession` + `killSession` + `SessionListRow.status` fields.
+  Follows Operator's Desk design system (DESIGN.md).
+
 ## Planned Phases (not yet implemented)
 
 - **Phase 5b — Claude Code orchestration tile**: `claude_code_dispatch`
   tool + `/claude` dashboard route, spawning Claude Code as a sub-agent
   in isolated git worktrees via `claude-agent-sdk-python`. Plan already
   drafted in `~/.claude/plans/tranquil-dreaming-dragonfly.md` §R5.
-- **Phase 8a — Session control plane**: session fleet API (spawn,
-  attach, message, kill), failure policy engine, resource budgets.
   Phase 7 winner ported to durable state store.
-- **Phase 8b — /console + /desk UI + approval parity**: pure frontend
-  on top of Phase 8a. Browser approvals fire alongside Discord.
 - **Phase 8c — First production workflow**: morning-repo-scan promoted
   from harness to production. 5 consecutive business days.
 - **Phase 9a — Brave MCP + research digest + watch-and-notify production**.

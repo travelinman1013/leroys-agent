@@ -33,7 +33,7 @@ T = TypeVar("T")
 
 DEFAULT_DB_PATH = get_hermes_home() / "state.db"
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -67,6 +67,8 @@ CREATE TABLE IF NOT EXISTS sessions (
     cost_source TEXT,
     pricing_version TEXT,
     title TEXT,
+    session_key TEXT,
+    workflow_run_id TEXT,
     FOREIGN KEY (parent_session_id) REFERENCES sessions(id)
 );
 
@@ -462,6 +464,25 @@ class SessionDB:
                     "ON workflow_checkpoints(run_id)"
                 )
                 cursor.execute("UPDATE schema_version SET version = 8")
+            if current_version < 9:
+                # v9: session control plane — persist session_key for
+                # dashboard→runtime correlation, and workflow_run_id for
+                # linking sessions to workflow executions (Phase 8a).
+                cursor.execute(
+                    "ALTER TABLE sessions ADD COLUMN session_key TEXT"
+                )
+                cursor.execute(
+                    "ALTER TABLE sessions ADD COLUMN workflow_run_id TEXT"
+                )
+                cursor.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_sessions_session_key "
+                    "ON sessions(session_key)"
+                )
+                cursor.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_sessions_workflow_run "
+                    "ON sessions(workflow_run_id)"
+                )
+                cursor.execute("UPDATE schema_version SET version = 9")
 
         # Unique title index — always ensure it exists (safe to run after migrations
         # since the title column is guaranteed to exist at this point)
@@ -494,13 +515,16 @@ class SessionDB:
         system_prompt: str = None,
         user_id: str = None,
         parent_session_id: str = None,
+        *,
+        session_key: str = None,
+        workflow_run_id: str = None,
     ) -> str:
         """Create a new session record. Returns the session_id."""
         def _do(conn):
             conn.execute(
                 """INSERT OR IGNORE INTO sessions (id, source, user_id, model, model_config,
-                   system_prompt, parent_session_id, started_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                   system_prompt, parent_session_id, started_at, session_key, workflow_run_id)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     session_id,
                     source,
@@ -510,6 +534,8 @@ class SessionDB:
                     system_prompt,
                     parent_session_id,
                     time.time(),
+                    session_key,
+                    workflow_run_id,
                 ),
             )
         self._execute_write(_do)
@@ -724,6 +750,17 @@ class SessionDB:
         with self._lock:
             cursor = self._conn.execute(
                 "SELECT * FROM sessions WHERE id = ?", (session_id,)
+            )
+            row = cursor.fetchone()
+        return dict(row) if row else None
+
+    def get_session_by_key(self, session_key: str) -> Optional[Dict[str, Any]]:
+        """Get the most recent active session for a given session_key."""
+        with self._lock:
+            cursor = self._conn.execute(
+                "SELECT * FROM sessions WHERE session_key = ? "
+                "AND ended_at IS NULL ORDER BY started_at DESC LIMIT 1",
+                (session_key,),
             )
             row = cursor.fetchone()
         return dict(row) if row else None

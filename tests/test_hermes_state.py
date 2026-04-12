@@ -935,7 +935,7 @@ class TestSchemaInit:
     def test_schema_version(self, db):
         cursor = db._conn.execute("SELECT version FROM schema_version")
         version = cursor.fetchone()[0]
-        assert version == 7
+        assert version == 9
 
     def test_title_column_exists(self, db):
         """Verify the title column was created in the sessions table."""
@@ -991,12 +991,12 @@ class TestSchemaInit:
         conn.commit()
         conn.close()
 
-        # Open with SessionDB — should migrate to current schema (v7)
+        # Open with SessionDB — should migrate to current schema (v9)
         migrated_db = SessionDB(db_path=db_path)
 
         # Verify migration
         cursor = migrated_db._conn.execute("SELECT version FROM schema_version")
-        assert cursor.fetchone()[0] == 7
+        assert cursor.fetchone()[0] == 9
 
         # Verify title column exists and is NULL for existing sessions
         session = migrated_db.get_session("existing")
@@ -1460,22 +1460,70 @@ class TestApprovalHistory:
     def test_migration_from_v6_creates_table(self, tmp_path):
         """Existing v6 DBs without approval_history must migrate cleanly.
 
-        The trick: open a fresh DB at v7, drop the approval_history table
-        to simulate a v6 install, manually rewind schema_version to 6,
-        then re-open and assert the migration kicked in.
+        Build a v6 schema manually (without approval_history or v7+ columns),
+        then re-open and assert the full migration chain runs to v9.
         """
-        db_path = tmp_path / "v6_state.db"
-        # Phase 1: create at current version, then rewind to v6 + drop table.
-        first = SessionDB(db_path=db_path)
-        first._conn.execute("DROP TABLE IF EXISTS approval_history")
-        first._conn.execute("UPDATE schema_version SET version = 6")
-        first._conn.commit()
-        first.close()
+        import sqlite3
 
-        # Phase 2: re-open — should run v7 migration
+        db_path = tmp_path / "v6_state.db"
+        conn = sqlite3.connect(str(db_path))
+        # Build a minimal v6 schema — sessions table WITHOUT v7+ columns
+        conn.executescript("""
+            CREATE TABLE schema_version (version INTEGER NOT NULL);
+            INSERT INTO schema_version (version) VALUES (6);
+
+            CREATE TABLE sessions (
+                id TEXT PRIMARY KEY,
+                source TEXT NOT NULL,
+                user_id TEXT,
+                model TEXT,
+                model_config TEXT,
+                system_prompt TEXT,
+                parent_session_id TEXT,
+                started_at REAL NOT NULL,
+                ended_at REAL,
+                end_reason TEXT,
+                message_count INTEGER DEFAULT 0,
+                tool_call_count INTEGER DEFAULT 0,
+                input_tokens INTEGER DEFAULT 0,
+                output_tokens INTEGER DEFAULT 0,
+                cache_read_tokens INTEGER DEFAULT 0,
+                cache_write_tokens INTEGER DEFAULT 0,
+                reasoning_tokens INTEGER DEFAULT 0,
+                billing_provider TEXT,
+                billing_base_url TEXT,
+                billing_mode TEXT,
+                estimated_cost_usd REAL,
+                actual_cost_usd REAL,
+                cost_status TEXT DEFAULT 'pending',
+                cost_source TEXT,
+                pricing_version TEXT,
+                title TEXT
+            );
+
+            CREATE TABLE messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                role TEXT NOT NULL,
+                content TEXT,
+                tool_call_id TEXT,
+                tool_calls TEXT,
+                tool_name TEXT,
+                timestamp REAL NOT NULL,
+                token_count INTEGER,
+                finish_reason TEXT,
+                reasoning TEXT,
+                reasoning_details TEXT,
+                codex_reasoning_items TEXT
+            );
+        """)
+        conn.commit()
+        conn.close()
+
+        # Re-open — should run v7→v8→v9 migrations
         migrated = SessionDB(db_path=db_path)
         cursor = migrated._conn.execute("SELECT version FROM schema_version")
-        assert cursor.fetchone()[0] == 7
+        assert cursor.fetchone()[0] == 9
         cursor = migrated._conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name='approval_history'"
         )

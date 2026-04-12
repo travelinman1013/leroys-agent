@@ -69,11 +69,12 @@ class TestSchemaV8:
         assert "workflow_runs" in table_names
         assert "workflow_checkpoints" in table_names
 
-    def test_schema_version_is_8(self, db):
+    def test_schema_version_is_current(self, db):
         with db._lock:
             row = db._conn.execute("SELECT version FROM schema_version").fetchone()
         version = row["version"] if hasattr(row, "keys") else row[0]
-        assert version == 8
+        from hermes_state import SCHEMA_VERSION
+        assert version == SCHEMA_VERSION
 
 
 # ---------------------------------------------------------------------------
