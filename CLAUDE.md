@@ -206,17 +206,36 @@ Verify: `hermes mcp list` should show github as enabled.
   with `spawnSession` + `killSession` + `SessionListRow.status` fields.
   Follows Operator's Desk design system (DESIGN.md).
 
+- **Phase 8c: First Production Workflow** (deployed 2026-04-12) —
+  morning-repo-scan promoted from Phase 7 harness to production cron
+  job. Scans 6 repos (hermes-agent, claude-skills, jazzapedia,
+  jazzapedia-v2, cnario, electric-abacus) for stale PRs and broken CI.
+  Runs weekdays at 6 AM CT, delivers vault note to
+  `~/brain/00_Inbox/repo-scan-YYYY-MM-DD.md` + Discord DM. Vault
+  output directory now configurable via
+  `workflows.morning_repo_scan.vault_dir` in config.yaml. Cron job
+  ID `e0c86681487d`. 5 business day observation period begins
+  2026-04-13.
+
 ## Planned Phases (not yet implemented)
 
-- **Phase 5b — Claude Code orchestration tile**: `claude_code_dispatch`
-  tool + `/claude` dashboard route, spawning Claude Code as a sub-agent
-  in isolated git worktrees via `claude-agent-sdk-python`. Plan already
-  drafted in `~/.claude/plans/tranquil-dreaming-dragonfly.md` §R5.
-  Phase 7 winner ported to durable state store.
-- **Phase 8c — First production workflow**: morning-repo-scan promoted
-  from harness to production. 5 consecutive business days.
 - **Phase 9a — Brave MCP + research digest + watch-and-notify production**.
 - **Phase 9b — Playwright + CI fixer + E2E harness + backup drill**.
+- **Phase 10 — Dashboard UX audit + consolidation**: Fix three systemic
+  problems: (1) route redundancy — /desk vs /sessions, /desk approvals
+  vs /approvals, /workflows vs /cron all show overlapping data; audit
+  all overlap and merge or redirect. (2) Brain layout — replace overlay
+  browser with persistent split-pane (tree sidebar always visible next
+  to document reader). (3) Route statefulness — push state into URL
+  search params so every route remembers where you were across refresh,
+  back button, and browser close. Full scope in memory file
+  `project_dashboard_ux_audit.md`.
+- **Phase 5b — Claude Code orchestration tile**: `claude_code_dispatch`
+  tool + `/claude` dashboard route, spawning Claude Code as a sub-agent
+  in isolated git worktrees via `claude-agent-sdk-python`. Key use case:
+  start a long CC task through Hermes, walk away, get Discord
+  notifications when done or when CC needs input, reply via Discord.
+  Plan at `~/.claude/plans/tranquil-dreaming-dragonfly.md` §R5.
 
 ## Design System
 
