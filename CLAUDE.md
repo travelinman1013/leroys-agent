@@ -185,17 +185,24 @@ Verify: `hermes mcp list` should show github as enabled.
   resume, dashboard /workflows route with step accordion. 75 tests.
   Plan at `~/.claude/plans/silly-snuggling-gadget.md`.
 
+- **Phase 8a: Session Control Plane** (deployed 2026-04-12) —
+  session spawn/kill/status from dashboard REST endpoints, live inject
+  via agent interrupt, schema v9 (session_key + workflow_run_id columns),
+  runner bridge for dashboard-to-gateway communication. Watchdog-based
+  timeout (not asyncio.wait_for), concurrent session cap (5), SENTINEL-
+  aware kill. 12 new tests (111 total). Plan at
+  `~/.claude/plans/synthetic-forging-seahorse.md`.
+
 ## Planned Phases (not yet implemented)
 
 - **Phase 5b — Claude Code orchestration tile**: `claude_code_dispatch`
   tool + `/claude` dashboard route, spawning Claude Code as a sub-agent
   in isolated git worktrees via `claude-agent-sdk-python`. Plan already
   drafted in `~/.claude/plans/tranquil-dreaming-dragonfly.md` §R5.
-- **Phase 8a — Session control plane**: session fleet API (spawn,
-  attach, message, kill), failure policy engine, resource budgets.
   Phase 7 winner ported to durable state store.
-- **Phase 8b — /console + /desk UI + approval parity**: pure frontend
-  on top of Phase 8a. Browser approvals fire alongside Discord.
+- **Phase 8b — /desk UI + approval parity**: frontend for Phase 8a
+  control plane. `/desk` route, spawn/kill UI, live status, browser
+  approvals alongside Discord.
 - **Phase 8c — First production workflow**: morning-repo-scan promoted
   from harness to production. 5 consecutive business days.
 - **Phase 9a — Brave MCP + research digest + watch-and-notify production**.
