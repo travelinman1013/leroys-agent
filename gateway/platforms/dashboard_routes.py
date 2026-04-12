@@ -2270,6 +2270,40 @@ class DashboardRoutes:
 
         return response
 
+    # -----------------------------------------------------------------
+    # Phase 7: Workflow inspectability
+    # -----------------------------------------------------------------
+
+    @require_dashboard_auth
+    async def handle_workflow_runs(self, request: "web.Request") -> "web.Response":
+        """GET /api/dashboard/workflows — paginated workflow run list."""
+        try:
+            limit = max(1, min(200, int(request.query.get("limit", "50"))))
+            offset = max(0, int(request.query.get("offset", "0")))
+            status = request.query.get("status") or None
+
+            from hermes_state import SessionDB
+            db = SessionDB()
+            runs = db.list_workflow_runs(limit=limit, offset=offset, status=status)
+            return web.json_response({"runs": runs, "limit": limit, "offset": offset})
+        except Exception as exc:
+            return _json_err(exc)
+
+    @require_dashboard_auth
+    async def handle_workflow_run_detail(self, request: "web.Request") -> "web.Response":
+        """GET /api/dashboard/workflows/{id} — single run with checkpoints."""
+        try:
+            run_id = request.match_info["id"]
+
+            from hermes_state import SessionDB
+            db = SessionDB()
+            run = db.get_workflow_run(run_id)
+            if run is None:
+                return web.json_response({"error": "Workflow run not found"}, status=404)
+            return web.json_response({"run": run})
+        except Exception as exc:
+            return _json_err(exc)
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -2442,6 +2476,10 @@ def register_dashboard_routes(
     app.router.add_get("/api/dashboard/brain/search", routes.handle_brain_search)
     app.router.add_get("/api/dashboard/brain/timeline", routes.handle_brain_timeline)
     app.router.add_post("/api/dashboard/brain/doc", routes.handle_brain_doc_write)
+
+    # Phase 7 — Workflow inspectability
+    app.router.add_get("/api/dashboard/workflows", routes.handle_workflow_runs)
+    app.router.add_get("/api/dashboard/workflows/{id}", routes.handle_workflow_run_detail)
 
     # Static UI bundle
     #
