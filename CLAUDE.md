@@ -173,18 +173,33 @@ Verify: `hermes mcp list` should show github as enabled.
   `.claude/rules/phase-6-obsidian-mcp-eval.md`, audit at
   `.claude/rules/phase-6-control-plane-audit.md`.
 
+- **Phase 7: Workflow Primitives Recon** (deployed 2026-04-12) —
+  two harness workflows proving 3 primitives each (trigger, durable
+  state, dashboard inspectability). Harness A: morning-repo-scan
+  (cron-triggered, GitHub API scan for stale PRs/broken CI, vault
+  note + Discord delivery). Harness B: watch-and-notify (watchdog
+  FSEvents file watcher, rules-based classification, event bus +
+  Discord notification). Shared engine: workflow/engine.py with
+  run_workflow() + resume_workflow() for crash recovery, schema v8
+  (workflow_runs + workflow_checkpoints tables), gateway restart
+  resume, dashboard /workflows route with step accordion. 75 tests.
+  Plan at `~/.claude/plans/silly-snuggling-gadget.md`.
+
 ## Planned Phases (not yet implemented)
 
 - **Phase 5b — Claude Code orchestration tile**: `claude_code_dispatch`
   tool + `/claude` dashboard route, spawning Claude Code as a sub-agent
   in isolated git worktrees via `claude-agent-sdk-python`. Plan already
   drafted in `~/.claude/plans/tranquil-dreaming-dragonfly.md` §R5.
-- **Phase 7 — Workflow primitives recon**: event-driven triggers,
-  durable state, approval correlation. Depends on 6R5 audit doc.
-- **Phase 8 — Multi-session desk + first workflow**: session fleet
-  control plane, spawn/attach/message/kill endpoints.
-- **Phase 9 — Remaining workflows + MCP wave 2**: Brave Search API,
-  autonomous repo scanning, issue-to-PR automation.
+- **Phase 8a — Session control plane**: session fleet API (spawn,
+  attach, message, kill), failure policy engine, resource budgets.
+  Phase 7 winner ported to durable state store.
+- **Phase 8b — /console + /desk UI + approval parity**: pure frontend
+  on top of Phase 8a. Browser approvals fire alongside Discord.
+- **Phase 8c — First production workflow**: morning-repo-scan promoted
+  from harness to production. 5 consecutive business days.
+- **Phase 9a — Brave MCP + research digest + watch-and-notify production**.
+- **Phase 9b — Playwright + CI fixer + E2E harness + backup drill**.
 
 ## Design System
 
