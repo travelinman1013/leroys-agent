@@ -154,6 +154,88 @@ class TestStartFileWatcher:
         # Should not raise, just return
 
 
+class TestConfigDriven:
+    def test_debounce_from_config(self):
+        """Config debounce_s is used when not explicitly passed."""
+        mock_config = {
+            "workflows": {"file_watcher": {"debounce_s": 5.0}}
+        }
+        stop = threading.Event()
+        stop.set()  # Exit immediately
+
+        with (
+            patch("hermes_cli.config.load_config", return_value=mock_config),
+            patch("workflow.file_watcher._get_watch_paths", return_value=[]),
+        ):
+            # Should not raise even with no valid paths
+            start_file_watcher(stop)
+
+    def test_exclude_dirs_from_config(self):
+        """Config exclude_dirs merge with defaults."""
+        mock_config = {
+            "workflows": {"file_watcher": {"exclude_dirs": ["custom_dir", "vendor"]}}
+        }
+        stop = threading.Event()
+        stop.set()
+
+        with (
+            patch("hermes_cli.config.load_config", return_value=mock_config),
+            patch("workflow.file_watcher._get_watch_paths", return_value=[]),
+        ):
+            start_file_watcher(stop)
+            # Verify the handler would have merged excludes
+            # (tested via handler directly below)
+
+    @pytest.mark.skipif(not HAS_WATCHDOG, reason="watchdog not installed")
+    def test_exclude_dirs_merged_in_handler(self):
+        """Handler gets config excludes merged with defaults."""
+        merged = _DEFAULT_EXCLUDES | {"custom_dir", "vendor"}
+        h = _DebouncedHandler(debounce_s=0.1, exclude_dirs=merged)
+
+        event = MagicMock()
+        event.is_directory = False
+        event.src_path = "/home/user/project/custom_dir/file.py"
+        event.event_type = "modified"
+        h.on_any_event(event)
+        assert len(h._pending) == 0
+        h.cancel()
+
+    def test_config_missing_uses_defaults(self):
+        """Missing config falls back to defaults."""
+        with patch("hermes_cli.config.load_config", side_effect=ImportError):
+            stop = threading.Event()
+            stop.set()
+            start_file_watcher(stop)
+
+    @pytest.mark.skipif(not HAS_WATCHDOG, reason="watchdog not installed")
+    def test_path_jail_in_should_ignore(self):
+        """_should_ignore blocks paths denied by path jail."""
+        h = _DebouncedHandler(debounce_s=0.1)
+        with (
+            patch("hermes_cli.config.get_safe_roots", return_value=["/allowed"]),
+            patch("hermes_cli.config.get_denied_paths", return_value=[]),
+            patch("tools.file_tools.validate_path_operation", return_value=(False, "not under safe roots")),
+        ):
+            assert h._should_ignore("/secret/data.txt") is True
+        h.cancel()
+
+    @pytest.mark.skipif(not HAS_WATCHDOG, reason="watchdog not installed")
+    def test_path_jail_allows_safe_paths(self):
+        """_should_ignore allows paths under safe roots."""
+        h = _DebouncedHandler(debounce_s=0.1)
+        with (
+            patch("hermes_cli.config.get_safe_roots", return_value=["/home/user"]),
+            patch("hermes_cli.config.get_denied_paths", return_value=[]),
+            patch("tools.file_tools.validate_path_operation", return_value=(True, "")),
+        ):
+            assert h._should_ignore("/home/user/brain/note.md") is False
+        h.cancel()
+
+
+# Import _DEFAULT_EXCLUDES for config merge tests
+from workflow.file_watcher import _DEFAULT_EXCLUDES
+
+
 class TestGetWatchPaths:
     def test_defaults_to_home_dirs(self):
         paths = _get_watch_paths()

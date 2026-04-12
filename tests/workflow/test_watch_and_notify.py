@@ -162,6 +162,56 @@ class TestActOnChange:
 
 
 # ---------------------------------------------------------------------------
+# Path safety (defense-in-depth)
+# ---------------------------------------------------------------------------
+
+class TestPathSafety:
+    def test_denied_path_blocked(self):
+        """Denied path returns blocked flag."""
+        ctx = {"trigger_meta": {"path": "/secret/data.txt", "event_type": "modified"}}
+        with (
+            patch("hermes_cli.config.get_safe_roots", return_value=["/allowed"]),
+            patch("hermes_cli.config.get_denied_paths", return_value=[]),
+            patch("tools.file_tools.validate_path_operation", return_value=(False, "not under safe roots")),
+        ):
+            result = detect_change(ctx)
+        assert result["blocked"] is True
+
+    def test_allowed_path_passes(self):
+        """Allowed path proceeds normally."""
+        ctx = {"trigger_meta": {"path": "/home/user/brain/note.md", "event_type": "created"}}
+        with (
+            patch("hermes_cli.config.get_safe_roots", return_value=["/home/user"]),
+            patch("hermes_cli.config.get_denied_paths", return_value=[]),
+            patch("tools.file_tools.validate_path_operation", return_value=(True, "")),
+        ):
+            result = detect_change(ctx)
+        assert result["blocked"] is False
+        assert result["filename"] == "note.md"
+
+    @patch("workflow.engine._publish")
+    @patch("workflow.harnesses.watch_and_notify._event_publish")
+    def test_blocked_skips_notification(self, mock_wn_pub, mock_engine_pub, db):
+        """Full pipeline with blocked path skips Discord notification."""
+        trigger_meta = {
+            "path": "/secret/data.txt",
+            "event_type": "modified",
+            "timestamp": 1712880000.0,
+        }
+        with (
+            patch("hermes_cli.config.get_safe_roots", return_value=["/allowed"]),
+            patch("hermes_cli.config.get_denied_paths", return_value=[]),
+            patch("tools.file_tools.validate_path_operation", return_value=(False, "denied")),
+        ):
+            result = run_workflow(WORKFLOW, trigger_meta=trigger_meta, db=db)
+
+        assert result.status == "completed"
+        act_output = result.steps[2].output
+        assert act_output["action"] == "blocked"
+        assert act_output["channels"] == []
+
+
+# ---------------------------------------------------------------------------
 # End-to-end
 # ---------------------------------------------------------------------------
 

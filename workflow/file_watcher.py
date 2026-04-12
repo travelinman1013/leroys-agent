@@ -72,6 +72,23 @@ class _DebouncedHandler(FileSystemEventHandler):
         ext = Path(path).suffix
         if ext in self._exclude_exts:
             return True
+
+        # Path jail check — block events from denied paths
+        try:
+            from hermes_cli.config import get_safe_roots, get_denied_paths
+            safe_roots = get_safe_roots()
+            denied_paths = get_denied_paths()
+            if safe_roots:
+                from tools.file_tools import validate_path_operation
+                allowed, reason = validate_path_operation(
+                    path, "read", safe_roots, denied_paths,
+                )
+                if not allowed:
+                    logger.debug("File watcher ignoring denied path: %s (%s)", path, reason)
+                    return True
+        except ImportError:
+            pass
+
         return False
 
     def on_any_event(self, event):
@@ -178,13 +195,34 @@ def start_file_watcher(
         logger.info("File watcher disabled — watchdog package not installed")
         return
 
+    # Read config for debounce/excludes if not explicitly passed
+    watcher_config: Dict[str, Any] = {}
+    try:
+        from hermes_cli.config import load_config
+        watcher_config = (
+            load_config()
+            .get("workflows", {})
+            .get("file_watcher", {})
+        )
+    except Exception:
+        pass
+
+    if debounce_s == 2.0 and "debounce_s" in watcher_config:
+        debounce_s = float(watcher_config["debounce_s"])
+
+    # Merge config exclude_dirs with defaults
+    exclude_dirs = set(_DEFAULT_EXCLUDES)
+    config_excludes = watcher_config.get("exclude_dirs", [])
+    if config_excludes:
+        exclude_dirs |= set(config_excludes)
+
     paths = watch_paths or _get_watch_paths()
     valid_paths = [p for p in paths if os.path.isdir(p)]
     if not valid_paths:
         logger.warning("File watcher: no valid directories to watch (%s)", paths)
         return
 
-    handler = _DebouncedHandler(debounce_s=debounce_s)
+    handler = _DebouncedHandler(debounce_s=debounce_s, exclude_dirs=exclude_dirs)
     observer = Observer()
 
     for path in valid_paths:
@@ -197,6 +235,18 @@ def start_file_watcher(
     try:
         while not stop_event.is_set():
             stop_event.wait(timeout=1.0)
+            # Observer liveness check — restart if the thread died
+            if not observer.is_alive():
+                logger.warning("File watcher observer died — restarting")
+                try:
+                    observer.stop()
+                    observer.join(timeout=2.0)
+                except Exception:
+                    pass
+                observer = Observer()
+                for path in valid_paths:
+                    observer.schedule(handler, path, recursive=True)
+                observer.start()
     finally:
         handler.cancel()
         observer.stop()

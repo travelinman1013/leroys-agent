@@ -16,9 +16,11 @@ def get_harness(name: str) -> "WorkflowDef":
     if not _HARNESSES:
         from workflow.harnesses.morning_repo_scan import WORKFLOW as mrs
         from workflow.harnesses.watch_and_notify import WORKFLOW as wan
+        from workflow.harnesses.research_digest import WORKFLOW as rd
 
         _HARNESSES["morning-repo-scan"] = mrs
         _HARNESSES["watch-and-notify"] = wan
+        _HARNESSES["research-digest"] = rd
 
     if name not in _HARNESSES:
         raise KeyError(
