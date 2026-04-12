@@ -180,7 +180,17 @@ def summarize(ctx: Dict[str, Any]) -> Dict[str, Any]:
     delivered_to: List[str] = []
 
     # Write vault note (best-effort)
-    vault_path = Path.home() / "brain" / "00_Inbox" / f"repo-scan-{today}.md"
+    # Vault dir is configurable via config.yaml; defaults to ~/brain/00_Inbox
+    vault_dir = Path.home() / "brain" / "00_Inbox"
+    try:
+        from hermes_cli.config import load_config as _load_cfg
+        _wf_cfg = _load_cfg().get("workflows", {}).get("morning_repo_scan", {})
+        _custom_dir = _wf_cfg.get("vault_dir")
+        if _custom_dir:
+            vault_dir = Path(_custom_dir).expanduser()
+    except Exception:
+        pass
+    vault_path = vault_dir / f"repo-scan-{today}.md"
     try:
         # Check path safety if path jail is configured
         try:
