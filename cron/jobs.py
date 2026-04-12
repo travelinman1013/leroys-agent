@@ -376,6 +376,7 @@ def create_job(
     provider: Optional[str] = None,
     base_url: Optional[str] = None,
     script: Optional[str] = None,
+    workflow: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Create a new cron job.
@@ -395,6 +396,9 @@ def create_job(
         script: Optional path to a Python script whose stdout is injected into the
                 prompt each run.  The script runs before the agent turn, and its output
                 is prepended as context.  Useful for data collection / change detection.
+        workflow: Optional workflow harness name (e.g. "morning-repo-scan").
+                When set, the cron scheduler delegates to the workflow engine
+                instead of building a prompt for an AIAgent.
 
     Returns:
         The created job dict
@@ -455,6 +459,9 @@ def create_job(
         # Delivery configuration
         "deliver": deliver,
         "origin": origin,  # Tracks where job was created for "origin" delivery
+        # Phase 7: workflow harness name — when set, scheduler delegates to
+        # workflow.engine.run_workflow() instead of building an AIAgent prompt.
+        "workflow": workflow or None,
     }
 
     jobs = load_jobs()
