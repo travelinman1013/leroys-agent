@@ -216,6 +216,24 @@ class TestSummarize:
         # Should not crash, vault note just skipped
         assert "vault" not in result["delivered_to"]
 
+    def test_vault_dir_from_config(self, tmp_path):
+        """Configurable vault_dir overrides default ~/brain/00_Inbox."""
+        ctx = {"scan_repos": {"findings": []}}
+        custom_dir = tmp_path / "custom_vault"
+
+        with (
+            patch(_HOME_PATCH, return_value=tmp_path),
+            patch(
+                _CONFIG_PATCH,
+                return_value={"workflows": {"morning_repo_scan": {"vault_dir": str(custom_dir)}}},
+            ),
+        ):
+            result = summarize(ctx)
+
+        assert "vault" in result["delivered_to"]
+        notes = list(custom_dir.glob("repo-scan-*.md"))
+        assert len(notes) == 1
+
     def test_all_clear_message(self):
         ctx = {
             "scan_repos": {
