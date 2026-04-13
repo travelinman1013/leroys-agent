@@ -7,9 +7,10 @@
  * Plan: cobalt-steering-heron F3.
  */
 
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
+import { approvalsSearch, useSyncSearchToStorage } from "@/lib/searchParams";
 import { api, type ApprovalHistoryRow, type PendingApproval } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { ApprovalCard } from "@/components/ApprovalCard";
@@ -19,19 +20,21 @@ import { compactRelTimeFromUnix } from "@/lib/utils";
 
 export const Route = createFileRoute("/approvals")({
   component: ApprovalsPage,
+  validateSearch: approvalsSearch,
 });
 
 function ApprovalsPage() {
+  const navigate = useNavigate({ from: "/approvals" });
+  const filters = Route.useSearch();
+  useSyncSearchToStorage("approvals", filters);
+  const setFilters = (next: { pattern: string; choice: string }) =>
+    navigate({ search: next, replace: true });
+
   const pending = useQuery({
     queryKey: ["dashboard", "approvals"],
     queryFn: api.approvals,
     refetchInterval: 3_000,
   });
-
-  const [filters, setFilters] = useState<{
-    pattern: string;
-    choice: string;
-  }>({ pattern: "", choice: "" });
 
   const history = useQuery({
     queryKey: ["dashboard", "approvals", "history", filters],
@@ -216,7 +219,7 @@ function ApprovalsPage() {
                 type="search"
                 value={filters.pattern}
                 onChange={(e) =>
-                  setFilters((p) => ({ ...p, pattern: e.target.value }))
+                  setFilters({ ...filters, pattern: e.target.value })
                 }
                 placeholder="filter pattern…"
                 className="h-8 max-w-xs border border-rule bg-bg px-2 font-mono text-[11px] text-ink placeholder:text-ink-faint focus:outline-none"
@@ -224,7 +227,7 @@ function ApprovalsPage() {
               <select
                 value={filters.choice}
                 onChange={(e) =>
-                  setFilters((p) => ({ ...p, choice: e.target.value }))
+                  setFilters({ ...filters, choice: e.target.value })
                 }
                 className="h-8 border border-rule bg-bg px-2 font-mono text-[10px] uppercase tracking-marker text-ink"
               >

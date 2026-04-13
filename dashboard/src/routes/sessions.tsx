@@ -13,6 +13,7 @@ import {
 } from "@tanstack/react-router";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
+import { sessionsSearch, useSyncSearchToStorage } from "@/lib/searchParams";
 import { api } from "@/lib/api";
 import {
   compactNumber,
@@ -30,6 +31,7 @@ import { BulkActionsBar } from "@/components/BulkActionsBar";
 
 export const Route = createFileRoute("/sessions")({
   component: SessionsList,
+  validateSearch: sessionsSearch,
 });
 
 function SessionsList() {
@@ -50,11 +52,10 @@ function SessionsList() {
   // early-return comes AFTER all hook calls below.
   const matchRoute = useMatchRoute();
 
-  const [filters, setFilters] = useState<SessionFilterState>({
-    q: "",
-    source: "",
-    fromDays: 0,
-  });
+  const filters = Route.useSearch();
+  useSyncSearchToStorage("sessions", filters);
+  const setFilters = (next: SessionFilterState) =>
+    navigate({ to: "/sessions", search: next, replace: true });
   const [selected, setSelected] = useState<Set<string>>(new Set());
 
   const { fromUnix } = useMemo(() => {
@@ -139,9 +140,9 @@ function SessionsList() {
 
   const handleBulkExport = async () => {
     const ids = Array.from(selected);
-    // Trigger one download per session via its export URL
+    // Trigger one download per session via authenticated fetch
     for (const id of ids) {
-      window.open(api.exportSessionUrl(id, "json"), "_blank");
+      api.downloadSession(id, "json").catch(() => {});
     }
     notify.success(`Triggered ${ids.length} downloads`);
   };
@@ -317,15 +318,14 @@ function SessionsList() {
                       className="px-3 py-2.5 text-right"
                       onClick={(e) => e.stopPropagation()}
                     >
-                      <a
-                        href={api.exportSessionUrl(sid, "json")}
-                        target="_blank"
-                        rel="noreferrer"
+                      <button
+                        type="button"
+                        onClick={() => api.downloadSession(sid, "json")}
                         className="inline-flex items-baseline gap-1 font-mono text-[10px] uppercase tracking-marker text-ink-muted hover:text-oxide"
-                        title="Export session as JSON (opens in new tab)"
+                        title="Export session as JSON"
                       >
-                        <span aria-hidden>↗</span> EXPORT
-                      </a>
+                        <span aria-hidden>↓</span> EXPORT
+                      </button>
                       <button
                         type="button"
                         onClick={async (e) => {

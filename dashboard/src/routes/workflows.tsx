@@ -11,15 +11,20 @@ import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import { api, type WorkflowRun, type WorkflowCheckpoint } from "@/lib/api";
 import { compactRelTimeFromUnix } from "@/lib/utils";
+import { workflowsSearch, useSyncSearchToStorage } from "@/lib/searchParams";
 
 export const Route = createFileRoute("/workflows")({
   component: WorkflowsPage,
+  validateSearch: workflowsSearch,
 });
 
 function WorkflowsPage() {
+  const { status: statusFilter } = Route.useSearch();
+  useSyncSearchToStorage("workflows", { status: statusFilter });
+
   const { data, isLoading, error } = useQuery({
-    queryKey: ["workflows", "runs"],
-    queryFn: () => api.workflowRuns({ limit: 100 }),
+    queryKey: ["workflows", "runs", statusFilter],
+    queryFn: () => api.workflowRuns({ limit: 100, status: statusFilter || undefined }),
     refetchInterval: 10_000,
   });
 

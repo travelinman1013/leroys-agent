@@ -8,14 +8,16 @@
  * Layout (>= 1200px): sidebar (cols 1-3) | reader (cols 4-10) | meta (cols 11-12)
  * < 1200px: sidebar becomes a drawer, < 900px: meta becomes bottom sheet.
  *
- * State is internal (activeSource, activePath, editing) — no nested routes.
+ * Navigation state (activeSource, activePath) persists in URL search params.
+ * Transient UI state (editing, graphOpen, sidebarOpen) stays as useState.
  */
 
-import { createFileRoute } from "@tanstack/react-router";
+import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Map, PanelLeftClose, PanelLeftOpen } from "lucide-react";
 import { api } from "@/lib/api";
+import { brainSearch, useSyncSearchToStorage } from "@/lib/searchParams";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
 import {
@@ -39,11 +41,22 @@ import { BrainGraphSheet } from "@/components/brain/BrainGraphSheet";
 
 export const Route = createFileRoute("/brain")({
   component: BrainPage,
+  validateSearch: brainSearch,
 });
 
 function BrainPage() {
-  const [activeSource, setActiveSource] = useState("vault");
-  const [activePath, setActivePath] = useState<string | null>(null);
+  const navigate = useNavigate({ from: "/brain" });
+  const { source: activeSource, path: activePath } = Route.useSearch();
+  useSyncSearchToStorage("brain", { source: activeSource, path: activePath });
+
+  const setActiveSource = useCallback(
+    (s: string) => navigate({ search: { source: s }, replace: true }),
+    [navigate],
+  );
+  const setActivePath = useCallback(
+    (p: string | null) => navigate({ search: (prev) => ({ ...prev, path: p ?? undefined }), replace: true }),
+    [navigate],
+  );
   const [editing, setEditing] = useState(false);
   const [graphOpen, setGraphOpen] = useState(false);
   const [sidebarOpen, setSidebarOpen] = useState(false);

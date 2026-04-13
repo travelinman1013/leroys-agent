@@ -158,15 +158,11 @@ function SessionBody({
 
       {/* ── F1 actions ── */}
       <div className="mb-9 flex flex-wrap items-center gap-2">
-        <Button asChild size="sm" variant="outline">
-          <a href={api.exportSessionUrl(id, "json")} target="_blank" rel="noreferrer">
+        <Button size="sm" variant="outline" onClick={() => api.downloadSession(id, "json")}>
             EXPORT JSON
-          </a>
         </Button>
-        <Button asChild size="sm" variant="outline">
-          <a href={api.exportSessionUrl(id, "md")} target="_blank" rel="noreferrer">
+        <Button size="sm" variant="outline" onClick={() => api.downloadSession(id, "md")}>
             EXPORT MD
-          </a>
         </Button>
         {isEnded && (
           <Button

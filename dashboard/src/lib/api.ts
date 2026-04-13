@@ -353,6 +353,25 @@ export const api = {
   exportSessionUrl: (id: string, format: "json" | "md" = "json") =>
     `/api/dashboard/sessions/${encodeURIComponent(id)}/export?format=${format}`,
 
+  /** Fetch session export with auth and trigger browser download. */
+  async downloadSession(id: string, format: "json" | "md" = "json") {
+    const token = await ensureToken();
+    const resp = await fetch(
+      `/api/dashboard/sessions/${encodeURIComponent(id)}/export?format=${format}`,
+      { headers: { Authorization: `Bearer ${token}` } },
+    );
+    if (!resp.ok) throw new Error(`Export failed: ${resp.status}`);
+    const blob = await resp.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `session-${id.slice(0, 8)}.${format === "md" ? "md" : "json"}`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  },
+
   forkSession: (id: string, body: { up_to_turn?: number; title?: string }) =>
     apiFetch<{ id: string; parent_id: string }>(
       `/api/dashboard/sessions/${encodeURIComponent(id)}/fork`,
