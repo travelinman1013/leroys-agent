@@ -694,6 +694,49 @@ def run_doctor(args):
                 pass
 
     # =========================================================================
+    # Check: Playwright MCP
+    # =========================================================================
+    print()
+    print(color("◆ Playwright MCP", Colors.CYAN, Colors.BOLD))
+
+    playwright_configured = False
+    try:
+        from hermes_cli.config import load_config as _load_cfg_pw
+        pw_config = _load_cfg_pw()
+        mcp_servers = pw_config.get("mcp_servers") or {}
+        playwright_configured = any(
+            "playwright" in name.lower()
+            for name in mcp_servers
+        )
+    except Exception:
+        pass
+
+    if shutil.which("npx"):
+        check_ok("npx", "(available)")
+    else:
+        check_warn("npx not found", "(needed for Playwright MCP)")
+
+    if playwright_configured:
+        check_ok("Playwright MCP", "(configured in mcp_servers)")
+        # Warn about name collision with built-in browser tools
+        try:
+            from hermes_cli.config import load_config as _load_cfg_bt
+            bt_config = _load_cfg_bt()
+            platform_tools = bt_config.get("platform_toolsets") or {}
+            # Check if browser_tools is explicitly enabled anywhere
+            for _platform, _tools in platform_tools.items():
+                if isinstance(_tools, dict) and _tools.get("browser_tools"):
+                    check_warn(
+                        "browser_tools toolset also active",
+                        "(may collide with Playwright MCP tool names — consider disabling browser_tools)"
+                    )
+                    break
+        except Exception:
+            pass
+    else:
+        check_info("Playwright MCP not configured (add with: hermes mcp add playwright --preset playwright)")
+
+    # =========================================================================
     # Check: API connectivity
     # =========================================================================
     print()
@@ -810,6 +853,80 @@ def run_doctor(args):
                     print(f"\r  {color('⚠', Colors.YELLOW)} {_label} {color(f'(HTTP {_resp.status_code})', Colors.DIM)}           ")
             except Exception as _e:
                 print(f"\r  {color('⚠', Colors.YELLOW)} {_label} {color(f'({_e})', Colors.DIM)}           ")
+
+    # =========================================================================
+    # Check: Search & LLM Connectivity
+    # =========================================================================
+    print()
+    print(color("◆ Search & LLM Connectivity", Colors.CYAN, Colors.BOLD))
+
+    # Brave Search API
+    brave_key = os.getenv("BRAVE_API_KEY")
+    if brave_key:
+        try:
+            import httpx as _httpx_brave
+            resp = _httpx_brave.get(
+                "https://api.search.brave.com/res/v1/web/search",
+                params={"q": "test", "count": 1},
+                headers={"X-Subscription-Token": brave_key},
+                timeout=10,
+            )
+            if resp.status_code == 200:
+                check_ok("Brave Search API", "(connected)")
+            else:
+                check_warn("Brave Search API", f"(HTTP {resp.status_code})")
+        except Exception as e:
+            check_warn("Brave Search API", f"(unreachable: {e})")
+    else:
+        check_warn("Brave Search API", "(BRAVE_API_KEY not set)")
+
+    # Tavily Search
+    tavily_key = os.getenv("TAVILY_API_KEY")
+    if tavily_key:
+        try:
+            import httpx as _httpx_tavily
+            resp = _httpx_tavily.post(
+                "https://api.tavily.com/search",
+                json={"query": "test", "max_results": 1, "api_key": tavily_key},
+                timeout=10,
+            )
+            if resp.status_code == 200:
+                check_ok("Tavily Search", "(connected)")
+            else:
+                check_warn("Tavily Search", f"(HTTP {resp.status_code})")
+        except Exception as e:
+            check_warn("Tavily Search", f"(unreachable: {e})")
+    else:
+        check_warn("Tavily Search", "(TAVILY_API_KEY not set)")
+
+    # LM Studio
+    try:
+        import httpx as _httpx_lm
+        resp = _httpx_lm.get("http://localhost:1234/v1/models", timeout=5)
+        if resp.status_code == 200:
+            import json as _json_lm
+            models = _json_lm.loads(resp.text).get("data", [])
+            check_ok("LM Studio", f"({len(models)} model(s) loaded)")
+        else:
+            check_warn("LM Studio", f"(HTTP {resp.status_code})")
+    except Exception:
+        check_warn("LM Studio", "(not running on localhost:1234)")
+
+    # MCP servers with search capability
+    try:
+        from hermes_cli.config import load_config as _load_cfg_search
+        search_config = _load_cfg_search()
+        mcp_svrs = search_config.get("mcp_servers") or {}
+        search_mcps = [
+            name for name in mcp_svrs
+            if any(kw in name.lower() for kw in ("search", "brave", "tavily"))
+        ]
+        if search_mcps:
+            check_ok("Search MCP servers", f"({', '.join(search_mcps)})")
+        else:
+            check_info("No search MCP servers configured")
+    except Exception:
+        pass
 
     # =========================================================================
     # Check: Submodules
