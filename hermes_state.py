@@ -1269,39 +1269,69 @@ class SessionDB:
         q: Optional[str] = None,
         started_after: Optional[float] = None,
         started_before: Optional[float] = None,
+        include_children: bool = False,
     ) -> List[Dict[str, Any]]:
         """List sessions with optional filters.
+
+        Returns the same rich shape as ``list_sessions_rich`` (preview,
+        last_active, child exclusion) so the dashboard can use either
+        method interchangeably.
 
         Filters:
             source: exact match on the ``source`` column.
             q: case-insensitive substring match against the session title.
-               Body-content search is explicitly out of scope (FTS5 over
-               message bodies is a future Wave).
             started_after / started_before: unix-time bounds.
+            include_children: if False (default), exclude child sessions.
         """
         clauses: list[str] = []
         params: list = []
+        if not include_children:
+            clauses.append("s.parent_session_id IS NULL")
         if source:
-            clauses.append("source = ?")
+            clauses.append("s.source = ?")
             params.append(source)
         if q:
-            clauses.append("LOWER(COALESCE(title, '')) LIKE ?")
+            clauses.append("LOWER(COALESCE(s.title, '')) LIKE ?")
             params.append(f"%{q.lower()}%")
         if started_after is not None:
-            clauses.append("started_at >= ?")
+            clauses.append("s.started_at >= ?")
             params.append(started_after)
         if started_before is not None:
-            clauses.append("started_at <= ?")
+            clauses.append("s.started_at <= ?")
             params.append(started_before)
         where = (" WHERE " + " AND ".join(clauses)) if clauses else ""
-        sql = (
-            f"SELECT * FROM sessions{where} "
-            "ORDER BY started_at DESC LIMIT ? OFFSET ?"
-        )
+        sql = f"""
+            SELECT s.*,
+                COALESCE(
+                    (SELECT SUBSTR(REPLACE(REPLACE(m.content, X'0A', ' '), X'0D', ' '), 1, 63)
+                     FROM messages m
+                     WHERE m.session_id = s.id AND m.role = 'user' AND m.content IS NOT NULL
+                     ORDER BY m.timestamp, m.id LIMIT 1),
+                    ''
+                ) AS _preview_raw,
+                COALESCE(
+                    (SELECT MAX(m2.timestamp) FROM messages m2 WHERE m2.session_id = s.id),
+                    s.started_at
+                ) AS last_active
+            FROM sessions s
+            {where}
+            ORDER BY s.started_at DESC LIMIT ? OFFSET ?
+        """
         params.extend([limit, offset])
         with self._lock:
             cursor = self._conn.execute(sql, params)
-            return [dict(row) for row in cursor.fetchall()]
+            rows = cursor.fetchall()
+        sessions = []
+        for row in rows:
+            s = dict(row)
+            raw = s.pop("_preview_raw", "").strip()
+            if raw:
+                text = raw[:60]
+                s["preview"] = text + ("..." if len(raw) > 60 else "")
+            else:
+                s["preview"] = ""
+            sessions.append(s)
+        return sessions
 
     # =========================================================================
     # Utility
@@ -1829,19 +1859,21 @@ class SessionDB:
         offset: int = 0,
         status: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
-        """Paginated list of workflow runs (newest first)."""
+        """Paginated list of workflow runs (newest first), with step_count."""
         with self._lock:
+            base = """SELECT wr.*,
+                        (SELECT COUNT(*) FROM workflow_checkpoints wc
+                         WHERE wc.run_id = wr.id) AS step_count
+                      FROM workflow_runs wr"""
             if status:
                 rows = self._conn.execute(
-                    """SELECT * FROM workflow_runs
-                       WHERE status = ?
-                       ORDER BY started_at DESC LIMIT ? OFFSET ?""",
+                    base + " WHERE wr.status = ?"
+                    " ORDER BY wr.started_at DESC LIMIT ? OFFSET ?",
                     (status, limit, offset),
                 ).fetchall()
             else:
                 rows = self._conn.execute(
-                    """SELECT * FROM workflow_runs
-                       ORDER BY started_at DESC LIMIT ? OFFSET ?""",
+                    base + " ORDER BY wr.started_at DESC LIMIT ? OFFSET ?",
                     (limit, offset),
                 ).fetchall()
             result = []

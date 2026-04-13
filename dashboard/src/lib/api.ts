@@ -45,6 +45,7 @@ export type WorkflowRun = {
   ended_at: number | null;
   error: string | null;
   result_summary: string | null;
+  step_count?: number;
   checkpoints?: WorkflowCheckpoint[];
 };
 

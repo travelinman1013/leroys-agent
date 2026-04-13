@@ -6,7 +6,6 @@ import {
   workflowsSearch,
   cronSearch,
   getStoredDefaults,
-  useSyncSearchToStorage,
 } from "../searchParams";
 
 describe("Zod search param schemas", () => {

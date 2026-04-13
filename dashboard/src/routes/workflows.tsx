@@ -137,7 +137,9 @@ function RunRow({ run }: { run: WorkflowRun }) {
         <Td className="text-ink-muted">
           {checkpoints.length > 0
             ? `${checkpoints.filter((c) => c.status === "completed").length}/${checkpoints.length}`
-            : "—"}
+            : run.step_count != null && run.step_count > 0
+              ? String(run.step_count)
+              : "—"}
         </Td>
       </tr>
       {expanded && checkpoints.length > 0 && (
