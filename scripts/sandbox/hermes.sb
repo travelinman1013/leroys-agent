@@ -62,8 +62,8 @@
   (subpath "/Users/maxwell/Projects")                    ;; scan target
   (subpath "/Users/maxwell/brain")                       ;; vault (symlink → LETSGO/MaxVault)
   (subpath "/Users/maxwell/LETSGO/MaxVault")             ;; vault realpath target
-  (subpath "/Users/maxwell/.cache")                      ;; hf, npm
-  (subpath "/Users/maxwell/.npm")
+  (subpath "/Users/maxwell/.cache")                      ;; hf, npm, ms-playwright browser binaries
+  (subpath "/Users/maxwell/.npm")                        ;; npx execution cache (includes _npx/)
   (subpath "/Users/maxwell/.local/state/hermes")         ;; gateway locks (discord-bot-token, etc.)
   (literal "/Users/maxwell/Library/LaunchAgents/ai.hermes.gateway.plist"))
 

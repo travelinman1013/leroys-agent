@@ -144,6 +144,18 @@ def run_backup(args) -> None:
     file_count = len(files_to_add)
     print(f"Backing up {file_count} files ...")
 
+    # Flush SQLite WAL files before zipping to ensure backup consistency.
+    import sqlite3
+    for db_name in ("state.db", "hermes_state.db"):
+        db_path = hermes_root / db_name
+        if db_path.exists():
+            try:
+                conn = sqlite3.connect(str(db_path))
+                conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                conn.close()
+            except Exception:
+                pass  # Non-fatal — proceed with backup
+
     total_bytes = 0
     errors = []
     t0 = time.monotonic()
