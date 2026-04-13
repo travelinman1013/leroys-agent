@@ -50,10 +50,18 @@ export function MermaidBlock({ code }: Props) {
     let cancelled = false;
     const id = `mermaid-${reactId.replace(/:/g, "")}`;
 
+    // Clean up HTML entities that vault markdown uses inside mermaid
+    // node labels. Mermaid syntax doesn't understand <br/>, &amp;, etc.
+    const cleaned = code
+      .replace(/<br\s*\/?>/gi, "\n")
+      .replace(/&amp;/g, "&")
+      .replace(/&lt;/g, "<")
+      .replace(/&gt;/g, ">");
+
     loadMermaid()
       .then((mod) => {
         if (cancelled) return;
-        return mod.default.render(id, code);
+        return mod.default.render(id, cleaned);
       })
       .then((result) => {
         if (cancelled || !result) return;

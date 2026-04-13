@@ -14,7 +14,7 @@
 
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Map, PanelLeftClose, PanelLeftOpen } from "lucide-react";
 import { api } from "@/lib/api";
 import { brainSearch, useSyncSearchToStorage } from "@/lib/searchParams";
@@ -330,8 +330,41 @@ function SidebarContent({
   onSearchSelect: (source: string, path: string) => void;
   onTimelineSelect: (source: string, path: string) => void;
 }) {
+  // Resizable split between tree and timeline. Stored as tree's flex
+  // proportion (0.3–0.9). Default 0.65 = tree gets ~65% of space.
+  const [treeFlex, setTreeFlex] = useState(0.65);
+  const dividerRef = useRef<HTMLDivElement>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  const onDividerMouseDown = useCallback(
+    (e: React.MouseEvent) => {
+      e.preventDefault();
+      const container = containerRef.current;
+      if (!container) return;
+
+      const startY = e.clientY;
+      const startFlex = treeFlex;
+      const rect = container.getBoundingClientRect();
+      // Available height = container minus fixed sections (search, sources ~100px)
+      const availH = rect.height;
+
+      const onMove = (ev: MouseEvent) => {
+        const dy = ev.clientY - startY;
+        const newFlex = Math.min(0.9, Math.max(0.2, startFlex + dy / availH));
+        setTreeFlex(newFlex);
+      };
+      const onUp = () => {
+        document.removeEventListener("mousemove", onMove);
+        document.removeEventListener("mouseup", onUp);
+      };
+      document.addEventListener("mousemove", onMove);
+      document.addEventListener("mouseup", onUp);
+    },
+    [treeFlex],
+  );
+
   return (
-    <div className="flex h-full flex-col px-3 py-4">
+    <div ref={containerRef} className="flex h-full flex-col px-3 py-4">
       {/* Search — fixed at top */}
       <div className="shrink-0 pb-3">
         <BrainSearchBox source={activeSource} onSelect={onSearchSelect} />
@@ -346,8 +379,8 @@ function SidebarContent({
         />
       </div>
 
-      {/* Tree — scrollable, takes available space */}
-      <div className="flex min-h-0 flex-1 flex-col pb-3">
+      {/* Tree — scrollable, resizable */}
+      <div className="flex min-h-0 flex-col" style={{ flex: treeFlex }}>
         <SectionMarker label="TREE" className="mb-2 shrink-0" />
         <div className="min-h-0 flex-1 overflow-y-auto">
           <BrainTree
@@ -358,8 +391,18 @@ function SidebarContent({
         </div>
       </div>
 
-      {/* Timeline — fixed height at bottom, scrollable internally */}
-      <div className="flex h-[200px] shrink-0 flex-col border-t border-rule pt-3">
+      {/* Drag divider */}
+      <div
+        ref={dividerRef}
+        onMouseDown={onDividerMouseDown}
+        className="group flex h-3 shrink-0 cursor-row-resize items-center justify-center"
+        title="Drag to resize"
+      >
+        <div className="h-px w-12 bg-rule transition-colors group-hover:bg-oxide" />
+      </div>
+
+      {/* Timeline — scrollable, resizable */}
+      <div className="flex min-h-0 flex-col" style={{ flex: 1 - treeFlex }}>
         <SectionMarker label="TIMELINE" className="mb-2 shrink-0" />
         <div className="min-h-0 flex-1 overflow-y-auto">
           <BrainTimeline

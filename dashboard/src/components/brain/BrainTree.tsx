@@ -76,7 +76,9 @@ function TreeNode({
   activePath?: string;
   onSelect?: (path: string) => void;
 }) {
-  const [expanded, setExpanded] = useState(depth < 1);
+  // Start collapsed — top-level folders like 00_Inbox (73 files) push
+  // everything down when expanded on load.
+  const [expanded, setExpanded] = useState(false);
   const isDir = node.type === "dir";
   const isBinary = node.type === "binary";
   const isActive = node.path === activePath;
