@@ -6,10 +6,11 @@
  */
 
 import { createFileRoute } from "@tanstack/react-router";
+import { useState, useCallback } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import { Button } from "@/components/ui/button";
-import { Play, Pause, Trash2 } from "lucide-react";
+import { Play, Pause, Trash2, Plus, ChevronUp } from "lucide-react";
 import { compactRelTimeFromUnix, relTimeFromUnix } from "@/lib/utils";
 import { cronSearch, useSyncSearchToStorage } from "@/lib/searchParams";
 
@@ -73,6 +74,8 @@ function CronPage() {
           ─── {jobs.length} JOBS · MONO TABLE · CRON IN OXIDE ──
         </p>
       </div>
+
+      <CronCreateForm onCreated={() => qc.invalidateQueries({ queryKey: ["cron", "jobs"] })} />
 
       {isLoading && (
         <p className="px-10 py-4 font-mono text-[11px] uppercase tracking-marker text-ink-muted">
@@ -225,6 +228,127 @@ function Td({
     >
       {children}
     </td>
+  );
+}
+
+function CronCreateForm({ onCreated }: { onCreated: () => void }) {
+  const [open, setOpen] = useState(false);
+  const [name, setName] = useState("");
+  const [prompt, setPrompt] = useState("");
+  const [schedule, setSchedule] = useState("");
+  const [deliver, setDeliver] = useState("origin");
+  const [schedulePreview, setSchedulePreview] = useState("");
+  const [error, setError] = useState("");
+
+  // Validate schedule expression on change
+  const validateSchedule = useCallback(async (expr: string) => {
+    if (!expr.trim()) { setSchedulePreview(""); return; }
+    try {
+      const result = await api.parseCronSchedule(expr.trim());
+      const p = result.parsed as Record<string, unknown>;
+      const nextRun = p.next_run_at ?? p.next_run;
+      setSchedulePreview(
+        nextRun
+          ? `Next: ${new Date((nextRun as number) * 1000).toLocaleString()}`
+          : "Valid schedule",
+      );
+      setError("");
+    } catch {
+      setSchedulePreview("");
+      setError("Invalid cron expression");
+    }
+  }, []);
+
+  const createMut = useMutation({
+    mutationFn: () =>
+      api.createJob({
+        prompt: prompt.trim(),
+        schedule: schedule.trim(),
+        name: name.trim() || prompt.trim().slice(0, 30),
+        deliver,
+      }),
+    onSuccess: () => {
+      setOpen(false);
+      setName(""); setPrompt(""); setSchedule(""); setDeliver("origin");
+      setSchedulePreview(""); setError("");
+      onCreated();
+    },
+    onError: (e) => setError(String(e)),
+  });
+
+  if (!open) {
+    return (
+      <div className="px-10 pb-4">
+        <button
+          onClick={() => setOpen(true)}
+          className="flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-marker text-ink-muted transition-colors hover:text-oxide"
+        >
+          <Plus size={12} /> NEW JOB
+        </button>
+      </div>
+    );
+  }
+
+  return (
+    <div className="mx-10 mb-6 border border-rule bg-bg-alt p-6">
+      <div className="flex items-center justify-between mb-4">
+        <span className="font-mono text-[10px] uppercase tracking-marker text-ink-muted">NEW CRON JOB</span>
+        <button onClick={() => setOpen(false)} className="text-ink-faint hover:text-ink">
+          <ChevronUp size={14} />
+        </button>
+      </div>
+      <div className="space-y-3">
+        <input
+          type="text"
+          placeholder="Name (optional)"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          className="w-full border border-rule bg-bg px-3 py-1.5 font-mono text-[12px] text-ink placeholder:text-ink-faint focus:border-oxide-edge focus:outline-none"
+        />
+        <textarea
+          placeholder="What should the agent do on each run?"
+          value={prompt}
+          onChange={(e) => setPrompt(e.target.value)}
+          rows={3}
+          className="w-full border border-rule bg-bg px-3 py-1.5 font-mono text-[12px] text-ink placeholder:text-ink-faint focus:border-oxide-edge focus:outline-none resize-y"
+        />
+        <div className="grid grid-cols-[1fr_120px_auto] gap-3 items-end">
+          <div>
+            <input
+              type="text"
+              placeholder="0 9 * * * or 30m"
+              value={schedule}
+              onChange={(e) => { setSchedule(e.target.value); validateSchedule(e.target.value); }}
+              className="w-full border border-rule bg-bg px-3 py-1.5 font-mono text-[12px] text-ink placeholder:text-ink-faint focus:border-oxide-edge focus:outline-none"
+            />
+            {schedulePreview && (
+              <p className="mt-1 font-mono text-[10px] text-success">{schedulePreview}</p>
+            )}
+          </div>
+          <select
+            value={deliver}
+            onChange={(e) => setDeliver(e.target.value)}
+            className="border border-rule bg-bg px-3 py-1.5 font-mono text-[12px] text-ink focus:border-oxide-edge focus:outline-none"
+          >
+            <option value="origin">Origin</option>
+            <option value="discord">Discord</option>
+            <option value="telegram">Telegram</option>
+            <option value="slack">Slack</option>
+            <option value="email">Email</option>
+          </select>
+          <Button
+            onClick={() => createMut.mutate()}
+            disabled={!prompt.trim() || !schedule.trim() || createMut.isPending}
+            className="whitespace-nowrap"
+          >
+            {createMut.isPending ? "Creating..." : "Create"}
+          </Button>
+        </div>
+        {error && (
+          <p className="font-mono text-[11px] text-destructive">{error}</p>
+        )}
+      </div>
+    </div>
   );
 }
 

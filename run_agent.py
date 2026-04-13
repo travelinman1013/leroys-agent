@@ -8807,6 +8807,27 @@ class AIAgent:
                         self.session_cost_status = cost_result.status
                         self.session_cost_source = cost_result.source
 
+                        # Budget cap enforcement — agent-local check after
+                        # each cost update.  Emits event then interrupts.
+                        _budget = getattr(self, "budget_cap_usd", None)
+                        if _budget and self.session_estimated_cost_usd > _budget:
+                            try:
+                                from gateway.event_bus import publish as _pub
+                                _pub(
+                                    "session.budget_exceeded",
+                                    session_id=self.session_id,
+                                    data={
+                                        "budget_cap": _budget,
+                                        "estimated_cost": self.session_estimated_cost_usd,
+                                    },
+                                )
+                            except Exception:
+                                pass
+                            self.interrupt(
+                                f"Budget exceeded: ${self.session_estimated_cost_usd:.2f}"
+                                f" > ${_budget:.2f} cap"
+                            )
+
                         # Persist token counts to session DB for /insights.
                         # Do this for every platform with a session_id so non-CLI
                         # sessions (gateway, cron, delegated runs) cannot lose

@@ -1282,6 +1282,15 @@ class DashboardRoutes:
             )
         timeout_s = max(30, timeout_s)  # Floor at 30s
 
+        budget_usd = body.get("budget_usd")
+        try:
+            if budget_usd is not None:
+                budget_usd = float(budget_usd)
+                if budget_usd <= 0:
+                    budget_usd = None
+        except (TypeError, ValueError):
+            budget_usd = None
+
         runner = getattr(self._adapter, "gateway_runner", None)
         if not runner:
             return _json_err(RuntimeError("gateway runner not available"), 503)
@@ -1334,14 +1343,14 @@ class DashboardRoutes:
             except Exception:
                 pass
 
-        # Update source to "dashboard" in DB (not "local")
+        # Update source to "dashboard" in DB and persist budget cap
         try:
             from hermes_state import SessionDB
             db = SessionDB()
             db._execute_write(
                 lambda conn: conn.execute(
-                    "UPDATE sessions SET source = ? WHERE id = ?",
-                    ("dashboard", session_id),
+                    "UPDATE sessions SET source = ?, budget_usd = ? WHERE id = ?",
+                    ("dashboard", budget_usd, session_id),
                 )
             )
         except Exception:
@@ -1367,6 +1376,7 @@ class DashboardRoutes:
         task = loop.create_task(
             self._spawn_dashboard_agent(
                 runner, source, session_id, session_key, message, timeout_s,
+                budget_usd=budget_usd,
             )
         )
         # Register in background tasks so stop() can cancel it
@@ -1388,6 +1398,7 @@ class DashboardRoutes:
         session_key: Optional[str],
         message: str,
         timeout_s: int,
+        budget_usd: Optional[float] = None,
     ) -> None:
         """Background task: run an agent for a dashboard-spawned session."""
         # Abort if gateway is shutting down
@@ -1401,6 +1412,12 @@ class DashboardRoutes:
         sentinel = _get_agent_sentinel()
         runner._running_agents[session_key] = sentinel
         runner._running_agents_ts[session_key] = time.time()
+
+        # Store budget cap so agent can pick it up after construction
+        if budget_usd:
+            if not hasattr(runner, "_session_budgets"):
+                runner._session_budgets = {}
+            runner._session_budgets[session_key] = budget_usd
 
         # Timeout watchdog — fires agent.interrupt() after wall-clock limit.
         # Do NOT use asyncio.wait_for() — it cancels the coroutine but does
@@ -1752,6 +1769,56 @@ class DashboardRoutes:
         except Exception:
             pass
         return _json_ok(info)
+
+    @require_dashboard_auth
+    async def handle_cost_summary(self, request: "web.Request") -> "web.Response":
+        """Aggregate cost for today and this week."""
+        try:
+            from hermes_state import SessionDB
+            import time as _t
+            db = SessionDB()
+            now = _t.time()
+            # Start of today (midnight local)
+            import datetime as _dt
+            today_start = _dt.datetime.combine(
+                _dt.date.today(), _dt.time.min
+            ).timestamp()
+            # Start of this week (Monday midnight)
+            today = _dt.date.today()
+            week_start = _dt.datetime.combine(
+                today - _dt.timedelta(days=today.weekday()), _dt.time.min
+            ).timestamp()
+
+            def _query(conn):
+                row_today = conn.execute(
+                    "SELECT COALESCE(SUM(estimated_cost_usd), 0) "
+                    "FROM sessions WHERE started_at >= ?",
+                    (today_start,),
+                ).fetchone()
+                row_week = conn.execute(
+                    "SELECT COALESCE(SUM(estimated_cost_usd), 0) "
+                    "FROM sessions WHERE started_at >= ?",
+                    (week_start,),
+                ).fetchone()
+                return row_today[0], row_week[0]
+
+            cost_today, cost_week = db._execute_read(_query)
+            threshold = 5.0
+            try:
+                cfg = _load_gateway_config()
+                threshold = float(
+                    cfg.get("dashboard", {}).get("cost_alert_threshold_usd", 5.0)
+                )
+            except Exception:
+                pass
+            return _json_ok({
+                "today_usd": round(cost_today, 4),
+                "week_usd": round(cost_week, 4),
+                "threshold_usd": threshold,
+                "above_threshold": cost_today > threshold,
+            })
+        except Exception as exc:
+            return _json_err(exc)
 
     @require_dashboard_auth
     async def handle_gateway_restart_command(self, request: "web.Request") -> "web.Response":
@@ -2895,6 +2962,7 @@ def register_dashboard_routes(
     app.router.add_get("/api/dashboard/security/paths", routes.handle_security_paths)
     app.router.add_post("/api/dashboard/security/paths", routes.handle_security_paths)
     app.router.add_get("/api/dashboard/gateway/info", routes.handle_gateway_info)
+    app.router.add_get("/api/dashboard/cost/summary", routes.handle_cost_summary)
     app.router.add_get("/api/dashboard/gateway/restart-command", routes.handle_gateway_restart_command)
 
     # F4 — Interactive Ops (Dashboard v2)

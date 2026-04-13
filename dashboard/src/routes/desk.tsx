@@ -42,12 +42,13 @@ function SpawnDialog({
 }: {
   open: boolean;
   onClose: () => void;
-  onSpawn: (msg: string, title: string, timeout: number) => void;
+  onSpawn: (msg: string, title: string, timeout: number, budgetUsd?: number) => void;
   isPending: boolean;
 }) {
   const [message, setMessage] = useState("");
   const [title, setTitle] = useState("");
   const [timeout, setTimeout_] = useState(1800);
+  const [budgetUsd, setBudgetUsd] = useState("");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
 
   useEffect(() => {
@@ -55,6 +56,7 @@ function SpawnDialog({
       setMessage("");
       setTitle("");
       setTimeout_(1800);
+      setBudgetUsd("");
       // Focus after the dialog renders
       requestAnimationFrame(() => textareaRef.current?.focus());
     }
@@ -74,7 +76,7 @@ function SpawnDialog({
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
     if (!message.trim()) return;
-    onSpawn(message.trim(), title.trim(), timeout);
+    onSpawn(message.trim(), title.trim(), timeout, budgetUsd ? parseFloat(budgetUsd) : undefined);
   };
 
   return (
@@ -105,7 +107,7 @@ function SpawnDialog({
           onKeyDown={(e) => {
             if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
               e.preventDefault();
-              if (message.trim()) onSpawn(message.trim(), title.trim(), timeout);
+              if (message.trim()) onSpawn(message.trim(), title.trim(), timeout, budgetUsd ? parseFloat(budgetUsd) : undefined);
             }
           }}
         />
@@ -137,6 +139,20 @@ function SpawnDialog({
               <option value={1800}>30 min (default)</option>
               <option value={3600}>60 min (max)</option>
             </select>
+          </div>
+          <div>
+            <label className="mb-1 block font-mono text-[11px] uppercase tracking-marker text-ink-2">
+              Budget (USD)
+            </label>
+            <input
+              type="number"
+              min="0"
+              step="0.01"
+              placeholder="unlimited"
+              value={budgetUsd}
+              onChange={(e) => setBudgetUsd(e.target.value)}
+              className="w-full border border-rule bg-bg px-3 py-1.5 font-mono text-[12px] text-ink placeholder:text-ink-faint focus:border-oxide-edge focus:outline-none"
+            />
           </div>
         </div>
 
@@ -204,10 +220,6 @@ function DeskPage() {
   const navigate = useNavigate();
 
   const [showSpawn, setShowSpawn] = useState(false);
-  const [notifPermission, setNotifPermission] = useState(
-    typeof Notification !== "undefined" ? Notification.permission : "denied",
-  );
-
   // Track running count from SSE for the ONE BIG NUMBER
   const [runningCount, setRunningCount] = useState<number | null>(null);
 
@@ -276,28 +288,15 @@ function DeskPage() {
           });
         }
 
-        // Browser notification for approvals
-        if (event.type === "approval.requested" && notifPermission === "granted") {
-          const cmd = (event.data?.command as string) || "unknown command";
-          const desc = (event.data?.description as string) || "";
-          try {
-            new Notification("Hermes: Approval Required", {
-              body: desc ? `${cmd}\n${desc}` : cmd,
-              tag: `approval-${event.data?.session_key ?? Date.now()}`,
-            });
-          } catch {
-            // Notification API not available
-          }
-        }
       },
       { replay: 0 },
     );
     return unsub;
-  }, [queryClient, notifPermission]);
+  }, [queryClient]);
 
   // Spawn mutation
   const spawnMut = useApiMutation({
-    mutationFn: (body: { message: string; title?: string; timeout_seconds?: number }) =>
+    mutationFn: (body: { message: string; title?: string; timeout_seconds?: number; budget_usd?: number }) =>
       api.spawnSession(body),
     invalidate: [["dashboard", "sessions"]],
     successMessage: (data) =>
@@ -305,12 +304,13 @@ function DeskPage() {
   });
 
   const handleSpawn = useCallback(
-    (message: string, title: string, timeout: number) => {
+    (message: string, title: string, timeout: number, budgetUsd?: number) => {
       spawnMut.mutate(
         {
           message,
           title: title || undefined,
           timeout_seconds: timeout,
+          budget_usd: budgetUsd,
         },
         {
           onSuccess: () => setShowSpawn(false),
@@ -343,16 +343,6 @@ function DeskPage() {
     [confirm, killMut],
   );
 
-  // Request notification permission
-  const requestNotifPerm = useCallback(async () => {
-    if (typeof Notification === "undefined") return;
-    const result = await Notification.requestPermission();
-    setNotifPermission(result);
-    if (result === "granted") {
-      notify.success("Approval notifications enabled");
-    }
-  }, [notify]);
-
   const bigNumber = runningCount ?? runningSessions.length;
 
   return (
@@ -371,21 +361,6 @@ function DeskPage() {
           </span>
         </div>
         <div className="flex items-center gap-4">
-          {notifPermission !== "granted" && (
-            <button
-              type="button"
-              onClick={requestNotifPerm}
-              className="text-ink-faint transition-colors duration-120 hover:text-oxide"
-              title="Enable browser notifications for approvals"
-            >
-              NOTIFY OFF
-            </button>
-          )}
-          {notifPermission === "granted" && (
-            <span className="text-success" title="Browser notifications active">
-              NOTIFY ON
-            </span>
-          )}
           <span className="text-ink-faint">REFRESH 5s</span>
         </div>
       </div>

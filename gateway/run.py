@@ -7936,6 +7936,11 @@ class GatewayRunner:
                     session_db=self._session_db,
                     fallback_model=self._fallback_model,
                 )
+                # Apply per-session budget cap if set by dashboard spawn
+                _budgets = getattr(self, "_session_budgets", {})
+                if session_key and session_key in _budgets:
+                    agent.budget_cap_usd = _budgets.pop(session_key)
+
                 if _cache_lock and _cache is not None:
                     with _cache_lock:
                         _cache[session_key] = (agent, _sig)

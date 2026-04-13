@@ -131,6 +131,7 @@ function HomeInbox() {
                 }, [])}
             </div>
           )}
+          <CostStrip />
         </div>
 
         {/* approval queue (collapses to nothing when no pending) */}
@@ -262,6 +263,21 @@ function HomeInbox() {
           )}
         </RailPanel>
       </aside>
+    </div>
+  );
+}
+
+function CostStrip() {
+  const { data } = useQuery({
+    queryKey: ["dashboard", "cost", "summary"],
+    queryFn: () => api.costSummary(),
+    refetchInterval: 30_000,
+  });
+  if (!data) return null;
+  const color = data.above_threshold ? "text-oxide" : "text-ink-muted";
+  return (
+    <div className={`mt-2 font-mono text-[12px] tabular-nums ${color}`}>
+      ${data.today_usd.toFixed(2)} today · ${data.week_usd.toFixed(2)} this week
     </div>
   );
 }

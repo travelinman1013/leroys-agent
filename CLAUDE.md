@@ -46,6 +46,7 @@ Errors: `tail -f ~/.hermes/logs/gateway.error.log`
 - **Max turns**: 30
 - **Sandbox**: `sandbox-exec -f ~/.hermes/hermes.sb` via `scripts/sandbox/hermes-gateway-sandboxed` wrapper (Phase 4 R4)
 - **Dashboard** (Phase 5): `http://127.0.0.1:8642/dashboard/` — enabled via `API_SERVER_ENABLED=true` in `.env`
+- **Memory provider**: `holographic` — local SQLite FTS5 fact store with trust scoring and HRR-based compositional retrieval. DB at `~/.hermes/memory_store.db`. Additive to built-in MEMORY.md/USER.md. Deployed 2026-04-12.
 
 ## Commands
 
@@ -232,21 +233,52 @@ Verify: `hermes mcp list` should show github as enabled.
 ## Planned Phases (not yet implemented)
 
 - **Phase 9b — Playwright + CI fixer + E2E harness + backup drill + `hermes doctor` search check**.
-- **Phase 10 — Dashboard UX audit + consolidation**: Fix three systemic
-  problems: (1) route redundancy — /desk vs /sessions, /desk approvals
-  vs /approvals, /workflows vs /cron all show overlapping data; audit
-  all overlap and merge or redirect. (2) Brain layout — replace overlay
-  browser with persistent split-pane (tree sidebar always visible next
-  to document reader). (3) Route statefulness — push state into URL
-  search params so every route remembers where you were across refresh,
-  back button, and browser close. Full scope in memory file
-  `project_dashboard_ux_audit.md`.
-- **Phase 5b — Claude Code orchestration tile**: `claude_code_dispatch`
+- **Phase 11 — Dashboard convergence + differentiator investment**:
+  Cost controls (per-session budget caps with agent-local enforcement,
+  cost alert strip on Home), browser notifications for approvals and
+  budget events, cron job creation form (collapsible, with inline
+  schedule validation), tool-call collapse/truncate in session
+  transcripts. Plan at `~/.claude/plans/cheerful-doodling-sparkle.md`.
+- **Phase 12 — Claude Code orchestration tile**: `claude_code_dispatch`
   tool + `/claude` dashboard route, spawning Claude Code as a sub-agent
   in isolated git worktrees via `claude-agent-sdk-python`. Key use case:
   start a long CC task through Hermes, walk away, get Discord
   notifications when done or when CC needs input, reply via Discord.
-  Plan at `~/.claude/plans/tranquil-dreaming-dragonfly.md` §R5.
+
+## Dashboard Convergence (post v0.9.0)
+
+Upstream shipped a built-in dashboard in v0.9.0 (FastAPI at `:9119`,
+`hermes dashboard` command). Our custom dashboard (`:8642/dashboard/`)
+remains the primary operational control plane.
+
+**Two dashboards, separate file spaces:**
+- `:8642/dashboard/` = **Operator's Desk** (always-on, in-process with
+  gateway). Owns: session control plane, approvals, brain, workflows,
+  live events, safe config, tool invocation, memory editor.
+- `:9119` = **Upstream dashboard** (opt-in via `hermes dashboard`).
+  Use for: analytics charts, log viewer, config schema forms, skills
+  browser, OAuth provider management, env var management.
+
+**Never-touch rule:** Do not modify files in `web/` or
+`hermes_cli/web_server.py`. Zero diff on these files = zero merge
+conflicts on dashboard code. All upstream dashboard evolution flows
+through cleanly.
+
+**Do not build in our dashboard:** Analytics pages, log viewers, config
+schema-driven forms, skills category browsers — upstream owns these.
+Invest in our irreplaceable routes instead.
+
+### Upstream Merge Protocol
+
+When `git merge upstream/main` creates conflicts:
+
+| File | Resolution |
+|------|-----------|
+| `hermes_state.py` | Accept upstream schema version, re-number our migrations above it |
+| `gateway/run.py` | Keep both additions (event bus, workflow resume, control plane), merge around upstream changes |
+| `gateway/platforms/api_server.py` | Preserve our CORS fix + dashboard registration block |
+| `hermes_cli/config.py` | Accept upstream's new keys, keep ours (`code_execution`, `safe_roots`, `denied_paths`, `non_interactive_policy`) |
+| `tools/approval.py` | Our `list_pending_approvals_for_dashboard` is additive |
 
 ## Design System
 

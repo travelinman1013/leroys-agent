@@ -726,11 +726,16 @@ export const api = {
     }),
 
   // Phase 8a: Session control plane
-  spawnSession: (body: { message: string; title?: string; timeout_seconds?: number }) =>
+  spawnSession: (body: { message: string; title?: string; timeout_seconds?: number; budget_usd?: number }) =>
     apiFetch<SpawnSessionResponse>("/api/dashboard/sessions", {
       method: "POST",
       body: JSON.stringify(body),
     }),
+
+  costSummary: () =>
+    apiFetch<{ today_usd: number; week_usd: number; threshold_usd: number; above_threshold: boolean }>(
+      "/api/dashboard/cost/summary",
+    ),
 
   killSession: (id: string, reason?: string) =>
     apiFetch<{ session_id: string; killed: boolean; was_running: boolean }>(

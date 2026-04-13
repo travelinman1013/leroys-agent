@@ -373,16 +373,27 @@ function Turn({
 }
 
 function ToolCallout({ name, args }: { name: string; args: unknown }) {
+  const [expanded, setExpanded] = useState(false);
   const argsString =
     typeof args === "string" ? args : JSON.stringify(args, null, 2);
+  const hasArgs = argsString && argsString.length > 2;
   return (
     <div className="mt-3 border-l border-oxide-edge bg-oxide-wash px-4 py-2.5">
-      <div className="font-mono text-[10px] uppercase tracking-marker text-oxide">
+      <button
+        type="button"
+        onClick={() => hasArgs && setExpanded(!expanded)}
+        className="flex w-full items-center gap-2 text-left font-mono text-[10px] uppercase tracking-marker text-oxide"
+      >
         {name}
-      </div>
-      {argsString && (
-        <div className="mt-1 font-mono text-[12px] text-ink-2">
-          {argsString}
+        {hasArgs && (
+          <span className="text-ink-faint text-[9px] normal-case tracking-normal">
+            {expanded ? "(collapse)" : "(args)"}
+          </span>
+        )}
+      </button>
+      {expanded && argsString && (
+        <div className="mt-1 max-h-[300px] overflow-auto font-mono text-[12px] text-ink-2">
+          <pre className="whitespace-pre-wrap break-words">{argsString}</pre>
         </div>
       )}
     </div>
@@ -390,9 +401,22 @@ function ToolCallout({ name, args }: { name: string; args: unknown }) {
 }
 
 function ToolOutput({ body }: { body: string }) {
+  const [showAll, setShowAll] = useState(false);
+  const lines = body.split("\n");
+  const truncated = lines.length > 50;
+  const displayBody = truncated && !showAll ? lines.slice(0, 10).join("\n") : body;
   return (
     <div className="mt-2 border-l border-rule pl-4 font-mono text-[11px] leading-relaxed tabular-nums text-ink-muted">
-      <pre className="whitespace-pre-wrap break-words">{body}</pre>
+      <pre className="whitespace-pre-wrap break-words">{displayBody}</pre>
+      {truncated && (
+        <button
+          type="button"
+          onClick={() => setShowAll(!showAll)}
+          className="mt-1 font-mono text-[10px] text-oxide hover:underline"
+        >
+          {showAll ? "Collapse" : `Show all (${lines.length} lines)`}
+        </button>
+      )}
     </div>
   );
 }

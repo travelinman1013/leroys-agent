@@ -33,7 +33,7 @@ T = TypeVar("T")
 
 DEFAULT_DB_PATH = get_hermes_home() / "state.db"
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -69,6 +69,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     title TEXT,
     session_key TEXT,
     workflow_run_id TEXT,
+    budget_usd REAL,
     FOREIGN KEY (parent_session_id) REFERENCES sessions(id)
 );
 
@@ -483,6 +484,13 @@ class SessionDB:
                     "ON sessions(workflow_run_id)"
                 )
                 cursor.execute("UPDATE schema_version SET version = 9")
+
+            if current_version < 10:
+                # v10: per-session budget cap for dashboard cost controls.
+                cursor.execute(
+                    "ALTER TABLE sessions ADD COLUMN budget_usd REAL"
+                )
+                cursor.execute("UPDATE schema_version SET version = 10")
 
         # Unique title index — always ensure it exists (safe to run after migrations
         # since the title column is guaranteed to exist at this point)
