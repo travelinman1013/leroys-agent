@@ -9,6 +9,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import { Prose } from "./Prose";
+import { SessionLogViewer, looksLikeSessionLog } from "./SessionLogViewer";
 
 type Props = {
   source: string;
@@ -61,6 +62,7 @@ export function BrainReader({ source, path }: Props) {
   const ext = (docPath ?? path).split(".").pop()?.toLowerCase() ?? "";
   const isMarkdown = ext === "md" || ext === "markdown" || ext === "";
   const isJson = ext === "json" || ext === "jsonl";
+  const isSessionLog = isJson && body && looksLikeSessionLog(body);
 
   return (
     <div className="h-full overflow-y-auto px-10 py-8">
@@ -84,6 +86,8 @@ export function BrainReader({ source, path }: Props) {
         <div className="py-12 text-center font-mono text-[11px] uppercase tracking-marker text-ink-faint">
           empty document
         </div>
+      ) : isSessionLog ? (
+        <SessionLogViewer raw={body} />
       ) : isMarkdown ? (
         <Prose body={body} />
       ) : (

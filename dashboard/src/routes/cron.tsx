@@ -11,12 +11,16 @@ import { api } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Play, Pause, Trash2 } from "lucide-react";
 import { compactRelTimeFromUnix, relTimeFromUnix } from "@/lib/utils";
+import { cronSearch, useSyncSearchToStorage } from "@/lib/searchParams";
 
 export const Route = createFileRoute("/cron")({
   component: CronPage,
+  validateSearch: cronSearch,
 });
 
 function CronPage() {
+  const { expanded } = Route.useSearch();
+  useSyncSearchToStorage("cron", { expanded });
   const qc = useQueryClient();
   const { data, isLoading, error } = useQuery({
     queryKey: ["cron", "jobs"],

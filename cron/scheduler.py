@@ -595,12 +595,27 @@ def _run_workflow_job(job: dict, session_db=None) -> tuple[bool, str, str, Optio
     result = run_workflow(wf, trigger_meta=trigger_meta, db=session_db)
 
     if result.status == "completed":
-        # Build a summary from step outputs
-        summaries = []
-        for sr in result.steps:
-            if sr.output:
-                summaries.append(f"**{sr.step_name}**: {sr.output}")
-        final_response = "\n\n".join(str(s) for s in summaries) if summaries else "Workflow completed."
+        # Try to extract a clean summary from the last step's output.
+        # Workflow harnesses (e.g. morning_repo_scan) return a dict with
+        # a "summary" key containing formatted markdown.  Deliver that
+        # instead of dumping raw step dicts.
+        final_response = None
+        if result.steps:
+            last = result.steps[-1]
+            if isinstance(last.output, dict) and "summary" in last.output:
+                final_response = last.output["summary"]
+
+        if not final_response:
+            # Fallback: concatenate step outputs as strings
+            parts = []
+            for sr in result.steps:
+                if sr.output:
+                    out = sr.output
+                    if isinstance(out, dict):
+                        # Try common keys before repr
+                        out = out.get("summary", out.get("result", str(out)))
+                    parts.append(f"**{sr.step_name}**: {out}")
+            final_response = "\n\n".join(str(p) for p in parts) if parts else "Workflow completed."
         return (True, final_response, final_response, None)
     else:
         return (False, "", "", result.error or "Workflow failed")

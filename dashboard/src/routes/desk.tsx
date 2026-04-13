@@ -9,8 +9,12 @@
  */
 
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
+import { sessionsSearch, useSyncSearchToStorage } from "@/lib/searchParams";
+import { SessionFilters, type SessionFilterState } from "@/components/SessionFilters";
+import { BulkActionsBar } from "@/components/BulkActionsBar";
+import { formatCost } from "@/components/TableParts";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, subscribeEvents, type HermesEvent, type SessionListRow } from "@/lib/api";
 import { useApiMutation } from "@/lib/mutations";
 import { useConfirm } from "@/lib/confirm";
@@ -23,6 +27,7 @@ import {
 
 export const Route = createFileRoute("/desk")({
   component: DeskPage,
+  validateSearch: sessionsSearch,
 });
 
 // ---------------------------------------------------------------------------
@@ -206,16 +211,50 @@ function DeskPage() {
   // Track running count from SSE for the ONE BIG NUMBER
   const [runningCount, setRunningCount] = useState<number | null>(null);
 
-  // Fetch sessions with status enrichment (Phase 8a)
-  const { data, isLoading, error } = useQuery({
-    queryKey: ["dashboard", "desk", "sessions"],
+  // Archive filters from URL search params
+  const filters = Route.useSearch();
+  useSyncSearchToStorage("desk", filters);
+  const setFilters = (next: SessionFilterState) =>
+    navigate({ to: "/desk", search: next, replace: true });
+
+  // Archive selection state (transient, not URL)
+  const [archiveSelected, setArchiveSelected] = useState<Set<string>>(new Set());
+
+  // Running sessions query (fast poll + SSE invalidation)
+  const { data } = useQuery({
+    queryKey: ["dashboard", "sessions", "running"],
     queryFn: () => api.sessions({ limit: 50 }),
-    refetchInterval: 5_000, // faster polling for live view
+    refetchInterval: 5_000,
   });
 
   const sessions = (data?.sessions ?? []) as SessionListRow[];
   const runningSessions = sessions.filter((s) => s.status === "running");
-  const recentSessions = sessions.filter((s) => s.status !== "running").slice(0, 20);
+
+  // Archive query (slower poll, filter-driven)
+  const { fromUnix } = useMemo(() => {
+    if (!filters.fromDays) return { fromUnix: undefined };
+    const now = Date.now() / 1000;
+    return { fromUnix: now - filters.fromDays * 86400 };
+  }, [filters.fromDays]);
+  const isFiltered = Boolean(filters.q || filters.source || fromUnix);
+
+  const archive = useQuery({
+    queryKey: ["dashboard", "sessions", "archive", filters],
+    queryFn: () =>
+      isFiltered
+        ? api.searchSessions({
+            q: filters.q || undefined,
+            source: filters.source || undefined,
+            from: fromUnix,
+            limit: 100,
+          })
+        : api.sessions({ limit: 100 }),
+    refetchInterval: 15_000,
+  });
+  const archiveSessions = (archive.data?.sessions ?? []) as SessionListRow[];
+  const archiveNonRunning = archiveSessions.filter((s) => s.status !== "running");
+  const allArchiveSelected =
+    archiveNonRunning.length > 0 && archiveNonRunning.every((s) => archiveSelected.has(s.id));
 
   // Sync running count from query data
   useEffect(() => {
@@ -233,7 +272,7 @@ function DeskPage() {
           event.type === "turn.ended"
         ) {
           queryClient.invalidateQueries({
-            queryKey: ["dashboard", "desk", "sessions"],
+            queryKey: ["dashboard", "sessions", "running"],
           });
         }
 
@@ -260,7 +299,7 @@ function DeskPage() {
   const spawnMut = useApiMutation({
     mutationFn: (body: { message: string; title?: string; timeout_seconds?: number }) =>
       api.spawnSession(body),
-    invalidate: [["dashboard", "desk", "sessions"]],
+    invalidate: [["dashboard", "sessions"]],
     successMessage: (data) =>
       `Session spawned: ${data.session_id.slice(0, 8)}`,
   });
@@ -284,7 +323,7 @@ function DeskPage() {
   // Kill mutation
   const killMut = useApiMutation({
     mutationFn: (id: string) => api.killSession(id),
-    invalidate: [["dashboard", "desk", "sessions"]],
+    invalidate: [["dashboard", "sessions"]],
     successMessage: (data) =>
       data.killed
         ? `Killed ${data.session_id.slice(0, 8)}`
@@ -466,29 +505,73 @@ function DeskPage() {
         </div>
       )}
 
-      {/* Recent sessions */}
-      <div className="px-10 pb-16">
+      {/* Archive sessions (full list with filters + bulk actions) */}
+      <div className="border-t border-rule px-10 pb-16 pt-6">
         <div className="mb-3 flex items-center gap-3">
           <span className="font-mono text-[9px] uppercase tracking-marker text-ink-faint">
-            ─── RECENT ──────────────────────────────────
+            ─── ARCHIVE ─────────────────────────────────
           </span>
+          {isFiltered && (
+            <span className="font-mono text-[9px] uppercase tracking-marker text-oxide">
+              FILTERED
+            </span>
+          )}
         </div>
 
-        {isLoading && (
+        <SessionFilters value={filters} onChange={setFilters} />
+        <BulkActionsBar
+          selectedCount={archiveSelected.size}
+          onDelete={async () => {
+            const ids = Array.from(archiveSelected);
+            const ok = await confirm({
+              title: `Delete ${ids.length} session${ids.length === 1 ? "" : "s"}?`,
+              description: "Cannot be undone.",
+              destructive: true,
+              confirmLabel: "DELETE",
+            });
+            if (!ok) return;
+            const result = await api.bulkSessions({ ids, action: "delete" });
+            const okCount = result.results.filter((r: { ok: boolean }) => r.ok).length;
+            notify.success(`Deleted ${okCount} sessions`);
+            setArchiveSelected(new Set());
+            queryClient.invalidateQueries({ queryKey: ["dashboard", "sessions"] });
+          }}
+          onExport={async () => {
+            for (const id of archiveSelected) {
+              api.downloadSession(id, "json").catch(() => {});
+            }
+            notify.success(`Triggered ${archiveSelected.size} downloads`);
+          }}
+          onClear={() => setArchiveSelected(new Set())}
+        />
+
+        {archive.isLoading && (
           <p className="font-mono text-[11px] uppercase tracking-marker text-ink-muted">
             loading<span className="loading-cursor ml-2" />
           </p>
         )}
-        {error && (
+        {archive.error && (
           <p className="font-mono text-[11px] uppercase tracking-marker text-danger">
-            {(error as Error).message}
+            {(archive.error as Error).message}
           </p>
         )}
 
-        {recentSessions.length > 0 && (
+        {archiveNonRunning.length > 0 && (
           <table className="w-full table-auto border-collapse font-mono text-[12px] tabular-nums text-ink [&_td]:break-words">
             <thead className="sticky top-0 z-10 bg-bg">
               <tr>
+                <Th align="left">
+                  <input
+                    type="checkbox"
+                    checked={allArchiveSelected}
+                    onChange={() => {
+                      if (allArchiveSelected) setArchiveSelected(new Set());
+                      else setArchiveSelected(new Set(archiveNonRunning.map((s) => s.id)));
+                    }}
+                    aria-label="Select all"
+                    className="accent-oxide"
+                  />
+                </Th>
                 <Th>STATUS</Th>
                 <Th>ID</Th>
                 <Th>TITLE</Th>
@@ -498,69 +581,89 @@ function DeskPage() {
                 <Th align="right">TOK</Th>
                 <Th align="right">COST</Th>
                 <Th align="right">LAST</Th>
+                <Th align="right">ACTIONS</Th>
               </tr>
             </thead>
             <tbody>
-              {recentSessions.map((s) => (
-                <tr
-                  key={s.id}
-                  role="link"
-                  tabIndex={0}
-                  onClick={() =>
-                    navigate({
-                      to: "/sessions/$id",
-                      params: { id: s.id },
-                    })
-                  }
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" || e.key === " ") {
-                      e.preventDefault();
-                      navigate({
-                        to: "/sessions/$id",
-                        params: { id: s.id },
-                      });
+              {archiveNonRunning.map((s) => {
+                const checked = archiveSelected.has(s.id);
+                return (
+                  <tr
+                    key={s.id}
+                    role="link"
+                    tabIndex={0}
+                    onClick={() =>
+                      navigate({ to: "/sessions/$id", params: { id: s.id } })
                     }
-                  }}
-                  className="group cursor-pointer border-b border-rule align-top transition-colors duration-120 ease-operator hover:bg-oxide-wash focus-visible:bg-oxide-wash focus-visible:outline-none"
-                >
-                  <td className="px-3 py-2.5">
-                    <StatusBadge status={s.status ?? "ended"} />
-                  </td>
-                  <td className="px-3 py-2.5 text-ink-faint group-hover:text-oxide">
-                    {s.id.slice(0, 8)}
-                  </td>
-                  <td className="px-3 py-2.5 text-ink group-hover:text-oxide group-hover:underline group-hover:decoration-rule group-hover:underline-offset-4">
-                    {s.title || s.preview || "(no preview)"}
-                  </td>
-                  <td className="px-3 py-2.5 text-ink-2">{s.source}</td>
-                  <td className="px-3 py-2.5 text-ink-2">
-                    {s.model ? String(s.model).split("/").pop() : "---"}
-                  </td>
-                  <td className="px-3 py-2.5 text-right text-ink">
-                    {compactNumber(s.message_count)}
-                  </td>
-                  <td className="px-3 py-2.5 text-right text-ink">
-                    {compactNumber(
-                      (s.input_tokens ?? 0) + (s.output_tokens ?? 0),
-                    )}
-                  </td>
-                  <td className="px-3 py-2.5 text-right text-ink-2">
-                    {s.estimated_cost_usd != null
-                      ? `$${s.estimated_cost_usd < 0.01 ? s.estimated_cost_usd.toFixed(4) : s.estimated_cost_usd.toFixed(2)}`
-                      : "---"}
-                  </td>
-                  <td className="px-3 py-2.5 text-right text-ink-faint">
-                    {compactRelTimeFromUnix(s.last_active ?? s.started_at)}
-                  </td>
-                </tr>
-              ))}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        navigate({ to: "/sessions/$id", params: { id: s.id } });
+                      }
+                    }}
+                    className="group cursor-pointer border-b border-rule align-top transition-colors duration-120 ease-operator hover:bg-oxide-wash focus-visible:bg-oxide-wash focus-visible:outline-none"
+                  >
+                    <td className="px-3 py-2.5" onClick={(e) => e.stopPropagation()}>
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={() => {
+                          setArchiveSelected((prev) => {
+                            const next = new Set(prev);
+                            if (next.has(s.id)) next.delete(s.id);
+                            else next.add(s.id);
+                            return next;
+                          });
+                        }}
+                        aria-label={`Select ${s.id}`}
+                        className="accent-oxide"
+                      />
+                    </td>
+                    <td className="px-3 py-2.5">
+                      <StatusBadge status={s.status ?? "ended"} />
+                    </td>
+                    <td className="px-3 py-2.5 text-ink-faint group-hover:text-oxide">
+                      {s.id.slice(0, 8)}
+                    </td>
+                    <td className="px-3 py-2.5 text-ink group-hover:text-oxide group-hover:underline group-hover:decoration-rule group-hover:underline-offset-4">
+                      {s.title || s.preview || "(no preview)"}
+                    </td>
+                    <td className="px-3 py-2.5 text-ink-2">{s.source}</td>
+                    <td className="px-3 py-2.5 text-ink-2">
+                      {s.model ? String(s.model).split("/").pop() : "—"}
+                    </td>
+                    <td className="px-3 py-2.5 text-right text-ink">
+                      {compactNumber(s.message_count)}
+                    </td>
+                    <td className="px-3 py-2.5 text-right text-ink">
+                      {compactNumber((s.input_tokens ?? 0) + (s.output_tokens ?? 0))}
+                    </td>
+                    <td className="px-3 py-2.5 text-right text-ink-2">
+                      {formatCost(s.estimated_cost_usd)}
+                    </td>
+                    <td className="px-3 py-2.5 text-right text-ink-faint">
+                      {compactRelTimeFromUnix(s.last_active ?? s.started_at)}
+                    </td>
+                    <td className="px-3 py-2.5 text-right" onClick={(e) => e.stopPropagation()}>
+                      <button
+                        type="button"
+                        onClick={() => api.downloadSession(s.id, "json")}
+                        className="inline-flex items-baseline gap-1 font-mono text-[10px] uppercase tracking-marker text-ink-muted hover:text-oxide"
+                        title="Export session as JSON"
+                      >
+                        <span aria-hidden>↓</span> EXPORT
+                      </button>
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         )}
 
-        {recentSessions.length === 0 && !isLoading && runningSessions.length === 0 && (
+        {archiveNonRunning.length === 0 && !archive.isLoading && (
           <p className="mt-6 font-mono text-[11px] uppercase tracking-marker text-ink-faint">
-            no sessions yet
+            {isFiltered ? "no sessions match" : "no sessions yet"}
           </p>
         )}
       </div>

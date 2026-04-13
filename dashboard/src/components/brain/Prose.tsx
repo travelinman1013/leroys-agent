@@ -18,6 +18,7 @@ import remarkGfm from "remark-gfm";
 import rehypeRaw from "rehype-raw";
 import type { Components } from "react-markdown";
 import { cn } from "@/lib/utils";
+import { MermaidBlock } from "./MermaidBlock";
 
 type Props = {
   body: string;
@@ -87,6 +88,12 @@ const components: Components = {
   code: ({ children, className: codeClassName, ...rest }) => {
     // Detect if this is inside a <pre> (fenced code block) vs inline
     const isBlock = codeClassName?.startsWith("language-");
+
+    // Mermaid fenced code blocks → render as diagram
+    if (codeClassName === "language-mermaid") {
+      return <MermaidBlock code={String(children).replace(/\n$/, "")} />;
+    }
+
     if (isBlock) {
       return (
         <code
@@ -109,14 +116,23 @@ const components: Components = {
       </code>
     );
   },
-  pre: ({ children, ...rest }) => (
-    <pre
-      className="my-4 overflow-x-auto bg-surface p-4 font-mono text-[13px] leading-snug"
-      {...rest}
-    >
-      {children}
-    </pre>
-  ),
+  pre: ({ children, ...rest }) => {
+    // MermaidBlock is already a complete component — skip the pre wrapper.
+    // react-markdown renders code inside pre; if the code handler returned
+    // a MermaidBlock, the child won't be a <code> element.
+    const child = children as React.ReactElement;
+    if (child?.type === MermaidBlock) {
+      return <>{children}</>;
+    }
+    return (
+      <pre
+        className="my-4 overflow-x-auto bg-surface p-4 font-mono text-[13px] leading-snug"
+        {...rest}
+      >
+        {children}
+      </pre>
+    );
+  },
   ul: ({ children, ...rest }) => (
     <ul className="mb-4 list-disc pl-6 font-body text-[15px] text-ink" {...rest}>
       {children}
