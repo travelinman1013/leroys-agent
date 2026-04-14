@@ -202,7 +202,7 @@ function HomeInbox() {
               <div
                 key={String(job.id ?? Math.random())}
                 className="group grid grid-cols-[1fr_auto] items-baseline gap-4 py-1 font-mono text-[12px] tabular-nums text-ink-2"
-                title={expr}
+                title={name}
               >
                 <span className="truncate">{name}</span>
                 <span className="text-ink">
