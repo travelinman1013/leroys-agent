@@ -73,12 +73,12 @@ function HomeInbox() {
     .replace(":", ":");
 
   return (
-    <div className="grid h-full grid-cols-[1fr_360px]">
+    <div className="grid h-full grid-cols-1 lg:grid-cols-[1fr_360px]">
       {/* ─── LEFT: stamp + one number + event rail ─────────── */}
       <section className="flex min-h-0 flex-col border-r border-rule">
         {/* page-stamp + meta */}
         <div className="flex items-baseline gap-7 border-b border-rule px-10 pb-6 pt-9">
-          <h1 className="page-stamp text-[56px]">
+          <h1 className="page-stamp">
             hermes,
             <br />
             <em>{day}</em>
@@ -165,7 +165,7 @@ function HomeInbox() {
       </section>
 
       {/* ─── RIGHT RAIL ────────────────────────────────────── */}
-      <aside className="flex flex-col gap-0 overflow-y-auto bg-bg-alt">
+      <aside className="flex h-[300px] flex-col gap-0 overflow-y-auto bg-bg-alt lg:h-full">
         <RailPanel
           title="Brain"
           right={

@@ -305,6 +305,26 @@
   background: var(--ink-faint);
 }
 
+/* ───── Responsive table scroll wrapper ────────────────────── */
+@media (max-width: 1023px) {
+  .responsive-table-wrap {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+}
+
+/* ───── Responsive page stamp sizing ──────────────────────── */
+.page-stamp { font-size: 32px; }
+@media (min-width: 640px) { .page-stamp { font-size: 40px; } }
+@media (min-width: 768px) { .page-stamp { font-size: 48px; } }
+@media (min-width: 1024px) { .page-stamp { font-size: 56px; } }
+
+/* ───── Responsive body padding ───────────────────────────── */
+.page-body { padding-left: 1rem; padding-right: 1rem; }
+@media (min-width: 640px) { .page-body { padding-left: 1.5rem; padding-right: 1.5rem; } }
+@media (min-width: 768px) { .page-body { padding-left: 2rem; padding-right: 2rem; } }
+@media (min-width: 1024px) { .page-body { padding-left: 2.5rem; padding-right: 2.5rem; } }
+
 /* ───── Reduced motion (Amendment X) ─────────────────────── */
 @media (prefers-reduced-motion: reduce) {
   *,

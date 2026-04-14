@@ -18,6 +18,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, subscribeEvents, type HermesEvent, type SessionListRow } from "@/lib/api";
 import { useApiMutation } from "@/lib/mutations";
 import { useConfirm } from "@/lib/confirm";
+import { ToolsPanel } from "@/components/ToolsPanel";
 import { useNotify } from "@/lib/notifications";
 import {
   compactNumber,
@@ -111,6 +112,8 @@ function SpawnDialog({
             }
           }}
         />
+
+        <ToolsPanel />
 
         <div className="mb-4 grid grid-cols-2 gap-4">
           <div>
@@ -265,6 +268,7 @@ function DeskPage() {
   });
   const archiveSessions = (archive.data?.sessions ?? []) as SessionListRow[];
   const archiveNonRunning = archiveSessions.filter((s) => s.status !== "running");
+  const searchQuery = filters.q?.trim() || "";
   const allArchiveSelected =
     archiveNonRunning.length > 0 && archiveNonRunning.every((s) => archiveSelected.has(s.id));
 
@@ -368,7 +372,7 @@ function DeskPage() {
       {/* Stamp + ONE BIG NUMBER + spawn button */}
       <div className="flex items-end justify-between px-10 pb-6 pt-9">
         <div>
-          <h1 className="page-stamp text-[56px]">
+          <h1 className="page-stamp">
             operator's <em>desk</em>
           </h1>
           <div className="mt-2 flex items-baseline gap-4">
@@ -402,6 +406,7 @@ function DeskPage() {
               ─── RUNNING ─────────────────────────────────
             </span>
           </div>
+          <div className="responsive-table-wrap">
           <table className="w-full table-auto border-collapse font-mono text-[12px] tabular-nums text-ink [&_td]:break-words">
             <thead>
               <tr>
@@ -412,6 +417,7 @@ function DeskPage() {
                 <Th align="right">ELAPSED</Th>
                 <Th align="right">MSGS</Th>
                 <Th align="right">TOK</Th>
+                <Th align="right">COST</Th>
                 <Th align="right">ACTIONS</Th>
               </tr>
             </thead>
@@ -460,6 +466,9 @@ function DeskPage() {
                       (s.input_tokens ?? 0) + (s.output_tokens ?? 0),
                     )}
                   </td>
+                  <td className={`px-3 py-2.5 text-right ${(s.estimated_cost_usd ?? 0) > 0.5 ? "text-oxide" : "text-ink-2"}`}>
+                    {formatCost(s.estimated_cost_usd)}
+                  </td>
                   <td
                     className="px-3 py-2.5 text-right"
                     onClick={(e) => e.stopPropagation()}
@@ -477,6 +486,7 @@ function DeskPage() {
               ))}
             </tbody>
           </table>
+          </div>
         </div>
       )}
 
@@ -532,6 +542,7 @@ function DeskPage() {
         )}
 
         {archiveNonRunning.length > 0 && (
+          <div className="responsive-table-wrap">
           <table className="w-full table-auto border-collapse font-mono text-[12px] tabular-nums text-ink [&_td]:break-words">
             <thead className="sticky top-0 z-10 bg-bg">
               <tr>
@@ -601,7 +612,12 @@ function DeskPage() {
                       {s.id.slice(0, 8)}
                     </td>
                     <td className="px-3 py-2.5 text-ink group-hover:text-oxide group-hover:underline group-hover:decoration-rule group-hover:underline-offset-4">
-                      {s.title || s.preview || "(no preview)"}
+                      <div>{s.title || s.preview || "(no preview)"}</div>
+                      {searchQuery && s.preview && (
+                        <div className="mt-0.5 font-mono text-[10px] leading-snug text-ink-faint">
+                          <HighlightSnippet text={s.preview} query={searchQuery} />
+                        </div>
+                      )}
                     </td>
                     <td className="px-3 py-2.5 text-ink-2">{s.source}</td>
                     <td className="px-3 py-2.5 text-ink-2">
@@ -634,6 +650,7 @@ function DeskPage() {
               })}
             </tbody>
           </table>
+          </div>
         )}
 
         {archiveNonRunning.length === 0 && !archive.isLoading && (
@@ -652,6 +669,34 @@ function DeskPage() {
       />
     </div>
   );
+}
+
+// ---------------------------------------------------------------------------
+// F9 — Snippet highlighting for search results
+// ---------------------------------------------------------------------------
+
+function HighlightSnippet({ text, query }: { text: string; query: string }) {
+  if (!query) return <>{text}</>;
+  try {
+    const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const regex = new RegExp(`(${escaped})`, "gi");
+    const parts = text.split(regex);
+    return (
+      <>
+        {parts.map((part, i) =>
+          regex.test(part) ? (
+            <mark key={i} className="bg-oxide-wash text-oxide">
+              {part}
+            </mark>
+          ) : (
+            <span key={i}>{part}</span>
+          ),
+        )}
+      </>
+    );
+  } catch {
+    return <>{text}</>;
+  }
 }
 
 // ---------------------------------------------------------------------------

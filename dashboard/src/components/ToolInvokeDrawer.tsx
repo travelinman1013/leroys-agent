@@ -239,7 +239,7 @@ export function ToolInvokeDrawer({
 
   return (
     <Sheet open={open} onOpenChange={onOpenChange}>
-      <SheetContent width="w-[560px]">
+      <SheetContent width="w-full sm:w-[480px] md:w-[560px]">
         <SheetHeader>
           <SheetTitle>INVOKE · {toolName}</SheetTitle>
           <SheetDescription>

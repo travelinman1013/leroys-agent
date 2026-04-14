@@ -105,7 +105,7 @@ function SkillsPage() {
 
       {/* Page stamp */}
       <div className="px-10 pb-6 pt-9">
-        <h1 className="page-stamp text-[56px]">
+        <h1 className="page-stamp">
           installed <em>skills</em>
         </h1>
         <p className="mt-3 font-mono text-[10px] uppercase tracking-marker text-ink-muted">

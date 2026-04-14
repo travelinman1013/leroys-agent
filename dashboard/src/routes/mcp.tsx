@@ -38,7 +38,7 @@ function MCPPage() {
       </div>
 
       <div className="px-10 pb-6 pt-9">
-        <h1 className="page-stamp text-[56px]">
+        <h1 className="page-stamp">
           mcp <em>servers</em>
         </h1>
       </div>
@@ -49,6 +49,7 @@ function MCPPage() {
             loading mcp config<span className="loading-cursor ml-2" />
           </p>
         )}
+        <div className="responsive-table-wrap">
         <table className="w-full border-collapse font-mono text-[12px] tabular-nums text-ink">
           <thead>
             <tr>
@@ -91,6 +92,7 @@ function MCPPage() {
             ))}
           </tbody>
         </table>
+        </div>
         {servers.length === 0 && !isLoading && (
           <p className="mt-6 font-mono text-[11px] uppercase tracking-marker text-ink-faint">
             no mcp servers configured

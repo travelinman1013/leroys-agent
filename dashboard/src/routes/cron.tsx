@@ -13,6 +13,7 @@ import { createFileRoute } from "@tanstack/react-router";
 import { useState, useCallback } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
+import { ToolsPanel } from "@/components/ToolsPanel";
 import { Button } from "@/components/ui/button";
 import { Play, Pause, Trash2, Plus, ChevronUp } from "lucide-react";
 import { compactRelTime } from "@/lib/utils";
@@ -81,7 +82,7 @@ function CronPage() {
       </div>
 
       <div className="px-10 pb-6 pt-9">
-        <h1 className="page-stamp text-[56px]">
+        <h1 className="page-stamp">
           <em>scheduled</em> tasks
         </h1>
         <p className="mt-3 font-mono text-[10px] uppercase tracking-marker text-ink-muted">
@@ -105,6 +106,7 @@ function CronPage() {
       )}
 
       <div className="px-10 pb-16">
+        <div className="responsive-table-wrap">
         <table className="w-full border-collapse font-mono text-[12px] tabular-nums text-ink">
           <thead>
             <tr>
@@ -140,6 +142,7 @@ function CronPage() {
             ))}
           </tbody>
         </table>
+        </div>
 
         {jobs.length === 0 && !isLoading && (
           <p className="mt-6 font-mono text-[11px] uppercase tracking-marker text-ink-faint">
@@ -474,13 +477,16 @@ function CronCreateForm({ onCreated }: { onCreated: () => void }) {
         />
 
         {mode === "prompt" ? (
-          <textarea
-            placeholder="What should the agent do on each run?"
-            value={prompt}
-            onChange={(e) => setPrompt(e.target.value)}
-            rows={3}
-            className="w-full resize-y border border-rule bg-bg px-3 py-1.5 font-mono text-[12px] text-ink placeholder:text-ink-faint focus:border-oxide-edge focus:outline-none"
-          />
+          <>
+            <textarea
+              placeholder="What should the agent do on each run?"
+              value={prompt}
+              onChange={(e) => setPrompt(e.target.value)}
+              rows={3}
+              className="w-full resize-y border border-rule bg-bg px-3 py-1.5 font-mono text-[12px] text-ink placeholder:text-ink-faint focus:border-oxide-edge focus:outline-none"
+            />
+            <ToolsPanel />
+          </>
         ) : (
           <div>
             <select
