@@ -1789,20 +1789,18 @@ class DashboardRoutes:
                 today - _dt.timedelta(days=today.weekday()), _dt.time.min
             ).timestamp()
 
-            def _query(conn):
-                row_today = conn.execute(
-                    "SELECT COALESCE(SUM(estimated_cost_usd), 0) "
-                    "FROM sessions WHERE started_at >= ?",
-                    (today_start,),
-                ).fetchone()
-                row_week = conn.execute(
-                    "SELECT COALESCE(SUM(estimated_cost_usd), 0) "
-                    "FROM sessions WHERE started_at >= ?",
-                    (week_start,),
-                ).fetchone()
-                return row_today[0], row_week[0]
-
-            cost_today, cost_week = db._execute_read(_query)
+            row_today = db._conn.execute(
+                "SELECT COALESCE(SUM(estimated_cost_usd), 0) "
+                "FROM sessions WHERE started_at >= ?",
+                (today_start,),
+            ).fetchone()
+            row_week = db._conn.execute(
+                "SELECT COALESCE(SUM(estimated_cost_usd), 0) "
+                "FROM sessions WHERE started_at >= ?",
+                (week_start,),
+            ).fetchone()
+            cost_today = row_today[0] if row_today else 0
+            cost_week = row_week[0] if row_week else 0
             threshold = 5.0
             try:
                 cfg = _load_gateway_config()

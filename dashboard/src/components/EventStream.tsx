@@ -24,7 +24,8 @@ const EVENT_CATEGORIES = [
   { label: "APPROVAL", patterns: ["approval.requested", "approval.resolved"] },
   { label: "COMPACT", patterns: ["compaction"] },
   { label: "CRON", patterns: ["cron.fired"] },
-  { label: "SESSION", patterns: ["session.started", "session.ended", "session.forked", "session.injected", "session.deleted", "session.exported", "session.reopened"] },
+  { label: "SESSION", patterns: ["session.started", "session.ended", "session.spawned", "session.killed", "session.forked", "session.injected", "session.deleted", "session.exported", "session.reopened", "session.budget_exceeded"] },
+  { label: "WORKFLOW", patterns: ["workflow.started", "workflow.state_changed", "workflow.completed", "workflow.step_error", "workflow.checkpoint_written", "workflow.file_change"] },
   { label: "MEMORY", patterns: ["memory.added", "memory.replaced", "memory.removed"] },
 ] as const;
 
@@ -355,8 +356,43 @@ function summarizeData(event: HermesEvent): string {
       return `${d.platform}  ${d.chat_type}`;
     case "session.ended":
       return String(d.reason || "ended");
-    default:
+    case "session.spawned":
+      return `${d.source || "dashboard"}  ${truncate(String(d.message_preview || ""), 80)}`;
+    case "session.killed":
+      return String(d.reason || "killed");
+    case "session.budget_exceeded":
+      return `$${Number(d.estimated_cost || 0).toFixed(2)} > $${Number(d.budget_cap || 0).toFixed(2)} cap`;
+    case "llm.call":
+      return `${d.model || "?"}  ${d.input_tokens || 0}→${d.output_tokens || 0} tok  ${d.latency_ms || 0}ms`;
+    case "memory.added":
+    case "memory.replaced":
+    case "memory.removed":
+      return truncate(String(d.key || d.content || ""), 80);
+    case "skill.installed":
+    case "skill.removed":
+    case "skill.reloaded":
+      return String(d.name || d.skill || "");
+    case "mcp.connected":
+    case "mcp.disconnected":
+      return String(d.server || d.name || "");
+    default: {
+      // Workflow events — extract human-readable parts
+      if (event.type.startsWith("workflow.") || d.workflow_id) {
+        const wf = String(d.workflow_id || d.workflow_name || "");
+        const step = d.step_name ? ` → ${d.step_name}` : "";
+        const status = d.status ? `  [${d.status}]` : "";
+        const phase = d.phase ? `  (${d.phase})` : "";
+        return `${wf}${step}${status}${phase}`;
+      }
+      // File change events from watcher
+      if (d.path) {
+        const p = String(d.path);
+        const short = p.includes("/") ? p.split("/").slice(-2).join("/") : p;
+        const evtType = d.event_type ? ` [${d.event_type}]` : "";
+        return `${short}${evtType}`;
+      }
       return truncate(JSON.stringify(d), 120);
+    }
   }
 }
 

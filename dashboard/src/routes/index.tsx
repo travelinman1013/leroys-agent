@@ -200,8 +200,8 @@ function HomeInbox() {
                   "—",
               )}
               right={String(
-                (j as Record<string, unknown>).schedule ??
-                  (j as Record<string, unknown>).next_run ??
+                (j as Record<string, unknown>).schedule_display ??
+                  (j as Record<string, unknown>).next_run_at ??
                   "—",
               )}
             />

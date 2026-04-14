@@ -139,6 +139,7 @@ export function eventClass(type: string): string {
   if (type === "compaction" || type.startsWith("compaction.")) return "evt-compaction";
   if (type.startsWith("cron.")) return "evt-cron";
   if (type.startsWith("session.")) return "evt-session";
+  if (type.startsWith("workflow.")) return "evt-workflow";
   if (type.startsWith("gateway.")) return "evt-gateway";
   if (type.startsWith("error") || type.includes(".error")) return "evt-error";
   return "evt-gateway";
@@ -154,6 +155,7 @@ export function eventShortLabel(type: string): string {
   if (type === "compaction" || type.startsWith("compaction.")) return "compact";
   if (type.startsWith("cron.")) return "cron";
   if (type.startsWith("session.")) return "session";
+  if (type.startsWith("workflow.")) return "workflow";
   if (type.startsWith("gateway.")) return "gateway";
   return type.split(".")[0] || type;
 }
