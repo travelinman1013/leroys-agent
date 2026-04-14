@@ -191,21 +191,30 @@ function HomeInbox() {
             cron.data?.jobs ? `${cron.data.jobs.length} jobs` : undefined
           }
         >
-          {(cron.data?.jobs ?? []).slice(0, 4).map((j) => (
-            <PanelRow
-              key={String((j as Record<string, unknown>).id ?? Math.random())}
-              left={String(
-                (j as Record<string, unknown>).name ??
-                  (j as Record<string, unknown>).id ??
-                  "—",
-              )}
-              right={String(
-                (j as Record<string, unknown>).schedule_display ??
-                  (j as Record<string, unknown>).next_run_at ??
-                  "—",
-              )}
-            />
-          ))}
+          {(cron.data?.jobs ?? []).slice(0, 4).map((j) => {
+            const job = j as Record<string, unknown>;
+            const name = String(job.name ?? job.id ?? "—");
+            const expr = String(job.schedule_display ?? "");
+            const nextAt = job.next_run_at ? String(job.next_run_at) : null;
+            const human = cronToHuman(expr);
+            const relNext = nextAt ? relativeNext(nextAt) : null;
+            return (
+              <div
+                key={String(job.id ?? Math.random())}
+                className="group grid grid-cols-[1fr_auto] items-baseline gap-4 py-1 font-mono text-[12px] tabular-nums text-ink-2"
+                title={expr}
+              >
+                <span className="truncate">{name}</span>
+                <span className="text-ink">
+                  <span className="group-hover:hidden">{human}</span>
+                  <span className="hidden group-hover:inline text-ink-faint">{expr}</span>
+                  {relNext && (
+                    <span className="ml-2 text-[10px] text-ink-faint">{relNext}</span>
+                  )}
+                </span>
+              </div>
+            );
+          })}
           {(cron.data?.jobs ?? []).length === 0 && (
             <PanelEmpty>no jobs scheduled</PanelEmpty>
           )}
@@ -265,6 +274,50 @@ function HomeInbox() {
       </aside>
     </div>
   );
+}
+
+function cronToHuman(expr: string): string {
+  if (!expr || !expr.includes(" ")) return expr || "—";
+  const parts = expr.trim().split(/\s+/);
+  if (parts.length !== 5) return expr;
+  const [min, hour, dom, , dow] = parts;
+
+  // Build time string
+  const h = parseInt(hour, 10);
+  const m = parseInt(min, 10);
+  let timeStr = "";
+  if (!isNaN(h) && !isNaN(m)) {
+    const suffix = h >= 12 ? "pm" : "am";
+    const h12 = h === 0 ? 12 : h > 12 ? h - 12 : h;
+    timeStr = m === 0 ? `${h12}${suffix}` : `${h12}:${String(m).padStart(2, "0")}${suffix}`;
+  } else {
+    return expr;
+  }
+
+  // Build frequency
+  if (dom === "*" && dow === "*") return `daily ${timeStr}`;
+  if (dom === "*" && dow === "1-5") return `weekdays ${timeStr}`;
+  if (dom === "*" && dow === "0,6") return `weekends ${timeStr}`;
+  if (dom === "*" && /^\d$/.test(dow)) {
+    const days = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+    return `${days[parseInt(dow, 10)] ?? dow} ${timeStr}`;
+  }
+  if (dow === "*" && /^\d+$/.test(dom)) return `${dom}th ${timeStr}`;
+  return `${timeStr}`;
+}
+
+function relativeNext(isoStr: string): string {
+  const next = new Date(isoStr).getTime();
+  const now = Date.now();
+  const diffMs = next - now;
+  if (diffMs < 0) return "due";
+  const mins = Math.floor(diffMs / 60000);
+  if (mins < 60) return `in ${mins}m`;
+  const hrs = Math.floor(mins / 60);
+  const remMins = mins % 60;
+  if (hrs < 24) return remMins > 0 ? `in ${hrs}h ${remMins}m` : `in ${hrs}h`;
+  const days = Math.floor(hrs / 24);
+  return `in ${days}d`;
 }
 
 function CostStrip() {
