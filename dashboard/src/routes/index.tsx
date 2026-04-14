@@ -204,13 +204,12 @@ function HomeInbox() {
                 className="group grid grid-cols-[1fr_auto] items-baseline gap-4 py-1 font-mono text-[12px] tabular-nums text-ink-2"
                 title={expr}
               >
-                <span className="truncate">
-                  <span className="group-hover:hidden">{human}</span>
-                  <span className="hidden group-hover:inline">{name}</span>
-                </span>
+                <span className="truncate">{name}</span>
                 <span className="text-ink">
+                  <span className="group-hover:hidden">{human}</span>
+                  <span className="hidden group-hover:inline text-ink-faint">{expr}</span>
                   {relNext && (
-                    <span className="text-[10px] text-ink-faint">{relNext}</span>
+                    <span className="ml-2 text-[10px] text-ink-faint">{relNext}</span>
                   )}
                 </span>
               </div>
