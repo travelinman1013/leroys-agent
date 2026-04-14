@@ -264,8 +264,27 @@ export const api = {
     }>("/api/dashboard/tools"),
 
   skills: () =>
-    apiFetch<{ skills: Array<{ name: string; path: string; preview?: string }> }>(
-      "/api/dashboard/skills",
+    apiFetch<{
+      categories: Array<{
+        name: string;
+        description: string | null;
+        skills: Array<{
+          name: string;
+          description: string;
+          tags: string[];
+          enabled: boolean;
+        }>;
+        skill_count: number;
+        enabled_count: number;
+      }>;
+      total_skills: number;
+      total_enabled: number;
+    }>("/api/dashboard/skills"),
+
+  skillToggle: (name: string, enabled: boolean) =>
+    apiFetch<{ name: string; enabled: boolean }>(
+      `/api/dashboard/skills/${encodeURIComponent(name)}/toggle`,
+      { method: "POST", body: JSON.stringify({ enabled }) },
     ),
 
   mcp: () =>

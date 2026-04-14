@@ -789,28 +789,141 @@ class DashboardRoutes:
 
     @require_dashboard_auth
     async def handle_skills(self, request: "web.Request") -> "web.Response":
-        skills: List[Dict[str, Any]] = []
+        """Return skills grouped by category with tags and enabled status."""
         try:
-            from hermes_cli.config import get_hermes_home
-            skills_dir = Path(get_hermes_home()) / "skills"
-            if skills_dir.is_dir():
-                for child in sorted(skills_dir.iterdir()):
-                    if not child.is_dir():
+            from tools.skills_tool import (
+                _parse_frontmatter,
+                _get_category_from_path,
+                _parse_tags,
+                _get_disabled_skill_names,
+                _load_category_description,
+                skill_matches_platform,
+                SKILLS_DIR,
+            )
+            from agent.skill_utils import get_external_skills_dirs
+
+            disabled = _get_disabled_skill_names()
+            seen_names: set = set()
+            # category_name -> {description, skills[]}
+            cats: Dict[str, Dict[str, Any]] = {}
+
+            dirs_to_scan: list = []
+            if SKILLS_DIR.exists():
+                dirs_to_scan.append(SKILLS_DIR)
+            dirs_to_scan.extend(get_external_skills_dirs())
+
+            for scan_dir in dirs_to_scan:
+                for skill_md in scan_dir.rglob("SKILL.md"):
+                    if ".hub" in skill_md.parts:
                         continue
-                    entry: Dict[str, Any] = {"name": child.name, "path": str(child)}
-                    # Try to read SKILL.md frontmatter if present
-                    skill_md = child / "SKILL.md"
-                    if skill_md.exists():
-                        try:
-                            text = skill_md.read_text(encoding="utf-8", errors="replace")[:2048]
-                            entry["preview"] = text[:200]
-                        except Exception:
-                            pass
-                    skills.append(entry)
+                    try:
+                        content = skill_md.read_text(encoding="utf-8", errors="replace")[:4000]
+                        frontmatter, body = _parse_frontmatter(content)
+
+                        if not skill_matches_platform(frontmatter):
+                            continue
+
+                        name = frontmatter.get("name", skill_md.parent.name)[:80]
+                        if name in seen_names:
+                            continue
+                        seen_names.add(name)
+
+                        description = frontmatter.get("description", "")
+                        if not description:
+                            for line in body.strip().split("\n"):
+                                line = line.strip()
+                                if line and not line.startswith("#"):
+                                    description = line
+                                    break
+                        if len(description) > 200:
+                            description = description[:197] + "..."
+
+                        category = _get_category_from_path(skill_md) or "general"
+                        tags = _parse_tags(
+                            frontmatter.get("metadata", {}).get("hermes", {}).get("tags")
+                            or frontmatter.get("tags", [])
+                        )
+                        enabled = name not in disabled
+
+                        if category not in cats:
+                            # Try to load category description
+                            cat_desc = None
+                            for sd in dirs_to_scan:
+                                cat_dir = sd / category
+                                if cat_dir.is_dir():
+                                    cat_desc = _load_category_description(cat_dir)
+                                    if cat_desc:
+                                        break
+                            cats[category] = {
+                                "name": category,
+                                "description": cat_desc,
+                                "skills": [],
+                            }
+
+                        cats[category]["skills"].append({
+                            "name": name,
+                            "description": description,
+                            "tags": tags,
+                            "enabled": enabled,
+                        })
+                    except Exception:
+                        continue
+
+            # Sort categories and skills alphabetically
+            categories = []
+            total_skills = 0
+            total_enabled = 0
+            for cat_name in sorted(cats.keys(), key=lambda c: ("" if c == "general" else c)):
+                cat = cats[cat_name]
+                cat["skills"].sort(key=lambda s: s["name"])
+                cat["skill_count"] = len(cat["skills"])
+                cat["enabled_count"] = sum(1 for s in cat["skills"] if s["enabled"])
+                total_skills += cat["skill_count"]
+                total_enabled += cat["enabled_count"]
+                categories.append(cat)
+
+            return _json_ok({
+                "categories": categories,
+                "total_skills": total_skills,
+                "total_enabled": total_enabled,
+            })
         except Exception as exc:
             logger.debug("dashboard: skills listing failed: %s", exc)
+            return _json_ok({"categories": [], "total_skills": 0, "total_enabled": 0})
 
-        return web.json_response({"skills": skills})
+    # ------------------------------------------------------------------
+    # POST /api/dashboard/skills/{name}/toggle
+    # ------------------------------------------------------------------
+
+    @require_dashboard_auth
+    async def handle_skill_toggle(self, request: "web.Request") -> "web.Response":
+        name = request.match_info.get("name", "")
+        if not name:
+            return _json_err(ValueError("skill name required"), 400)
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        enabled = bool(body.get("enabled", True))
+        try:
+            from hermes_cli.config import load_config
+            from hermes_cli.skills_config import get_disabled_skills, save_disabled_skills
+            config = load_config()
+            disabled = get_disabled_skills(config)
+            if enabled:
+                disabled.discard(name)
+            else:
+                disabled.add(name)
+            save_disabled_skills(config, disabled)
+            try:
+                from gateway.event_bus import publish as _pub
+                _pub("skill.reloaded", session_id=None,
+                     data={"skill": name, "enabled": enabled, "resolver": "dashboard"})
+            except Exception:
+                pass
+            return _json_ok({"name": name, "enabled": enabled})
+        except Exception as exc:
+            return _json_err(exc)
 
     # ------------------------------------------------------------------
     # GET /api/dashboard/mcp
@@ -3008,6 +3121,7 @@ def register_dashboard_routes(
     app.router.add_post("/api/dashboard/tools/{name}/toggle", routes.handle_tool_toggle)
     app.router.add_get("/api/dashboard/tools/{name}/schema", routes.handle_tool_schema)
     app.router.add_post("/api/dashboard/tools/{name}/invoke", routes.handle_tool_invoke)
+    app.router.add_post("/api/dashboard/skills/{name}/toggle", routes.handle_skill_toggle)
     app.router.add_post("/api/dashboard/skills/{name}/reload", routes.handle_skill_reload)
     app.router.add_get("/api/dashboard/skills/{name}/full", routes.handle_skill_full)
     app.router.add_post("/api/dashboard/mcp/{name}/toggle", routes.handle_mcp_toggle)
