@@ -2688,21 +2688,54 @@ _COMMENTED_SECTIONS = """
 # can mutate. Anything outside this set raises PermissionError. Patterns
 # ending in ``.*`` match any leaf under that namespace.
 CONFIG_MUTATION_ALLOWLIST = frozenset({
-    "approvals.mode",
-    "approvals.non_interactive_policy",
-    "approvals.gateway_timeout",
-    "compression.threshold",
-    "compression.target_ratio",
-    "code_execution.max_tool_output",
-    "cron.timezone",
-    "cron.defaults.*",
+    # Top-level scalars
+    "model",
+    "toolsets",
+    "fallback_providers",
+    "credential_pool_strategies",
+    "file_read_max_chars",
+    "timezone",
+    "prefill_messages_file",
+    "command_allowlist",
+    "personalities.*",
+    # Section wildcards — every nested key under these sections is mutable.
+    "agent.*",
+    "terminal.*",
+    "browser.*",
+    "checkpoints.*",
+    "compression.*",
+    "smart_model_routing.*",
+    "auxiliary.*",
+    "display.*",
+    "privacy.*",
+    "tts.*",
+    "stt.*",
+    "voice.*",
+    "human_delay.*",
+    "context.*",
+    "memory.*",
+    "delegation.*",
+    "discord.*",
+    "logging.*",
+    "network.*",
+    "code_execution.*",
+    "cron.*",
+    "approvals.*",
+    "security.*",
     "platform_toolsets.*",
-    "mcp_servers.*.enabled",
-    "mcp_servers.*.disabled",
-    "agent.max_turns",
-    "agent.reasoning_effort",
-    "security.safe_roots",
-    "security.denied_paths",
+    "mcp_servers.*",
+})
+
+# Keys that must NEVER be mutated via the dashboard, even if they match
+# an allowlist pattern.  Checked before the allowlist using pattern matching.
+# This prevents the broad section wildcards from opening holes.
+CONFIG_MUTATION_DENYLIST = frozenset({
+    "_config_version",
+    # MCP server command/args/env — command injection vector
+    "mcp_servers.*.command",
+    "mcp_servers.*.args",
+    "mcp_servers.*.env",
+    "mcp_servers.*.env.*",
 })
 
 # Denied paths that can never be removed via the dashboard. These are
@@ -2721,12 +2754,27 @@ _CONFIG_INIT_CACHED_KEYS = frozenset({
     "compression.threshold",
     "compression.target_ratio",
     "code_execution.max_tool_output",
+    "code_execution.max_tool_calls",
     "platform_toolsets.*",
-    "mcp_servers.*.enabled",
-    "mcp_servers.*.disabled",
+    "mcp_servers.*",
     "agent.max_turns",
     "security.safe_roots",
     "security.denied_paths",
+    "terminal.backend",
+    "terminal.docker_image",
+    "terminal.singularity_image",
+    "terminal.modal_image",
+    "terminal.daytona_image",
+    "terminal.container_cpu",
+    "terminal.container_memory",
+    "terminal.container_disk",
+    "terminal.container_persistent",
+    "terminal.docker_volumes",
+    "terminal.docker_mount_cwd_to_workspace",
+    "network.force_ipv4",
+    "context.engine",
+    "stt.provider",
+    "stt.local.model",
 })
 
 # Maximum number of dated backups to retain in ~/.hermes/config_backups/
@@ -2761,6 +2809,8 @@ def _config_path_matches(dotkey: str, pattern: str) -> bool:
 
 
 def _config_key_in_allowlist(dotkey: str) -> bool:
+    if any(_config_path_matches(dotkey, p) for p in CONFIG_MUTATION_DENYLIST):
+        return False
     return any(_config_path_matches(dotkey, p) for p in CONFIG_MUTATION_ALLOWLIST)
 
 

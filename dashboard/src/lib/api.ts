@@ -730,6 +730,11 @@ export const api = {
   gatewayRestartCommand: () =>
     apiFetch<{ command: string; note: string }>("/api/dashboard/gateway/restart-command"),
 
+  gatewayRestart: () =>
+    apiFetch<{ restarting: boolean }>("/api/dashboard/gateway/restart", {
+      method: "POST",
+    }),
+
   // Security — path jail
   securityPaths: () =>
     apiFetch<{

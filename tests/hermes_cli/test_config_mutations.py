@@ -151,3 +151,89 @@ def test_mcp_servers_command_rejected():
     """Only ``enabled``/``disabled`` are mutable, not ``command`` or ``env``."""
     with pytest.raises(PermissionError):
         cfg_mod.apply_config_mutations({"mcp_servers.github.command": "/bin/sh"})
+
+
+# ---------------------------------------------------------------------------
+# Expanded allowlist (config page overhaul)
+# ---------------------------------------------------------------------------
+
+
+def test_section_wildcards_accept_new_categories():
+    """Broad section wildcards allow all fields in newly exposed categories."""
+    cases = [
+        ("display.personality", "kawaii"),
+        ("logging.level", "INFO"),
+        ("terminal.timeout", 180),
+        ("voice.auto_tts", False),
+        ("memory.memory_enabled", True),
+        ("discord.require_mention", True),
+        ("browser.inactivity_timeout", 120),
+        ("tts.provider", "edge"),
+        ("stt.enabled", True),
+        ("human_delay.mode", "off"),
+        ("delegation.max_iterations", 50),
+        ("code_execution.timeout", 300),
+        ("cron.wrap_response", True),
+        ("privacy.redact_pii", False),
+        ("network.force_ipv4", False),
+        ("smart_model_routing.enabled", False),
+        ("checkpoints.enabled", True),
+        ("context.engine", "compressor"),
+    ]
+    for key, val in cases:
+        out = cfg_mod.apply_config_mutations({key: val})
+        assert key in out["applied"], f"{key} should be allowed"
+
+
+def test_top_level_scalars_accepted():
+    """Top-level keys like model, toolsets, file_read_max_chars are mutable."""
+    out = cfg_mod.apply_config_mutations({"model": "test-model"})
+    assert "model" in out["applied"]
+    cfg = cfg_mod.load_config()
+    assert cfg["model"] == "test-model"
+
+
+def test_auxiliary_deep_wildcard_accepted():
+    """auxiliary.*.provider matches through nested service paths."""
+    out = cfg_mod.apply_config_mutations({"auxiliary.vision.provider": "auto"})
+    assert "auxiliary.vision.provider" in out["applied"]
+
+
+def test_auxiliary_timeout_accepted():
+    out = cfg_mod.apply_config_mutations({"auxiliary.compression.timeout": 120})
+    assert "auxiliary.compression.timeout" in out["applied"]
+
+
+# ---------------------------------------------------------------------------
+# Denylist enforcement
+# ---------------------------------------------------------------------------
+
+
+def test_denylist_blocks_config_version():
+    with pytest.raises(PermissionError, match="_config_version"):
+        cfg_mod.apply_config_mutations({"_config_version": 999})
+
+
+def test_denylist_blocks_mcp_args():
+    with pytest.raises(PermissionError):
+        cfg_mod.apply_config_mutations({"mcp_servers.github.args": ["--evil"]})
+
+
+def test_denylist_blocks_mcp_env():
+    with pytest.raises(PermissionError):
+        cfg_mod.apply_config_mutations({"mcp_servers.github.env": {"PATH": "/tmp"}})
+
+
+def test_denylist_blocks_mcp_env_nested():
+    with pytest.raises(PermissionError):
+        cfg_mod.apply_config_mutations({"mcp_servers.github.env.SECRET": "leaked"})
+
+
+def test_denylist_overrides_allowlist():
+    """Denylist takes precedence — mcp_servers.* allows, but *.command denies."""
+    # enabled should still work
+    out = cfg_mod.apply_config_mutations({"mcp_servers.github.enabled": True})
+    assert "mcp_servers.github.enabled" in out["applied"]
+    # command should NOT
+    with pytest.raises(PermissionError):
+        cfg_mod.apply_config_mutations({"mcp_servers.github.command": "rm -rf /"})

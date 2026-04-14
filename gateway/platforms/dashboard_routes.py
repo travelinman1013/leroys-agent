@@ -1947,6 +1947,23 @@ class DashboardRoutes:
             "note": "Run this in your terminal — the dashboard cannot exec from sandbox.",
         })
 
+    @require_dashboard_auth
+    async def handle_gateway_restart(self, request: "web.Request") -> "web.Response":
+        """Terminate the gateway process so launchd restarts it.
+
+        Sends SIGTERM to ourselves after a brief delay so the HTTP
+        response can flush first.  Launchd's KeepAlive respawns the
+        process automatically.
+        """
+        import signal as _signal
+
+        async def _delayed_kill() -> None:
+            await asyncio.sleep(0.5)
+            os.kill(os.getpid(), _signal.SIGTERM)
+
+        asyncio.ensure_future(_delayed_kill())
+        return _json_ok({"restarting": True})
+
     # ==================================================================
     # F4 — Interactive Ops (Cron / Tools / Skills / MCP) — Dashboard v2
     # ==================================================================
@@ -3114,6 +3131,7 @@ def register_dashboard_routes(
     app.router.add_get("/api/dashboard/gateway/info", routes.handle_gateway_info)
     app.router.add_get("/api/dashboard/cost/summary", routes.handle_cost_summary)
     app.router.add_get("/api/dashboard/gateway/restart-command", routes.handle_gateway_restart_command)
+    app.router.add_post("/api/dashboard/gateway/restart", routes.handle_gateway_restart)
 
     # F4 — Interactive Ops (Dashboard v2)
     app.router.add_get("/api/dashboard/jobs/parse-schedule", routes.handle_cron_parse_schedule)
