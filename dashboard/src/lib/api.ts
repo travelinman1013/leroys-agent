@@ -61,6 +61,15 @@ export type WorkflowCheckpoint = {
   error: string | null;
 };
 
+export type WorkflowCatalogEntry = {
+  id: string;
+  name: string;
+  trigger_type: string;
+  trigger_meta: Record<string, unknown>;
+  steps: { index: number; name: string; timeout_s: number; skip_on_error: boolean }[];
+  step_count: number;
+};
+
 export type PendingApproval = {
   session_key: string;
   command: string;
@@ -286,6 +295,7 @@ export const api = {
     deliver?: string;
     skills?: string[];
     repeat?: number;
+    workflow?: string;
   }) =>
     apiFetch<{ job: Record<string, unknown> }>("/api/jobs", {
       method: "POST",
@@ -744,11 +754,12 @@ export const api = {
     ),
 
   // Phase 7: Workflow inspectability
-  workflowRuns: (opts: { limit?: number; offset?: number; status?: string } = {}) => {
+  workflowRuns: (opts: { limit?: number; offset?: number; status?: string; workflow_id?: string } = {}) => {
     const params = new URLSearchParams();
     if (opts.limit) params.set("limit", String(opts.limit));
     if (opts.offset) params.set("offset", String(opts.offset));
     if (opts.status) params.set("status", opts.status);
+    if (opts.workflow_id) params.set("workflow_id", opts.workflow_id);
     const qs = params.toString();
     return apiFetch<{ runs: WorkflowRun[]; limit: number; offset: number }>(
       `/api/dashboard/workflows${qs ? `?${qs}` : ""}`,
@@ -757,6 +768,9 @@ export const api = {
 
   workflowRunDetail: (id: string) =>
     apiFetch<{ run: WorkflowRun }>(`/api/dashboard/workflows/${encodeURIComponent(id)}`),
+
+  workflowCatalog: () =>
+    apiFetch<{ catalog: WorkflowCatalogEntry[] }>("/api/dashboard/workflows/catalog"),
 };
 
 // --------------------------------------------------------------------------

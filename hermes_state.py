@@ -1866,6 +1866,7 @@ class SessionDB:
         limit: int = 50,
         offset: int = 0,
         status: Optional[str] = None,
+        workflow_id: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """Paginated list of workflow runs (newest first), with step_count."""
         with self._lock:
@@ -1873,17 +1874,19 @@ class SessionDB:
                         (SELECT COUNT(*) FROM workflow_checkpoints wc
                          WHERE wc.run_id = wr.id) AS step_count
                       FROM workflow_runs wr"""
+            conditions = []
+            params: list = []
             if status:
-                rows = self._conn.execute(
-                    base + " WHERE wr.status = ?"
-                    " ORDER BY wr.started_at DESC LIMIT ? OFFSET ?",
-                    (status, limit, offset),
-                ).fetchall()
-            else:
-                rows = self._conn.execute(
-                    base + " ORDER BY wr.started_at DESC LIMIT ? OFFSET ?",
-                    (limit, offset),
-                ).fetchall()
+                conditions.append("wr.status = ?")
+                params.append(status)
+            if workflow_id:
+                conditions.append("wr.workflow_id = ?")
+                params.append(workflow_id)
+            if conditions:
+                base += " WHERE " + " AND ".join(conditions)
+            base += " ORDER BY wr.started_at DESC LIMIT ? OFFSET ?"
+            params.extend([limit, offset])
+            rows = self._conn.execute(base, params).fetchall()
             result = []
             for row in rows:
                 run = dict(row)

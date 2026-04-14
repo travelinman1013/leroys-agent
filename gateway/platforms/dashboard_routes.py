@@ -2791,10 +2791,13 @@ class DashboardRoutes:
             limit = max(1, min(200, int(request.query.get("limit", "50"))))
             offset = max(0, int(request.query.get("offset", "0")))
             status = request.query.get("status") or None
+            workflow_id = request.query.get("workflow_id") or None
 
             from hermes_state import SessionDB
             db = SessionDB()
-            runs = db.list_workflow_runs(limit=limit, offset=offset, status=status)
+            runs = db.list_workflow_runs(
+                limit=limit, offset=offset, status=status, workflow_id=workflow_id,
+            )
             return web.json_response({"runs": runs, "limit": limit, "offset": offset})
         except Exception as exc:
             return _json_err(exc)
@@ -2811,6 +2814,42 @@ class DashboardRoutes:
             if run is None:
                 return web.json_response({"error": "Workflow run not found"}, status=404)
             return web.json_response({"run": run})
+        except Exception as exc:
+            return _json_err(exc)
+
+    @require_dashboard_auth
+    async def handle_workflow_catalog(self, request: "web.Request") -> "web.Response":
+        """GET /api/dashboard/workflows/catalog — available workflow definitions."""
+        try:
+            from workflow.harnesses import get_harness
+
+            # Force lazy-load of all harnesses
+            try:
+                get_harness("__force_load__")
+            except KeyError:
+                pass
+
+            from workflow.harnesses import _HARNESSES
+
+            catalog = []
+            for wf_id, wf_def in sorted(_HARNESSES.items()):
+                steps = []
+                for i, step in enumerate(wf_def.steps):
+                    steps.append({
+                        "index": i,
+                        "name": step.name,
+                        "timeout_s": step.timeout_s,
+                        "skip_on_error": step.skip_on_error,
+                    })
+                catalog.append({
+                    "id": wf_def.id,
+                    "name": wf_def.name,
+                    "trigger_type": wf_def.trigger_type,
+                    "trigger_meta": wf_def.trigger_meta,
+                    "steps": steps,
+                    "step_count": len(steps),
+                })
+            return _json_ok({"catalog": catalog})
         except Exception as exc:
             return _json_err(exc)
 
@@ -2995,6 +3034,7 @@ def register_dashboard_routes(
 
     # Phase 7 — Workflow inspectability
     app.router.add_get("/api/dashboard/workflows", routes.handle_workflow_runs)
+    app.router.add_get("/api/dashboard/workflows/catalog", routes.handle_workflow_catalog)
     app.router.add_get("/api/dashboard/workflows/{id}", routes.handle_workflow_run_detail)
 
     # Static UI bundle

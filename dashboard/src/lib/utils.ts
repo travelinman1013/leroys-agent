@@ -72,6 +72,26 @@ export function compactRelTimeFromUnix(
   return future ? `in ${value}` : value;
 }
 
+/**
+ * Compact relative time from either a unix timestamp (number) or an ISO string.
+ * Handles the mixed formats returned by different API endpoints.
+ */
+export function compactRelTime(
+  value: number | string | null | undefined,
+): string {
+  if (value === null || value === undefined || value === 0 || value === "")
+    return "—";
+  if (typeof value === "number") return compactRelTimeFromUnix(value);
+  // ISO string
+  try {
+    const ms = new Date(value).getTime();
+    if (isNaN(ms)) return "—";
+    return compactRelTimeFromUnix(ms / 1000);
+  } catch {
+    return "—";
+  }
+}
+
 export function formatUnix(unix: number | null | undefined, fmt = "PPpp"): string {
   if (!unix) return "—";
   try {

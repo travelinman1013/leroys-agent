@@ -13,13 +13,12 @@ const items: NavItem[] = [
   { to: "/desk", label: "Desk", num: "02" },
   { to: "/brain", label: "Brain", num: "03" },
   { to: "/approvals", label: "Approvals", num: "04" },
-  { to: "/cron", label: "Cron", num: "05" },
-  { to: "/workflows", label: "Workflows", num: "06" },
-  { to: "/tools", label: "Tools", num: "07" },
-  { to: "/skills", label: "Skills", num: "08" },
-  { to: "/mcp", label: "MCP", num: "09" },
-  { to: "/health", label: "Health", num: "10" },
-  { to: "/config", label: "Config", num: "11" },
+  { to: "/cron", label: "Schedule", num: "05" },
+  { to: "/tools", label: "Tools", num: "06" },
+  { to: "/skills", label: "Skills", num: "07" },
+  { to: "/mcp", label: "MCP", num: "08" },
+  { to: "/health", label: "Health", num: "09" },
+  { to: "/config", label: "Config", num: "10" },
 ];
 
 interface SidebarNavProps {
