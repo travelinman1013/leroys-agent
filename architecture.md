@@ -1,4 +1,4 @@
-# Hermes Agent — System Architecture
+z# Hermes Agent — System Architecture
 
 > **Snapshot**: 2026-04-11, post Dashboard v2 (W0 / F1–F5) deployment
 > **Branch**: `enhance/hermes-dashboard-v2` (6 commits ahead of `main`, PR #4)

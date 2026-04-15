@@ -47,6 +47,7 @@ Errors: `tail -f ~/.hermes/logs/gateway.error.log`
 - **Sandbox**: `sandbox-exec -f ~/.hermes/hermes.sb` via `scripts/sandbox/hermes-gateway-sandboxed` wrapper (Phase 4 R4)
 - **Dashboard** (Phase 5): `http://127.0.0.1:8642/dashboard/` — enabled via `API_SERVER_ENABLED=true` in `.env`
 - **Memory provider**: `holographic` — local SQLite FTS5 fact store with trust scoring and HRR-based compositional retrieval. DB at `~/.hermes/memory_store.db`. Additive to built-in MEMORY.md/USER.md. Deployed 2026-04-12.
+- **Memory guidance**: 2-tier SAVE/SKIP framework across 5 guidance locations (system prompt, tool schema, background review, compression flush, gateway flush). SAVE: user corrections, preferences, conventions, operational learnings, decision reasoning. SKIP: config facts, volatile state, raw file contents, task progress. See `agent/prompt_builder.py:MEMORY_GUIDANCE`.
 
 ## Commands
 

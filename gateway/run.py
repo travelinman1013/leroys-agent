@@ -770,11 +770,12 @@ class GatewayRunner:
                 "inactivity or a scheduled daily reset. The conversation context "
                 "will be cleared after this turn.\n\n"
                 "Review the conversation above and:\n"
-                "1. Save any important facts, preferences, or decisions to memory "
-                "(user profile or your notes) that would be useful in future sessions.\n"
-                "2. If you discovered a reusable workflow or solved a non-trivial "
-                "problem, consider saving it as a skill.\n"
-                "3. If nothing is worth saving, that's fine — just skip.\n\n"
+                "1. Save to memory: user corrections, preferences, communication style, "
+                "decision reasoning, conventions, operational learnings.\n"
+                "2. Skip: model/provider/config facts (in config.yaml), volatile state, "
+                "raw file contents, task progress, session outcomes, TODOs.\n"
+                "3. If you discovered a reusable workflow, consider saving it as a skill.\n"
+                "4. If nothing is worth saving, that's fine — just skip.\n\n"
             )
 
             if _current_memory:

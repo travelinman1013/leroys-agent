@@ -65,6 +65,10 @@
   (subpath "/Users/maxwell/.cache")                      ;; hf, npm, ms-playwright browser binaries
   (subpath "/Users/maxwell/.npm")                        ;; npx execution cache (includes _npx/)
   (subpath "/Users/maxwell/.local/state/hermes")         ;; gateway locks (discord-bot-token, etc.)
+  (subpath "/Users/maxwell/.claude")                     ;; Claude Code auth, config, plugins (Phase 11 CC dispatch)
+  (subpath "/Users/maxwell/.claude-mem")                 ;; claude-mem ChromaDB (CC plugin dependency)
+  (subpath "/Users/maxwell/.bun")                        ;; Bun runtime (CC spawns bun workers for plugins)
+  (subpath "/Users/maxwell/.local/bin")                  ;; uv, uvx (CC spawns chroma-mcp via uv)
   (literal "/Users/maxwell/Library/LaunchAgents/ai.hermes.gateway.plist"))
 
 ;; --- Hard deny: credentials. Overrides the allow above by ordering. ---
@@ -75,6 +79,8 @@
 ;; --- File writes: state, logs, temp ---
 (allow file-write*
   (subpath "/Users/maxwell/.hermes")
+  (subpath "/Users/maxwell/.claude")                     ;; Claude Code session state, cache (Phase 11 CC dispatch)
+  (subpath "/Users/maxwell/.claude-mem")                 ;; claude-mem ChromaDB writes
   (subpath "/Users/maxwell/.local/state/hermes")         ;; gateway locks
   (subpath "/Users/maxwell/Projects")
   (subpath "/Users/maxwell/brain")                       ;; vault writes (Phase 6 R1)
@@ -85,7 +91,9 @@
   (subpath "/var/folders")
   (subpath "/private/var/folders"))
 (deny file-write*
-  (literal "/Users/maxwell/.hermes/.env"))               ;; .env is read-only even to hermes
+  (literal "/Users/maxwell/.hermes/.env")                ;; .env is read-only even to hermes
+  (literal "/Users/maxwell/.hermes/config.yaml")         ;; config is read-at-startup only — block self-modification
+  (literal "/Users/maxwell/.hermes/hermes.sb"))          ;; sandbox profile — prevent self-weakening on restart
 
 ;; --- Network outbound ---
 ;; SBPL syntax notes (verified empirically against macOS 25.4):
