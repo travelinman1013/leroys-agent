@@ -11,12 +11,13 @@ import { useQuery } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "@/lib/api";
 import { Button } from "@/components/ui/button";
-import { ArrowLeft, GitBranch } from "lucide-react";
+import { ArrowLeft, ChevronDown, ChevronRight, GitBranch } from "lucide-react";
 import { compactNumber, formatCost, formatUnix } from "@/lib/utils";
 import { useApiMutation } from "@/lib/mutations";
 import { useConfirm } from "@/lib/confirm";
 import { ForkDialog } from "@/components/ForkDialog";
 import { InjectComposer } from "@/components/InjectComposer";
+import { TranscriptProse } from "@/components/TranscriptProse";
 
 export const Route = createFileRoute("/sessions/$id")({
   component: SessionDetail,
@@ -290,6 +291,7 @@ function SessionBody({
               <Turn
                 index={idx}
                 message={m}
+                prevTimestamp={idx > 0 ? messages[idx - 1]?.timestamp : undefined}
                 canFork={isEnded && m.role === "assistant"}
                 onFork={() => setForkDialog({ open: true, turnIdx: idx })}
                 highlightQuery={msgSearchLower}
@@ -341,12 +343,14 @@ function Metric({ label, value }: { label: string; value: React.ReactNode }) {
 function Turn({
   index,
   message,
+  prevTimestamp,
   canFork,
   onFork,
   highlightQuery,
 }: {
   index: number;
   message: Record<string, any>;
+  prevTimestamp?: number;
   canFork: boolean;
   onFork: () => void;
   highlightQuery?: string;
@@ -355,14 +359,24 @@ function Turn({
   const isUser = role === "user";
   const isTool = role === "tool" || message.tool_name;
   const speaker = isTool ? "TOOL" : isUser ? "USER" : "HERMES";
-  const ts = message.created_at
-    ? new Date(message.created_at * 1000).toLocaleTimeString(undefined, {
+  const tsRaw = message.timestamp
+    ? new Date(message.timestamp * 1000).toLocaleTimeString(undefined, {
         hour: "2-digit",
         minute: "2-digit",
         second: "2-digit",
         hour12: false,
       })
     : "";
+  // Only show timestamp when it differs from the previous turn (at second granularity)
+  const prevTs = prevTimestamp
+    ? new Date(prevTimestamp * 1000).toLocaleTimeString(undefined, {
+        hour: "2-digit",
+        minute: "2-digit",
+        second: "2-digit",
+        hour12: false,
+      })
+    : "";
+  const ts = tsRaw !== prevTs ? tsRaw : "";
 
   const content = message.content ?? "";
   const preview =
@@ -416,23 +430,41 @@ function Turn({
           />
         )}
         {preview && !isTool && (
-          <div className="whitespace-pre-wrap break-words text-ink-2">
-            {highlightQuery ? <HighlightText text={preview} query={highlightQuery} /> : preview}
-          </div>
+          <TranscriptProse body={preview} highlightQuery={highlightQuery} />
         )}
         {preview && isTool && <ToolOutput body={preview} />}
-        {hasToolCalls && (
-          <ToolCallout
-            name="tool_calls"
-            args={message.tool_calls}
-          />
-        )}
+        {hasToolCalls &&
+          Array.isArray(message.tool_calls) &&
+          message.tool_calls.map(
+            (
+              tc: {
+                id?: string;
+                function?: { name?: string; arguments?: string };
+              },
+              i: number,
+            ) => (
+              <ToolCallout
+                key={tc.id ?? i}
+                name={tc.function?.name ?? "tool_call"}
+                args={tc.function?.arguments}
+                callId={tc.id}
+              />
+            ),
+          )}
       </div>
     </div>
   );
 }
 
-function ToolCallout({ name, args }: { name: string; args: unknown }) {
+function ToolCallout({
+  name,
+  args,
+  callId,
+}: {
+  name: string;
+  args: unknown;
+  callId?: string;
+}) {
   const [expanded, setExpanded] = useState(false);
   const argsString =
     typeof args === "string" ? args : JSON.stringify(args, null, 2);
@@ -444,10 +476,16 @@ function ToolCallout({ name, args }: { name: string; args: unknown }) {
         onClick={() => hasArgs && setExpanded(!expanded)}
         className="flex w-full items-center gap-2 text-left font-mono text-[10px] uppercase tracking-marker text-oxide"
       >
+        {hasArgs &&
+          (expanded ? (
+            <ChevronDown className="size-3 shrink-0" />
+          ) : (
+            <ChevronRight className="size-3 shrink-0" />
+          ))}
         {name}
-        {hasArgs && (
-          <span className="text-ink-faint text-[9px] normal-case tracking-normal">
-            {expanded ? "(collapse)" : "(args)"}
+        {callId && (
+          <span className="ml-auto text-[9px] normal-case tracking-normal text-ink-faint">
+            {callId}
           </span>
         )}
       </button>
@@ -460,14 +498,61 @@ function ToolCallout({ name, args }: { name: string; args: unknown }) {
   );
 }
 
+function detectContentType(text: string): "json" | "markdown" | "text" {
+  const trimmed = text.trim();
+  if (
+    (trimmed.startsWith("{") || trimmed.startsWith("[")) &&
+    trimmed.length > 2
+  ) {
+    try {
+      JSON.parse(trimmed);
+      return "json";
+    } catch {
+      /* not valid JSON */
+    }
+  }
+  if (
+    /^#{1,6}\s/m.test(trimmed) ||
+    /^```/m.test(trimmed) ||
+    /\[.+\]\(.+\)/.test(trimmed)
+  ) {
+    return "markdown";
+  }
+  return "text";
+}
+
 function ToolOutput({ body }: { body: string }) {
   const [showAll, setShowAll] = useState(false);
   const lines = body.split("\n");
   const truncated = lines.length > 50;
-  const displayBody = truncated && !showAll ? lines.slice(0, 10).join("\n") : body;
+  const displayBody =
+    truncated && !showAll ? lines.slice(0, 10).join("\n") : body;
+  const contentType = detectContentType(displayBody);
+
+  let formattedJson: string | null = null;
+  if (contentType === "json") {
+    try {
+      formattedJson = JSON.stringify(JSON.parse(displayBody), null, 2);
+    } catch {
+      formattedJson = displayBody;
+    }
+  }
+
   return (
-    <div className="mt-2 border-l border-rule pl-4 font-mono text-[11px] leading-relaxed tabular-nums text-ink-muted">
-      <pre className="whitespace-pre-wrap break-words">{displayBody}</pre>
+    <div className="mt-2 border-l border-rule pl-4">
+      {contentType === "json" && (
+        <pre className="overflow-x-auto whitespace-pre-wrap break-words font-mono text-[11px] leading-relaxed tabular-nums text-ink-muted">
+          {formattedJson}
+        </pre>
+      )}
+      {contentType === "markdown" && (
+        <TranscriptProse body={displayBody} className="text-[13px]" />
+      )}
+      {contentType === "text" && (
+        <pre className="whitespace-pre-wrap break-words font-mono text-[11px] leading-relaxed tabular-nums text-ink-muted">
+          {displayBody}
+        </pre>
+      )}
       {truncated && (
         <button
           type="button"
@@ -481,27 +566,3 @@ function ToolOutput({ body }: { body: string }) {
   );
 }
 
-// F13: Highlight matching text within transcript messages
-function HighlightText({ text, query }: { text: string; query: string }) {
-  if (!query) return <>{text}</>;
-  try {
-    const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const regex = new RegExp(`(${escaped})`, "gi");
-    const parts = text.split(regex);
-    return (
-      <>
-        {parts.map((part, i) =>
-          regex.test(part) ? (
-            <mark key={i} className="bg-oxide-wash text-oxide">
-              {part}
-            </mark>
-          ) : (
-            <span key={i}>{part}</span>
-          ),
-        )}
-      </>
-    );
-  } catch {
-    return <>{text}</>;
-  }
-}
