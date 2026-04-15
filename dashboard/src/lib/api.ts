@@ -795,6 +795,28 @@ export const api = {
 
   workflowCatalog: () =>
     apiFetch<{ catalog: WorkflowCatalogEntry[] }>("/api/dashboard/workflows/catalog"),
+
+  // F16 — Keys & Environment Variables
+  env: () =>
+    apiFetch<{
+      vars: Record<
+        string,
+        {
+          is_set: boolean;
+          redacted_value: string | null;
+          description: string;
+          url: string | null;
+          category: string;
+          tools: string[];
+        }
+      >;
+    }>("/api/dashboard/env"),
+
+  envReveal: (key: string) =>
+    apiFetch<{ key: string; value: string }>("/api/dashboard/env/reveal", {
+      method: "POST",
+      body: JSON.stringify({ key }),
+    }),
 };
 
 // --------------------------------------------------------------------------

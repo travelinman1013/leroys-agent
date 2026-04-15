@@ -26,51 +26,69 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { useKeyboardShortcut } from "./useKeyboardShortcut";
 
 export const SIDEBAR_BREAKPOINT_PX = 1280;
+export const MOBILE_BREAKPOINT_PX = 768;
 
 function isNarrowViewport(): boolean {
   if (typeof window === "undefined") return false;
   return window.innerWidth < SIDEBAR_BREAKPOINT_PX;
 }
 
+function isMobileViewport(): boolean {
+  if (typeof window === "undefined") return false;
+  return window.innerWidth < MOBILE_BREAKPOINT_PX;
+}
+
 export function useSidebarCollapse() {
   // Start collapsed if the viewport is narrow on first render.
   const [collapsed, setCollapsed] = useState<boolean>(() => isNarrowViewport());
+  // Mobile overlay state: below 768px the sidebar is an overlay
+  // that opens/closes independently of the desktop collapse state.
+  const [mobileOpen, setMobileOpen] = useState(false);
   // Track the current side of the breakpoint so we can detect a
   // crossing and reset state. Initial value matches the initial
   // `collapsed` state — same input.
   const lastNarrowRef = useRef<boolean>(isNarrowViewport());
+  const lastMobileRef = useRef<boolean>(isMobileViewport());
 
   const toggle = useCallback(() => {
-    setCollapsed((current) => !current);
+    if (isMobileViewport()) {
+      setMobileOpen((current) => !current);
+    } else {
+      setCollapsed((current) => !current);
+    }
   }, []);
 
-  // Auto-adjust on viewport resize when crossing the breakpoint.
+  const closeMobile = useCallback(() => {
+    setMobileOpen(false);
+  }, []);
+
+  // Auto-adjust on viewport resize when crossing breakpoints.
   useEffect(() => {
     const onResize = () => {
       const narrow = isNarrowViewport();
+      const mobile = isMobileViewport();
+
+      // Close mobile overlay when resizing above mobile breakpoint
+      if (!mobile && lastMobileRef.current) {
+        setMobileOpen(false);
+      }
+
       if (narrow !== lastNarrowRef.current) {
         lastNarrowRef.current = narrow;
         // Crossed — reset to the auto-default for the new side.
         setCollapsed(narrow);
       }
+      lastMobileRef.current = mobile;
     };
     window.addEventListener("resize", onResize);
     return () => window.removeEventListener("resize", onResize);
   }, []);
 
   // Keyboard shortcut: ⌘\ / Ctrl+\ toggle.
-  useEffect(() => {
-    const onKeydown = (e: KeyboardEvent) => {
-      if ((e.metaKey || e.ctrlKey) && e.key === "\\") {
-        e.preventDefault();
-        toggle();
-      }
-    };
-    window.addEventListener("keydown", onKeydown);
-    return () => window.removeEventListener("keydown", onKeydown);
-  }, [toggle]);
+  useKeyboardShortcut("\\", toggle);
 
-  return { collapsed, toggle };
+  return { collapsed, toggle, mobileOpen, closeMobile };
 }

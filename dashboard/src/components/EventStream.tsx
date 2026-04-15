@@ -17,6 +17,15 @@ import { cn, eventClass, eventShortLabel, relTimeFromIso } from "@/lib/utils";
 
 const MAX_EVENTS = 1000;
 
+const TIME_WINDOWS = [
+  { label: "1H", seconds: 3600 },
+  { label: "6H", seconds: 21600 },
+  { label: "24H", seconds: 86400 },
+  { label: "LIVE", seconds: 0 },
+] as const;
+
+type TimeWindowLabel = (typeof TIME_WINDOWS)[number]["label"];
+
 const EVENT_CATEGORIES = [
   { label: "TURN", patterns: ["turn.started", "turn.ended"] },
   { label: "TOOL", patterns: ["tool.invoked", "tool.completed"] },
@@ -44,6 +53,7 @@ export function EventStream({ className, compact = false }: Props) {
   const [activeCats, setActiveCats] = useState<Set<CategoryLabel>>(
     () => new Set(EVENT_CATEGORIES.map((c) => c.label)),
   );
+  const [timeWindow, setTimeWindow] = useState<TimeWindowLabel>("LIVE");
   const bufferRef = useRef<HermesEvent[]>([]);
   const scrollRef = useRef<HTMLDivElement>(null);
   const navigate = useNavigate();
@@ -66,7 +76,25 @@ export function EventStream({ className, compact = false }: Props) {
     return true; // unrecognized event types always pass
   };
 
+  const isLive = timeWindow === "LIVE";
+
+  // F12: Fetch historical events for non-live time windows
   useEffect(() => {
+    if (isLive) return;
+    let cancelled = false;
+    const win = TIME_WINDOWS.find((w) => w.label === timeWindow);
+    if (!win || win.seconds === 0) return;
+    const from = Math.floor(Date.now() / 1000) - win.seconds;
+    api.searchEvents({ from, limit: 1000 }).then((res) => {
+      if (cancelled) return;
+      setEvents(res.events ?? []);
+    }).catch(() => {});
+    return () => { cancelled = true; };
+  }, [timeWindow, isLive]);
+
+  // SSE subscription for live mode only
+  useEffect(() => {
+    if (!isLive) return;
     let cancelled = false;
     const cleanup = subscribeEvents(
       (event) => {
@@ -80,7 +108,7 @@ export function EventStream({ className, compact = false }: Props) {
       cancelled = true;
       cleanup();
     };
-  }, [paused]);
+  }, [paused, isLive]);
 
   // Sync the visible list when paused state flips off
   useEffect(() => {
@@ -178,6 +206,36 @@ export function EventStream({ className, compact = false }: Props) {
             </button>
           );
         })}
+      </div>
+      {/* F12: Time window pill bar */}
+      <div className="flex items-center gap-1.5 border-b border-rule px-4 py-2">
+        {TIME_WINDOWS.map((tw) => (
+          <button
+            key={tw.label}
+            type="button"
+            onClick={() => {
+              setTimeWindow(tw.label);
+              if (tw.label === "LIVE") {
+                // Reset buffer so SSE starts fresh
+                bufferRef.current = [];
+                setEvents([]);
+              }
+            }}
+            className={cn(
+              "border px-2 py-0.5 font-mono text-[10px] uppercase tracking-marker transition-colors duration-120 ease-operator",
+              timeWindow === tw.label
+                ? "border-oxide-edge bg-oxide-wash text-oxide"
+                : "border-rule-strong text-ink-faint hover:border-oxide-edge hover:text-ink",
+            )}
+          >
+            {tw.label}
+          </button>
+        ))}
+        {!isLive && (
+          <span className="ml-2 font-mono text-[10px] uppercase tracking-marker text-ink-faint">
+            HISTORICAL
+          </span>
+        )}
       </div>
       {/* Toolbar — hairline rule, mono, no chrome */}
       <div className="flex items-center gap-3 border-b border-rule px-4 py-2.5">

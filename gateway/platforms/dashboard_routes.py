@@ -2131,21 +2131,28 @@ class DashboardRoutes:
 
         # ── Dispatch through the normal pipeline. Path jail (R3) runs
         # inside handle_function_call before any tool code executes.
+        # Wrapped in asyncio.to_thread so long-running commands (pip
+        # install, sleep, find) don't block the aiohttp event loop.
         try:
             from model_tools import handle_function_call
-            os_env_marker = os.environ.get("HERMES_GATEWAY_SESSION")
-            os.environ["HERMES_GATEWAY_SESSION"] = "1"
-            try:
-                result = handle_function_call(
-                    name,
-                    scrubbed_args,
-                    session_id=session_id,
-                )
-            finally:
-                if os_env_marker is None:
-                    os.environ.pop("HERMES_GATEWAY_SESSION", None)
-                else:
-                    os.environ["HERMES_GATEWAY_SESSION"] = os_env_marker
+
+            def _run_tool() -> object:
+                os_env_marker = os.environ.get("HERMES_GATEWAY_SESSION")
+                os.environ["HERMES_GATEWAY_SESSION"] = "1"
+                try:
+                    return handle_function_call(
+                        name,
+                        scrubbed_args,
+                        session_id=session_id,
+                    )
+                finally:
+                    if os_env_marker is None:
+                        os.environ.pop("HERMES_GATEWAY_SESSION", None)
+                    else:
+                        os.environ["HERMES_GATEWAY_SESSION"] = os_env_marker
+
+            import asyncio
+            result = await asyncio.to_thread(_run_tool)
             return _json_ok({"result": result, "tool": name})
         except Exception as exc:
             return _json_err(exc)
@@ -2983,6 +2990,81 @@ class DashboardRoutes:
         except Exception as exc:
             return _json_err(exc)
 
+    # ------------------------------------------------------------------
+    # F16 — Keys & Environment Variables
+    # ------------------------------------------------------------------
+
+    # Metadata for known env vars. Extend as needed.
+    _ENV_VARS_META: Dict[str, Dict[str, Any]] = {
+        # ── provider ──
+        "ANTHROPIC_API_KEY": {"description": "Anthropic API key", "category": "provider", "tools": ["llm"], "url": "https://console.anthropic.com/settings/keys"},
+        "OPENAI_API_KEY": {"description": "OpenAI / custom provider API key", "category": "provider", "tools": ["llm"], "url": "https://platform.openai.com/api-keys"},
+        "OPENROUTER_API_KEY": {"description": "OpenRouter API key", "category": "provider", "tools": ["llm"], "url": "https://openrouter.ai/keys"},
+        "GEMINI_API_KEY": {"description": "Google Gemini API key", "category": "provider", "tools": ["llm"], "url": "https://aistudio.google.com/apikey"},
+        "DEEPSEEK_API_KEY": {"description": "DeepSeek API key", "category": "provider", "tools": ["llm"], "url": "https://platform.deepseek.com/api_keys"},
+        "GOOGLE_API_KEY": {"description": "Google Cloud API key", "category": "provider", "tools": ["llm"], "url": "https://console.cloud.google.com/apis/credentials"},
+        "NOUS_API_KEY": {"description": "Nous Research API key", "category": "provider", "tools": ["llm"], "url": "https://nousresearch.com"},
+        # ── tool ──
+        "TAVILY_API_KEY": {"description": "Tavily web search API key", "category": "tool", "tools": ["web_search"], "url": "https://tavily.com/#api"},
+        "GITHUB_PERSONAL_ACCESS_TOKEN": {"description": "GitHub personal access token for MCP", "category": "tool", "tools": ["github_mcp"], "url": "https://github.com/settings/tokens"},
+        "FIRECRAWL_API_KEY": {"description": "Firecrawl web scraping API key", "category": "tool", "tools": ["web_tools"], "url": "https://firecrawl.dev"},
+        "BROWSERBASE_API_KEY": {"description": "Browserbase browser automation key", "category": "tool", "tools": ["browser"], "url": "https://browserbase.com"},
+        "BRAVE_API_KEY": {"description": "Brave Search API key", "category": "tool", "tools": ["brave_search"], "url": "https://brave.com/search/api/"},
+        # ── messaging ──
+        "DISCORD_BOT_TOKEN": {"description": "Discord bot token", "category": "messaging", "tools": ["discord"], "url": "https://discord.com/developers/applications"},
+        "DISCORD_ALLOWED_USERS": {"description": "Comma-separated Discord user IDs allowed to interact", "category": "messaging", "tools": ["discord"], "url": None},
+        "DISCORD_GUILD_ID": {"description": "Discord guild (server) ID", "category": "messaging", "tools": ["discord"], "url": None},
+        "TELEGRAM_BOT_TOKEN": {"description": "Telegram bot token from BotFather", "category": "messaging", "tools": ["telegram"], "url": "https://t.me/BotFather"},
+        "SLACK_BOT_TOKEN": {"description": "Slack bot OAuth token", "category": "messaging", "tools": ["slack"], "url": "https://api.slack.com/apps"},
+        "API_SERVER_ENABLED": {"description": "Enable the dashboard API server", "category": "messaging", "tools": ["dashboard"], "url": None},
+        # ── setting ──
+        "HERMES_MAX_ITERATIONS": {"description": "Max agent turns per session", "category": "setting", "tools": [], "url": None},
+        "MESSAGING_CWD": {"description": "Working directory for messaging platforms", "category": "setting", "tools": [], "url": None},
+        "HERMES_INTERACTIVE": {"description": "Set when running in interactive CLI mode", "category": "setting", "tools": [], "url": None},
+        "HERMES_GATEWAY_SESSION": {"description": "Set when running inside the gateway process", "category": "setting", "tools": [], "url": None},
+    }
+
+    @staticmethod
+    def _redact_value(val: str) -> str:
+        """Show first 4 + ... + last 4 chars of a value."""
+        if len(val) <= 10:
+            return val[:2] + "..." + val[-2:] if len(val) > 4 else "****"
+        return val[:4] + "..." + val[-4:]
+
+    @require_dashboard_auth
+    async def handle_env(self, request: "web.Request") -> "web.Response":
+        """GET /api/dashboard/env — env var inventory with redacted values."""
+        try:
+            result: Dict[str, Any] = {}
+            for key, meta in self._ENV_VARS_META.items():
+                raw = os.environ.get(key)
+                result[key] = {
+                    "is_set": raw is not None,
+                    "redacted_value": self._redact_value(raw) if raw else None,
+                    "description": meta["description"],
+                    "url": meta.get("url"),
+                    "category": meta["category"],
+                    "tools": meta.get("tools", []),
+                }
+            return _json_ok({"vars": result})
+        except Exception as exc:
+            return _json_err(exc)
+
+    @require_dashboard_auth
+    async def handle_env_reveal(self, request: "web.Request") -> "web.Response":
+        """POST /api/dashboard/env/reveal — return full value for a single key."""
+        try:
+            body = await request.json()
+            key = body.get("key", "")
+            if not key or key not in self._ENV_VARS_META:
+                return web.json_response({"error": "Unknown key"}, status=400)
+            val = os.environ.get(key)
+            if val is None:
+                return web.json_response({"error": "Key not set"}, status=404)
+            return _json_ok({"key": key, "value": val})
+        except Exception as exc:
+            return _json_err(exc)
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -3168,6 +3250,10 @@ def register_dashboard_routes(
     app.router.add_get("/api/dashboard/workflows", routes.handle_workflow_runs)
     app.router.add_get("/api/dashboard/workflows/catalog", routes.handle_workflow_catalog)
     app.router.add_get("/api/dashboard/workflows/{id}", routes.handle_workflow_run_detail)
+
+    # F16 — Keys & Environment Variables
+    app.router.add_get("/api/dashboard/env", routes.handle_env)
+    app.router.add_post("/api/dashboard/env/reveal", routes.handle_env_reveal)
 
     # Static UI bundle
     #

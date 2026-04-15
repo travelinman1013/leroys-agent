@@ -143,7 +143,7 @@ function BrainPage() {
       {/* Header */}
       <header className="grid shrink-0 grid-cols-[1fr_auto] items-end gap-6 border-b border-rule px-10 pb-6 pt-9">
         <div>
-          <h1 className="page-stamp text-[56px]">
+          <h1 className="page-stamp">
             the <em>brain</em>
           </h1>
           <p className="mt-3 font-mono text-[10px] uppercase tracking-marker text-ink-muted">

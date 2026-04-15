@@ -3,7 +3,9 @@ import { useState, useEffect, useCallback } from "react";
 import type { QueryClient } from "@tanstack/react-query";
 import { StatusHeader } from "@/components/StatusHeader";
 import { SidebarNav } from "@/components/SidebarNav";
+import { TerminalPanel } from "@/components/TerminalPanel";
 import { useSidebarCollapse } from "@/lib/useSidebarCollapse";
+import { useKeyboardShortcut } from "@/lib/useKeyboardShortcut";
 import { subscribeEvents } from "@/lib/api";
 import type { HermesEvent } from "@/lib/api";
 
@@ -16,8 +18,11 @@ export const Route = createRootRouteWithContext<RouterContext>()({
 });
 
 function RootLayout() {
-  const { collapsed, toggle } = useSidebarCollapse();
+  const { collapsed, toggle, mobileOpen, closeMobile } = useSidebarCollapse();
   const navigate = useNavigate();
+  const [terminalOpen, setTerminalOpen] = useState(false);
+  const toggleTerminal = useCallback(() => setTerminalOpen((o) => !o), []);
+  useKeyboardShortcut("`", toggleTerminal);
 
   // Browser notifications — managed at root so they fire on any route
   const [notifPerm, setNotifPerm] = useState(
@@ -76,7 +81,8 @@ function RootLayout() {
 
   return (
     <div className="flex h-full flex-col bg-bg text-ink">
-      <StatusHeader />
+      <StatusHeader onTerminalToggle={toggleTerminal} onMobileMenuToggle={toggle} />
+      <TerminalPanel open={terminalOpen} onOpenChange={setTerminalOpen} />
       {showNotifStrip && (
         <div className="flex items-center justify-between border-b border-rule bg-bg-alt px-10 py-1.5 font-mono text-[10px] uppercase tracking-marker text-ink-muted">
           <span>Enable notifications for approvals?</span>
@@ -87,7 +93,7 @@ function RootLayout() {
         </div>
       )}
       <div className="flex flex-1 overflow-hidden">
-        <SidebarNav collapsed={collapsed} onToggle={toggle} />
+        <SidebarNav collapsed={collapsed} onToggle={toggle} mobileOpen={mobileOpen} onMobileClose={closeMobile} />
         <main className="relative flex-1 overflow-y-auto">
           <Outlet />
         </main>

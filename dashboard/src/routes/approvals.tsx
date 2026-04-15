@@ -106,7 +106,7 @@ function ApprovalsPage() {
       </div>
 
       <div className="px-10 pb-6 pt-9">
-        <h1 className="page-stamp text-[56px]">
+        <h1 className="page-stamp">
           approval <em>queue</em>
         </h1>
       </div>
@@ -262,6 +262,7 @@ function ApprovalHistoryTable({ rows }: { rows: ApprovalHistoryRow[] }) {
     );
   }
   return (
+    <div className="responsive-table-wrap">
     <table className="w-full border-collapse font-mono text-[12px] tabular-nums text-ink">
       <thead>
         <tr>
@@ -312,6 +313,7 @@ function ApprovalHistoryTable({ rows }: { rows: ApprovalHistoryRow[] }) {
         ))}
       </tbody>
     </table>
+    </div>
   );
 }
 

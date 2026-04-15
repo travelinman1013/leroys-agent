@@ -8,7 +8,7 @@
 
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
-import { useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { api } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { ArrowLeft, GitBranch } from "lucide-react";
@@ -84,6 +84,32 @@ function SessionBody({
     open: false,
     turnIdx: 0,
   });
+
+  // F13: In-session message search
+  const [msgSearch, setMsgSearch] = useState("");
+  const msgSearchLower = msgSearch.trim().toLowerCase();
+  const matchingIndices = useMemo(() => {
+    if (!msgSearchLower) return new Set<number>();
+    const set = new Set<number>();
+    messages.forEach((m, idx) => {
+      const content = typeof m.content === "string" ? m.content : JSON.stringify(m.content ?? "");
+      if (content.toLowerCase().includes(msgSearchLower)) set.add(idx);
+    });
+    return set;
+  }, [messages, msgSearchLower]);
+  const firstMatchRef = useRef<HTMLDivElement>(null);
+  const hasScrolled = useRef(false);
+
+  useEffect(() => {
+    hasScrolled.current = false;
+  }, [msgSearch]);
+
+  useEffect(() => {
+    if (msgSearchLower && matchingIndices.size > 0 && !hasScrolled.current && firstMatchRef.current) {
+      firstMatchRef.current.scrollIntoView({ behavior: "smooth", block: "center" });
+      hasScrolled.current = true;
+    }
+  }, [msgSearchLower, matchingIndices]);
 
   const fork = useApiMutation({
     mutationFn: ({ turnIdx, title }: { turnIdx: number; title: string }) =>
@@ -192,34 +218,40 @@ function SessionBody({
         </Button>
       </div>
 
-      {/* ── meters strip ── */}
-      <div className="mb-10 grid grid-cols-2 gap-x-10 gap-y-3 border-b border-rule pb-6 md:grid-cols-4">
-        <Metric
-          label="Started"
-          value={session.started_at ? formatUnix(session.started_at) : "—"}
-        />
-        <Metric
-          label="Ended"
-          value={session.ended_at ? formatUnix(session.ended_at) : "active"}
-        />
-        <Metric
-          label="In tok"
-          value={compactNumber(session.input_tokens)}
-        />
-        <Metric
-          label="Out tok"
-          value={compactNumber(session.output_tokens)}
-        />
-        <Metric
-          label="Cache"
-          value={compactNumber(session.cache_read_tokens)}
-        />
-        <Metric
-          label="Reason"
-          value={compactNumber(session.reasoning_tokens)}
-        />
-        <Metric label="Cost" value={formatCost(session.estimated_cost_usd)} />
-        <Metric label="Source" value={String(session.source ?? "—")} />
+      {/* ── metadata strip ── */}
+      <div className="mb-10 border-b border-rule pb-6">
+        <div className="grid grid-cols-3 gap-x-10 gap-y-3 md:grid-cols-5">
+          <Metric label="Model" value={session.model ? String(session.model).split("/").pop()?.toUpperCase() ?? "—" : "—"} />
+          <Metric label="Source" value={String(session.source ?? "—")} />
+          <Metric
+            label="Started"
+            value={session.started_at ? formatUnix(session.started_at) : "—"}
+          />
+          <Metric
+            label="Ended"
+            value={session.ended_at ? formatUnix(session.ended_at) : "active"}
+          />
+          <Metric label="Messages" value={compactNumber(session.message_count)} />
+        </div>
+        <div className="mt-3 grid grid-cols-3 gap-x-10 gap-y-3 md:grid-cols-5">
+          <Metric
+            label="In tok"
+            value={compactNumber(session.input_tokens)}
+          />
+          <Metric
+            label="Out tok"
+            value={compactNumber(session.output_tokens)}
+          />
+          <Metric
+            label="Cache"
+            value={compactNumber(session.cache_read_tokens)}
+          />
+          <Metric
+            label="Reason"
+            value={compactNumber(session.reasoning_tokens)}
+          />
+          <Metric label="Cost" value={formatCost(session.estimated_cost_usd)} />
+        </div>
       </div>
 
       {/* ── editorial transcript ── */}
@@ -229,16 +261,42 @@ function SessionBody({
         <span className="marker-rule" />
       </div>
 
+      {/* F13: In-session message search */}
+      <div className="mb-6 flex items-center gap-3">
+        <input
+          type="text"
+          value={msgSearch}
+          onChange={(e) => setMsgSearch(e.target.value)}
+          placeholder="search transcript..."
+          className="w-full max-w-sm border border-rule bg-bg-alt px-3 py-1.5 font-mono text-[12px] text-ink placeholder:text-ink-faint focus:border-oxide-edge focus:outline-none"
+        />
+        {msgSearchLower && (
+          <span className="font-mono text-[10px] uppercase tracking-marker text-ink-muted tabular-nums">
+            {matchingIndices.size} match{matchingIndices.size !== 1 ? "es" : ""}
+          </span>
+        )}
+      </div>
+
       <div className="divide-y divide-rule">
-        {messages.map((m, idx) => (
-          <Turn
-            key={idx}
-            index={idx}
-            message={m}
-            canFork={isEnded && m.role === "assistant"}
-            onFork={() => setForkDialog({ open: true, turnIdx: idx })}
-          />
-        ))}
+        {messages.map((m, idx) => {
+          const isMatch = matchingIndices.has(idx);
+          const isFirstMatch = isMatch && idx === Math.min(...matchingIndices);
+          return (
+            <div
+              key={idx}
+              ref={isFirstMatch ? firstMatchRef : undefined}
+              className={isMatch ? "ring-1 ring-oxide-edge" : undefined}
+            >
+              <Turn
+                index={idx}
+                message={m}
+                canFork={isEnded && m.role === "assistant"}
+                onFork={() => setForkDialog({ open: true, turnIdx: idx })}
+                highlightQuery={msgSearchLower}
+              />
+            </div>
+          );
+        })}
         {messages.length === 0 && (
           <p className="py-6 font-mono text-[11px] uppercase tracking-marker text-ink-faint">
             no messages in this session
@@ -285,11 +343,13 @@ function Turn({
   message,
   canFork,
   onFork,
+  highlightQuery,
 }: {
   index: number;
   message: Record<string, any>;
   canFork: boolean;
   onFork: () => void;
+  highlightQuery?: string;
 }) {
   const role = String(message.role || "unknown");
   const isUser = role === "user";
@@ -357,7 +417,7 @@ function Turn({
         )}
         {preview && !isTool && (
           <div className="whitespace-pre-wrap break-words text-ink-2">
-            {preview}
+            {highlightQuery ? <HighlightText text={preview} query={highlightQuery} /> : preview}
           </div>
         )}
         {preview && isTool && <ToolOutput body={preview} />}
@@ -419,4 +479,29 @@ function ToolOutput({ body }: { body: string }) {
       )}
     </div>
   );
+}
+
+// F13: Highlight matching text within transcript messages
+function HighlightText({ text, query }: { text: string; query: string }) {
+  if (!query) return <>{text}</>;
+  try {
+    const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const regex = new RegExp(`(${escaped})`, "gi");
+    const parts = text.split(regex);
+    return (
+      <>
+        {parts.map((part, i) =>
+          regex.test(part) ? (
+            <mark key={i} className="bg-oxide-wash text-oxide">
+              {part}
+            </mark>
+          ) : (
+            <span key={i}>{part}</span>
+          ),
+        )}
+      </>
+    );
+  } catch {
+    return <>{text}</>;
+  }
 }

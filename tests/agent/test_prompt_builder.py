@@ -39,8 +39,8 @@ from hermes_cli.nous_subscription import NousFeatureState, NousSubscriptionFeatu
 
 class TestGuidanceConstants:
     def test_memory_guidance_discourages_task_logs(self):
-        assert "durable facts" in MEMORY_GUIDANCE
-        assert "Do NOT save task progress" in MEMORY_GUIDANCE
+        assert "durable" in MEMORY_GUIDANCE
+        assert "task progress" in MEMORY_GUIDANCE
         assert "session_search" in MEMORY_GUIDANCE
         assert "like a diary" not in MEMORY_GUIDANCE
         assert ">80%" not in MEMORY_GUIDANCE

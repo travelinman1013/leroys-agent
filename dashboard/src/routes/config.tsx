@@ -10,7 +10,7 @@
 
 import { createFileRoute } from "@tanstack/react-router";
 import { useQuery } from "@tanstack/react-query";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -426,6 +426,9 @@ function ConfigPage() {
     activeCategory === "appearance" ||
     activeCategory === "backups";
 
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const notify = useNotify();
+
   const handleRestart = async () => {
     const ok = await confirm({
       title: "Restart gateway?",
@@ -439,6 +442,58 @@ function ConfigPage() {
     }
   };
 
+  const handleExport = useCallback(() => {
+    if (!cfg.data?.config) return;
+    const blob = new Blob(
+      [JSON.stringify(cfg.data.config, null, 2)],
+      { type: "application/json" },
+    );
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `hermes-config-${new Date().toISOString().slice(0, 10)}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+  }, [cfg.data]);
+
+  const handleImport = useCallback(
+    async (e: React.ChangeEvent<HTMLInputElement>) => {
+      const file = e.target.files?.[0];
+      if (!file) return;
+      // Reset the input so the same file can be re-selected
+      e.target.value = "";
+      try {
+        const text = await file.text();
+        const parsed = JSON.parse(text) as Record<string, unknown>;
+        if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+          notify.error("Invalid config: expected a JSON object");
+          return;
+        }
+        if (!window.confirm("Import this config? Current config will be backed up first.")) return;
+        // Flatten the config into dot-notation mutations
+        const mutations: Record<string, unknown> = {};
+        const flatten = (obj: Record<string, unknown>, prefix = "") => {
+          for (const [k, v] of Object.entries(obj)) {
+            const key = prefix ? `${prefix}.${k}` : k;
+            if (v !== null && typeof v === "object" && !Array.isArray(v)) {
+              flatten(v as Record<string, unknown>, key);
+            } else {
+              mutations[key] = v;
+            }
+          }
+        };
+        flatten(parsed);
+        await api.putConfig(mutations);
+        notify.success("Config imported");
+        cfg.refetch();
+        backups.refetch();
+      } catch (err) {
+        notify.error(`Import failed: ${(err as Error).message}`);
+      }
+    },
+    [cfg, backups, notify],
+  );
+
   return (
     <div className="bg-bg">
       {/* ── strip ── */}
@@ -449,7 +504,30 @@ function ConfigPage() {
           <Meter label="Categories" value={String(CATEGORIES.length)} />
           <Meter label="Backups" value={String(backupCount)} />
         </div>
-        <div className="text-ink-faint">EDIT</div>
+        <div className="flex items-center gap-3">
+          <button
+            type="button"
+            onClick={handleExport}
+            disabled={!cfg.data?.config}
+            className="font-mono text-[10px] uppercase tracking-marker text-ink-muted transition-colors duration-120 ease-operator hover:text-oxide disabled:opacity-40"
+          >
+            EXPORT
+          </button>
+          <button
+            type="button"
+            onClick={() => fileInputRef.current?.click()}
+            className="font-mono text-[10px] uppercase tracking-marker text-ink-muted transition-colors duration-120 ease-operator hover:text-oxide"
+          >
+            IMPORT
+          </button>
+          <input
+            ref={fileInputRef}
+            type="file"
+            accept=".json"
+            onChange={handleImport}
+            className="hidden"
+          />
+        </div>
       </div>
 
       {/* ── main layout: content + sidebar ── */}
@@ -458,7 +536,7 @@ function ConfigPage() {
         <div ref={contentRef} className="flex-1 overflow-y-auto">
           {/* stamp */}
           <div className="px-10 pb-6 pt-9">
-            <h1 className="page-stamp text-[56px]">
+            <h1 className="page-stamp">
               config <em>panel</em>
             </h1>
             <p className="mt-3 max-w-prose font-mono text-[10px] uppercase tracking-marker text-ink-muted">

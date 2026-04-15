@@ -2109,11 +2109,11 @@ class AIAgent:
 
     _MEMORY_REVIEW_PROMPT = (
         "Review the conversation above and consider saving to memory if appropriate.\n\n"
-        "Focus on:\n"
-        "1. Has the user revealed things about themselves — their persona, desires, "
-        "preferences, or personal details worth remembering?\n"
-        "2. Has the user expressed expectations about how you should behave, their work "
-        "style, or ways they want you to operate?\n\n"
+        "SAVE: user corrections, preferences, communication style, decision reasoning, "
+        "relationship context, conventions, tool/API quirks, operational learnings.\n"
+        "SKIP: model/provider/security config (in config.yaml), volatile state "
+        "(branch, versions, PR status), raw file contents, raw git history, "
+        "task progress, session outcomes, TODOs.\n\n"
         "If something stands out, save it using the memory tool. "
         "If nothing is worth saving, just say 'Nothing to save.' and stop."
     )
@@ -2130,10 +2130,11 @@ class AIAgent:
 
     _COMBINED_REVIEW_PROMPT = (
         "Review the conversation above and consider two things:\n\n"
-        "**Memory**: Has the user revealed things about themselves — their persona, "
-        "desires, preferences, or personal details? Has the user expressed expectations "
-        "about how you should behave, their work style, or ways they want you to operate? "
-        "If so, save using the memory tool.\n\n"
+        "**Memory**: Save user corrections, preferences, communication style, decision "
+        "reasoning, relationship context, conventions, tool/API quirks, operational "
+        "learnings. Skip model/provider/security config (in config.yaml), volatile state "
+        "(branch, versions, PR status), raw file contents, raw git history, task progress, "
+        "session outcomes, TODOs. If something stands out, save using the memory tool.\n\n"
         "**Skills**: Was a non-trivial approach used to complete a task that required trial "
         "and error, or changing course due to experiential findings along the way, or did "
         "the user expect or desire a different method or outcome? If a relevant skill "
@@ -6588,9 +6589,9 @@ class AIAgent:
             return
 
         flush_content = (
-            "[System: The session is being compressed. "
-            "Save anything worth remembering — prioritize user preferences, "
-            "corrections, and recurring patterns over task-specific details.]"
+            "[System: Session compressing. Save to memory: user preferences, "
+            "corrections, conventions, operational learnings. "
+            "Skip: task progress, outcomes, TODOs, config/env facts.]"
         )
         _sentinel = f"__flush_{id(self)}_{time.monotonic()}"
         flush_msg = {"role": "user", "content": flush_content, "_flush_sentinel": _sentinel}

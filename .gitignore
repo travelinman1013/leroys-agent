@@ -72,3 +72,4 @@ _archive/
 /dashboard/src/routeTree.gen.ts
 /dashboard/tsconfig.tsbuildinfo
 /gateway/platforms/api_server_static/
+.gstack/
