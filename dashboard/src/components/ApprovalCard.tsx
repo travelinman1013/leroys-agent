@@ -36,7 +36,7 @@ export function ApprovalCard({ approval }: Props) {
           ─── APPROVAL REQUIRED · {approval.pattern_key.toUpperCase()} ───────
         </div>
         <p className="mt-2 font-stamp text-[28px] italic leading-tight text-ink">
-          Hermes wants to <em className="text-oxide">{approval.pattern_key}</em>
+          Leroys wants to <em className="text-oxide">{approval.pattern_key}</em>
         </p>
         <p className="mt-2 text-[13px] leading-relaxed text-ink-2">
           Session{" "}

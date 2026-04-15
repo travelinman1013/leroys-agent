@@ -79,7 +79,7 @@ function HomeInbox() {
         {/* page-stamp + meta */}
         <div className="flex items-baseline gap-7 border-b border-rule px-10 pb-6 pt-9">
           <h1 className="page-stamp">
-            hermes,
+            leroys,
             <br />
             <em>{day}</em>
           </h1>

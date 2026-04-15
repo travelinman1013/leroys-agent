@@ -64,7 +64,7 @@ export function StatusHeader({ onTerminalToggle, onMobileMenuToggle }: StatusHea
         )}
         <div className="flex items-baseline gap-3.5">
           <span className="font-display text-[13px] font-bold tracking-marker text-ink">
-            HERMES
+            LEROYS
           </span>
           <span className="hidden text-ink-faint sm:inline">v0.8.0 · operator's desk</span>
         </div>

@@ -1111,8 +1111,8 @@ function SecurityPathsSection({
       title: `Remove ${path}?`,
       description:
         target === "safe_roots"
-          ? "Hermes will no longer be able to read/write files under this path."
-          : "This path will no longer be blocked. Hermes will be able to access it.",
+          ? "Leroys will no longer be able to read/write files under this path."
+          : "This path will no longer be blocked. Leroys will be able to access it.",
       confirmLabel: "REMOVE",
     });
     if (ok) mutate.mutate({ action: "remove", target, path });
@@ -1127,7 +1127,7 @@ function SecurityPathsSection({
           ALLOWED PATHS (safe_roots)
         </div>
         <p className="mb-3 font-mono text-[10px] tracking-marker text-ink-faint">
-          Hermes can read and write files under these directories.
+          Leroys can read and write files under these directories.
         </p>
         <ul className="space-y-1">
           {(paths.data?.safe_roots ?? []).map((p) => (

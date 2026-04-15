@@ -102,7 +102,7 @@ function SpawnDialog({
           ref={textareaRef}
           value={message}
           onChange={(e) => setMessage(e.target.value)}
-          placeholder="What should Hermes do?"
+          placeholder="What should Leroys do?"
           rows={4}
           className="mb-4 w-full border border-rule bg-bg px-3 py-2 font-mono text-[13px] text-ink placeholder:text-ink-faint focus:border-oxide-edge focus:outline-none"
           onKeyDown={(e) => {
