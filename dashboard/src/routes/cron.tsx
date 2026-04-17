@@ -16,7 +16,9 @@ import { api } from "@/lib/api";
 import { ToolsPanel } from "@/components/ToolsPanel";
 import { Button } from "@/components/ui/button";
 import { Play, Pause, Trash2, Plus, ChevronUp } from "lucide-react";
-import { compactRelTime } from "@/lib/utils";
+import { compactRelTime, compactRelTimeFromUnix } from "@/lib/utils";
+import type { EventWatcher } from "@/lib/api";
+import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
 import { cronSearch, useSyncSearchToStorage } from "@/lib/searchParams";
 import {
   WorkflowRunRow,
@@ -55,9 +57,19 @@ function CronPage() {
     onSuccess: () => qc.invalidateQueries({ queryKey: ["cron"] }),
   });
 
+  const { data: watcherData } = useQuery({
+    queryKey: ["watchers"],
+    queryFn: api.eventWatchers,
+    refetchInterval: 10_000,
+  });
+  const watchers = watcherData?.watchers ?? [];
+  const activeWatchers = watchers.filter((w) => w.status === "running").length;
+
   const jobs = (data?.jobs ?? []) as Array<Record<string, any>>;
   const running = jobs.filter((j) => j.state === "running").length;
   const workflowJobs = jobs.filter((j) => j.workflow).length;
+  const workflowJobsList = jobs.filter((j) => j.workflow);
+  const promptJobs = jobs.filter((j) => !j.workflow);
   const next = jobs
     .map((j) => j.next_run_at as string | number | undefined)
     .filter((t): t is string | number => t != null && t !== "")
@@ -75,6 +87,7 @@ function CronPage() {
         <div className="flex items-center justify-center gap-7">
           <Meter label="Jobs" value={String(jobs.length)} />
           <Meter label="Workflows" value={String(workflowJobs)} />
+          <Meter label="Watchers" value={String(activeWatchers)} warm={activeWatchers > 0} />
           <Meter label="Running" value={String(running)} warm={running > 0} />
           <Meter label="Next" value={next ? compactRelTime(next) : "—"} />
         </div>
@@ -105,53 +118,69 @@ function CronPage() {
         </p>
       )}
 
-      <div className="px-10 pb-16">
-        <div className="responsive-table-wrap">
-        <table className="w-full border-collapse font-mono text-[12px] tabular-nums text-ink">
-          <thead>
-            <tr>
-              <Th>ID</Th>
-              <Th>JOB</Th>
-              <Th>SCHEDULE</Th>
-              <Th>NEXT</Th>
-              <Th>LAST</Th>
-              <Th align="right">RUNS</Th>
-              <Th align="right">ACTIONS</Th>
-            </tr>
-          </thead>
-          <tbody>
-            {jobs.map((j) => (
-              <JobRow
-                key={String(j.id ?? "")}
-                job={j}
-                onPause={(id) => pause.mutate(id)}
-                onResume={(id) => resume.mutate(id)}
-                onRun={(id) => run.mutate(id)}
-                onRemove={(id) => {
-                  if (confirm(`Delete cron job "${j.name}"?`)) {
-                    remove.mutate(id);
-                  }
-                }}
-                mutating={
-                  pause.isPending ||
-                  resume.isPending ||
-                  run.isPending ||
-                  remove.isPending
-                }
-              />
-            ))}
-          </tbody>
-        </table>
-        </div>
+      <Tabs defaultValue="watchers" className="px-10 pb-16">
+        <TabsList className="mb-6 w-full justify-start">
+          <TabsTrigger value="watchers">
+            WATCHERS{" "}
+            <span className="ml-1.5 text-ink-faint">{activeWatchers}</span>
+          </TabsTrigger>
+          <TabsTrigger value="workflows">
+            WORKFLOWS{" "}
+            <span className="ml-1.5 text-ink-faint">{workflowJobsList.length}</span>
+          </TabsTrigger>
+          <TabsTrigger value="prompts">
+            PROMPTS{" "}
+            <span className="ml-1.5 text-ink-faint">{promptJobs.length}</span>
+          </TabsTrigger>
+        </TabsList>
 
-        {jobs.length === 0 && !isLoading && (
-          <p className="mt-6 font-mono text-[11px] uppercase tracking-marker text-ink-faint">
-            no cron jobs scheduled. create one via{" "}
-            <span className="text-oxide">hermes cron add</span> or the form
-            above.
-          </p>
-        )}
-      </div>
+        <TabsContent value="watchers">
+          <EventWatchersSection watchers={watchers} />
+          {watchers.length === 0 && !isLoading && (
+            <p className="mt-4 font-mono text-[11px] uppercase tracking-marker text-ink-faint">
+              no event watchers active.
+            </p>
+          )}
+        </TabsContent>
+
+        <TabsContent value="workflows">
+          <JobsTable
+            jobs={workflowJobsList}
+            onPause={(id) => pause.mutate(id)}
+            onResume={(id) => resume.mutate(id)}
+            onRun={(id) => run.mutate(id)}
+            onRemove={(id, name) => {
+              if (confirm(`Delete cron job "${name}"?`)) remove.mutate(id);
+            }}
+            mutating={pause.isPending || resume.isPending || run.isPending || remove.isPending}
+          />
+          {workflowJobsList.length === 0 && !isLoading && (
+            <p className="mt-4 font-mono text-[11px] uppercase tracking-marker text-ink-faint">
+              no workflow jobs scheduled.
+            </p>
+          )}
+        </TabsContent>
+
+        <TabsContent value="prompts">
+          <JobsTable
+            jobs={promptJobs}
+            onPause={(id) => pause.mutate(id)}
+            onResume={(id) => resume.mutate(id)}
+            onRun={(id) => run.mutate(id)}
+            onRemove={(id, name) => {
+              if (confirm(`Delete cron job "${name}"?`)) remove.mutate(id);
+            }}
+            mutating={pause.isPending || resume.isPending || run.isPending || remove.isPending}
+          />
+          {promptJobs.length === 0 && !isLoading && (
+            <p className="mt-4 font-mono text-[11px] uppercase tracking-marker text-ink-faint">
+              no prompt jobs scheduled. create one via{" "}
+              <span className="text-oxide">hermes cron add</span> or the form
+              above.
+            </p>
+          )}
+        </TabsContent>
+      </Tabs>
     </div>
   );
 }
@@ -549,6 +578,131 @@ function CronCreateForm({ onCreated }: { onCreated: () => void }) {
         {error && (
           <p className="font-mono text-[11px] text-destructive">{error}</p>
         )}
+      </div>
+    </div>
+  );
+}
+
+/* ────────────────── Jobs table (shared by workflows + prompts tabs) ── */
+
+function JobsTable({
+  jobs,
+  onPause,
+  onResume,
+  onRun,
+  onRemove,
+  mutating,
+}: {
+  jobs: Array<Record<string, any>>;
+  onPause: (id: string) => void;
+  onResume: (id: string) => void;
+  onRun: (id: string) => void;
+  onRemove: (id: string, name: string) => void;
+  mutating: boolean;
+}) {
+  if (jobs.length === 0) return null;
+
+  return (
+    <div className="responsive-table-wrap">
+      <table className="w-full border-collapse font-mono text-[12px] tabular-nums text-ink">
+        <thead>
+          <tr>
+            <Th>ID</Th>
+            <Th>JOB</Th>
+            <Th>SCHEDULE</Th>
+            <Th>NEXT</Th>
+            <Th>LAST</Th>
+            <Th align="right">RUNS</Th>
+            <Th align="right">ACTIONS</Th>
+          </tr>
+        </thead>
+        <tbody>
+          {jobs.map((j) => (
+            <JobRow
+              key={String(j.id ?? "")}
+              job={j}
+              onPause={onPause}
+              onResume={onResume}
+              onRun={onRun}
+              onRemove={(id) => onRemove(id, j.name)}
+              mutating={mutating}
+            />
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+/* ────────────────── Event Watchers ────────────────── */
+
+function EventWatchersSection({ watchers }: { watchers: EventWatcher[] }) {
+  if (watchers.length === 0) return null;
+
+  return (
+    <div>
+      <div className="responsive-table-wrap">
+        <table className="w-full border-collapse font-mono text-[12px] tabular-nums text-ink">
+          <thead>
+            <tr>
+              <Th>NAME</Th>
+              <Th>TYPE</Th>
+              <Th>STATUS</Th>
+              <Th>PATHS</Th>
+              <Th>DEBOUNCE</Th>
+              <Th align="right">24H</Th>
+              <Th align="right">LAST TRIGGER</Th>
+            </tr>
+          </thead>
+          <tbody>
+            {watchers.map((w) => (
+              <tr
+                key={w.id}
+                className="border-b border-rule hover:bg-oxide-wash"
+              >
+                <Td>
+                  {w.name}
+                  <span className="ml-2 rounded border border-oxide/30 bg-oxide-wash px-1 py-0.5 text-[10px] uppercase">
+                    {w.workflow_id}
+                  </span>
+                </Td>
+                <Td>
+                  <span className="rounded bg-surface-2 px-1.5 py-0.5 text-[10px] uppercase">
+                    {w.type.replace("_", " ")}
+                  </span>
+                </Td>
+                <Td>
+                  <span
+                    className={
+                      w.status === "running"
+                        ? "text-green-500"
+                        : "text-ink-muted"
+                    }
+                  >
+                    {w.status === "running" ? "RUNNING" : "STOPPED"}
+                  </span>
+                </Td>
+                <Td>
+                  <span
+                    className="text-ink-muted"
+                    title={w.watched_paths.join("\n")}
+                  >
+                    {w.watched_paths
+                      .map((p) => p.replace(/^\/Users\/[^/]+\//, "~/"))
+                      .join(", ")}
+                  </span>
+                </Td>
+                <Td>{w.debounce_s}s</Td>
+                <Td align="right">{w.recent_runs_24h ?? 0}</Td>
+                <Td align="right">
+                  {w.last_trigger_at
+                    ? compactRelTimeFromUnix(w.last_trigger_at)
+                    : "\u2014"}
+                </Td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
       </div>
     </div>
   );

@@ -2990,6 +2990,67 @@ class DashboardRoutes:
         except Exception as exc:
             return _json_err(exc)
 
+    @require_dashboard_auth
+    async def handle_event_watchers(self, request: "web.Request") -> "web.Response":
+        """GET /api/dashboard/watchers — active event-driven watchers."""
+        try:
+            watchers = []
+
+            # File watcher status
+            try:
+                from workflow.file_watcher import get_watcher_status
+
+                fw = get_watcher_status()
+                watchers.append({
+                    "id": "file-watcher",
+                    "name": "File Watcher",
+                    "type": "file_watch",
+                    "workflow_id": "watch-and-notify",
+                    "status": "running" if fw["running"] else "stopped",
+                    "watched_paths": fw["watched_paths"],
+                    "debounce_s": fw["debounce_s"],
+                    "started_at": fw["started_at"],
+                    "event_count": fw["event_count"],
+                    "last_trigger_at": fw["last_trigger_at"],
+                })
+            except ImportError:
+                pass
+
+            # Enrich with run counts from DB
+            try:
+                import time as _time
+
+                from hermes_state import SessionDB
+
+                db = SessionDB()
+                since_24h = _time.time() - 86400
+                for w in watchers:
+                    wf_id = w.get("workflow_id")
+                    if wf_id:
+                        with db._lock:
+                            total = db._conn.execute(
+                                "SELECT COUNT(*) FROM workflow_runs WHERE workflow_id = ?",
+                                [wf_id],
+                            ).fetchone()[0]
+                            recent = db._conn.execute(
+                                "SELECT COUNT(*) FROM workflow_runs WHERE workflow_id = ? AND started_at > ?",
+                                [wf_id, since_24h],
+                            ).fetchone()[0]
+                            last_row = db._conn.execute(
+                                "SELECT status FROM workflow_runs WHERE workflow_id = ? ORDER BY started_at DESC LIMIT 1",
+                                [wf_id],
+                            ).fetchone()
+                        w["total_runs"] = total
+                        w["recent_runs_24h"] = recent
+                        if last_row:
+                            w["last_run_status"] = last_row[0]
+            except Exception:
+                pass
+
+            return _json_ok({"watchers": watchers})
+        except Exception as exc:
+            return _json_err(exc)
+
     # ------------------------------------------------------------------
     # F16 — Keys & Environment Variables
     # ------------------------------------------------------------------
@@ -3250,6 +3311,7 @@ def register_dashboard_routes(
     app.router.add_get("/api/dashboard/workflows", routes.handle_workflow_runs)
     app.router.add_get("/api/dashboard/workflows/catalog", routes.handle_workflow_catalog)
     app.router.add_get("/api/dashboard/workflows/{id}", routes.handle_workflow_run_detail)
+    app.router.add_get("/api/dashboard/watchers", routes.handle_event_watchers)
 
     # F16 — Keys & Environment Variables
     app.router.add_get("/api/dashboard/env", routes.handle_env)

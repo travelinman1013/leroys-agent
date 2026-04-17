@@ -70,6 +70,22 @@ export type WorkflowCatalogEntry = {
   step_count: number;
 };
 
+export type EventWatcher = {
+  id: string;
+  name: string;
+  type: string;
+  workflow_id: string;
+  status: "running" | "stopped";
+  watched_paths: string[];
+  debounce_s: number;
+  started_at: number | null;
+  event_count: number;
+  last_trigger_at: number | null;
+  total_runs: number;
+  recent_runs_24h: number;
+  last_run_status?: string;
+};
+
 export type PendingApproval = {
   session_key: string;
   command: string;
@@ -795,6 +811,9 @@ export const api = {
 
   workflowCatalog: () =>
     apiFetch<{ catalog: WorkflowCatalogEntry[] }>("/api/dashboard/workflows/catalog"),
+
+  eventWatchers: () =>
+    apiFetch<{ watchers: EventWatcher[] }>("/api/dashboard/watchers"),
 
   // F16 — Keys & Environment Variables
   env: () =>

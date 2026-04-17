@@ -1,5 +1,7 @@
 """File watcher daemon — monitors directories for changes and triggers workflows.
 
+Exposes ``get_watcher_status()`` for the dashboard to query runtime state.
+
 Runs as a gateway background thread alongside the cron ticker. Uses watchdog
 for FSEvents (macOS) / inotify (Linux) filesystem monitoring. Gracefully
 no-ops if watchdog is not installed.
@@ -49,6 +51,25 @@ _DEFAULT_EXCLUDE_EXTENSIONS: Set[str] = {
     ".swo",
     ".pyc",
 }
+
+# ---------------------------------------------------------------------------
+# Module-level watcher status — queried by the dashboard endpoint.
+# ---------------------------------------------------------------------------
+_watcher_status: Dict[str, Any] = {
+    "running": False,
+    "watched_paths": [],
+    "debounce_s": 2.0,
+    "started_at": None,
+    "event_count": 0,
+    "last_trigger_at": None,
+}
+_status_lock = threading.Lock()
+
+
+def get_watcher_status() -> Dict[str, Any]:
+    """Return a snapshot of watcher status for the dashboard."""
+    with _status_lock:
+        return dict(_watcher_status)
 
 
 class _DebouncedHandler(FileSystemEventHandler):
@@ -147,6 +168,9 @@ def _trigger_workflow(event_data: Dict[str, Any]) -> None:
         return
 
     result = run_workflow(wf, trigger_meta=event_data)
+    with _status_lock:
+        _watcher_status["event_count"] += 1
+        _watcher_status["last_trigger_at"] = time.time()
     if result.status != "completed":
         logger.warning(
             "watch-and-notify workflow failed for %s: %s",
@@ -230,6 +254,11 @@ def start_file_watcher(
         logger.info("File watcher: watching %s", path)
 
     observer.start()
+    with _status_lock:
+        _watcher_status["running"] = True
+        _watcher_status["watched_paths"] = list(valid_paths)
+        _watcher_status["debounce_s"] = debounce_s
+        _watcher_status["started_at"] = time.time()
     logger.info("File watcher started (%d directories, debounce=%.1fs)", len(valid_paths), debounce_s)
 
     try:
@@ -251,4 +280,6 @@ def start_file_watcher(
         handler.cancel()
         observer.stop()
         observer.join(timeout=5.0)
+        with _status_lock:
+            _watcher_status["running"] = False
         logger.info("File watcher stopped")
