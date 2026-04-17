@@ -2,9 +2,7 @@ import { createRootRouteWithContext, Outlet, useNavigate } from "@tanstack/react
 import { useState, useEffect, useCallback } from "react";
 import type { QueryClient } from "@tanstack/react-query";
 import { StatusHeader } from "@/components/StatusHeader";
-import { SidebarNav } from "@/components/SidebarNav";
 import { TerminalPanel } from "@/components/TerminalPanel";
-import { useSidebarCollapse } from "@/lib/useSidebarCollapse";
 import { useKeyboardShortcut } from "@/lib/useKeyboardShortcut";
 import { subscribeEvents } from "@/lib/api";
 import type { HermesEvent } from "@/lib/api";
@@ -18,7 +16,6 @@ export const Route = createRootRouteWithContext<RouterContext>()({
 });
 
 function RootLayout() {
-  const { collapsed, toggle, mobileOpen, closeMobile } = useSidebarCollapse();
   const navigate = useNavigate();
   const [terminalOpen, setTerminalOpen] = useState(false);
   const toggleTerminal = useCallback(() => setTerminalOpen((o) => !o), []);
@@ -81,7 +78,7 @@ function RootLayout() {
 
   return (
     <div className="flex h-full flex-col bg-bg text-ink">
-      <StatusHeader onTerminalToggle={toggleTerminal} onMobileMenuToggle={toggle} />
+      <StatusHeader onTerminalToggle={toggleTerminal} />
       <TerminalPanel open={terminalOpen} onOpenChange={setTerminalOpen} />
       {showNotifStrip && (
         <div className="flex items-center justify-between border-b border-rule bg-bg-alt px-10 py-1.5 font-mono text-[10px] uppercase tracking-marker text-ink-muted">
@@ -92,12 +89,9 @@ function RootLayout() {
           </span>
         </div>
       )}
-      <div className="flex flex-1 overflow-hidden">
-        <SidebarNav collapsed={collapsed} onToggle={toggle} mobileOpen={mobileOpen} onMobileClose={closeMobile} />
-        <main className="relative flex-1 overflow-y-auto">
-          <Outlet />
-        </main>
-      </div>
+      <main className="flex-1 overflow-y-auto">
+        <Outlet />
+      </main>
     </div>
   );
 }
