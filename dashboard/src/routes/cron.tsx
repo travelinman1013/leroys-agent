@@ -10,12 +10,12 @@
  */
 
 import { createFileRoute } from "@tanstack/react-router";
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { api } from "@/lib/api";
 import { ToolsPanel } from "@/components/ToolsPanel";
 import { Button } from "@/components/ui/button";
-import { Play, Pause, Trash2, Plus, ChevronUp } from "lucide-react";
+import { Play, Pause, Trash2, Plus, ChevronUp, Pencil, Settings } from "lucide-react";
 import { compactRelTime, compactRelTimeFromUnix } from "@/lib/utils";
 import type { EventWatcher } from "@/lib/api";
 import { Tabs, TabsList, TabsTrigger, TabsContent } from "@/components/ui/tabs";
@@ -24,6 +24,17 @@ import {
   WorkflowRunRow,
   CatalogStepPreview,
 } from "@/components/WorkflowParts";
+import { InfoTip } from "@/components/InfoTip";
+import { ScheduleBuilder } from "@/components/ScheduleBuilder";
+import {
+  Sheet,
+  SheetContent,
+  SheetHeader,
+  SheetTitle,
+  SheetBody,
+  SheetFooter,
+} from "@/components/ui/sheet";
+import { useApiMutation } from "@/lib/mutations";
 
 export const Route = createFileRoute("/cron")({
   component: CronPage,
@@ -39,6 +50,8 @@ function CronPage() {
     queryFn: api.cronJobs,
     refetchInterval: 10_000,
   });
+
+  const [harnessCreatorOpen, setHarnessCreatorOpen] = useState(false);
 
   const pause = useMutation({
     mutationFn: (id: string) => api.pauseJob(id),
@@ -99,7 +112,7 @@ function CronPage() {
           <em>scheduled</em> tasks
         </h1>
         <p className="mt-3 font-mono text-[10px] uppercase tracking-marker text-ink-muted">
-          ─── {jobs.length - workflowJobs} PROMPT{jobs.length - workflowJobs !== 1 ? "S" : ""} · {workflowJobs} WORKFLOW{workflowJobs !== 1 ? "S" : ""} ──
+          ─── {jobs.length - workflowJobs} JOB{jobs.length - workflowJobs !== 1 ? "S" : ""} · {workflowJobs} WORKFLOW{workflowJobs !== 1 ? "S" : ""} ──
         </p>
       </div>
 
@@ -123,27 +136,37 @@ function CronPage() {
           <TabsTrigger value="watchers">
             WATCHERS{" "}
             <span className="ml-1.5 text-ink-faint">{activeWatchers}</span>
+            <span className="ml-1"><InfoTip text="File system monitors that watch directories for changes and trigger workflows automatically. They run continuously — not on a schedule." /></span>
           </TabsTrigger>
           <TabsTrigger value="workflows">
             WORKFLOWS{" "}
             <span className="ml-1.5 text-ink-faint">{workflowJobsList.length}</span>
+            <span className="ml-1"><InfoTip text="Multi-step harnesses that execute a sequence of predefined Python steps on a cron schedule. Each harness is a fixed pipeline (e.g., repo scan, research digest)." /></span>
           </TabsTrigger>
-          <TabsTrigger value="prompts">
-            PROMPTS{" "}
+          <TabsTrigger value="jobs">
+            JOBS{" "}
             <span className="ml-1.5 text-ink-faint">{promptJobs.length}</span>
+            <span className="ml-1"><InfoTip text="Scheduled prompts — text instructions sent to the agent on a cron schedule. The agent executes the prompt as if you typed it." /></span>
           </TabsTrigger>
         </TabsList>
 
         <TabsContent value="watchers">
           <EventWatchersSection watchers={watchers} />
-          {watchers.length === 0 && !isLoading && (
-            <p className="mt-4 font-mono text-[11px] uppercase tracking-marker text-ink-faint">
-              no event watchers active.
-            </p>
-          )}
         </TabsContent>
 
         <TabsContent value="workflows">
+          <div className="mb-3 flex items-center justify-end">
+            <button
+              onClick={() => setHarnessCreatorOpen(true)}
+              className="flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-marker text-ink-muted transition-colors hover:text-oxide"
+            >
+              <Plus size={12} /> New Harness
+            </button>
+          </div>
+          <HarnessCreatorSheet
+            open={harnessCreatorOpen}
+            onOpenChange={setHarnessCreatorOpen}
+          />
           <JobsTable
             jobs={workflowJobsList}
             onPause={(id) => pause.mutate(id)}
@@ -161,7 +184,7 @@ function CronPage() {
           )}
         </TabsContent>
 
-        <TabsContent value="prompts">
+        <TabsContent value="jobs">
           <JobsTable
             jobs={promptJobs}
             onPause={(id) => pause.mutate(id)}
@@ -174,7 +197,7 @@ function CronPage() {
           />
           {promptJobs.length === 0 && !isLoading && (
             <p className="mt-4 font-mono text-[11px] uppercase tracking-marker text-ink-faint">
-              no prompt jobs scheduled. create one via{" "}
+              no jobs scheduled. create one via{" "}
               <span className="text-oxide">hermes cron add</span> or the form
               above.
             </p>
@@ -203,6 +226,7 @@ function JobRow({
   mutating: boolean;
 }) {
   const [expanded, setExpanded] = useState(false);
+  const [editOpen, setEditOpen] = useState(false);
   const id = String(job.id ?? "");
   const isRunning = job.state === "running";
   const isPaused = job.state === "paused" || !job.enabled;
@@ -277,6 +301,15 @@ function JobRow({
             <Button
               size="icon"
               variant="ghost"
+              onClick={() => setEditOpen(true)}
+              disabled={mutating}
+              title="Edit"
+            >
+              <Pencil className="size-3" />
+            </Button>
+            <Button
+              size="icon"
+              variant="ghost"
               onClick={() => onRemove(id)}
               disabled={mutating}
               title="Delete"
@@ -297,7 +330,197 @@ function JobRow({
           </td>
         </tr>
       )}
+      <JobEditSheet job={job} open={editOpen} onOpenChange={setEditOpen} />
     </>
+  );
+}
+
+/* ────────────────── Job Edit Sheet ────────────────── */
+
+function JobEditSheet({
+  job,
+  open,
+  onOpenChange,
+}: {
+  job: Record<string, any>;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+}) {
+  const qc = useQueryClient();
+  const id = String(job.id ?? "");
+  const isWorkflow = !!job.workflow;
+
+  const [name, setName] = useState(String(job.name ?? ""));
+  const [schedule, setSchedule] = useState(
+    job.schedule_display || (typeof job.schedule === "string" ? job.schedule : ""),
+  );
+  const [prompt, setPrompt] = useState(String(job.prompt ?? ""));
+  const [deliver, setDeliver] = useState(String(job.deliver ?? "origin"));
+  const [enabled, setEnabled] = useState(job.enabled !== false);
+  const [schedulePreview, setSchedulePreview] = useState("");
+  const [scheduleError, setScheduleError] = useState("");
+
+  // Reset form when sheet opens with new job
+  useEffect(() => {
+    if (open) {
+      setName(String(job.name ?? ""));
+      setSchedule(
+        job.schedule_display || (typeof job.schedule === "string" ? job.schedule : ""),
+      );
+      setPrompt(String(job.prompt ?? ""));
+      setDeliver(String(job.deliver ?? "origin"));
+      setEnabled(job.enabled !== false);
+      setSchedulePreview("");
+      setScheduleError("");
+    }
+  }, [open, job]);
+
+  const validateSchedule = useCallback(async (expr: string) => {
+    if (!expr.trim()) {
+      setSchedulePreview("");
+      setScheduleError("");
+      return;
+    }
+    try {
+      const result = await api.parseCronSchedule(expr.trim());
+      const p = result.parsed as Record<string, unknown>;
+      const nextRun = p.next_run_at ?? p.next_run;
+      setSchedulePreview(
+        nextRun
+          ? `Next: ${new Date((nextRun as number) * 1000).toLocaleString()}`
+          : "Valid schedule",
+      );
+      setScheduleError("");
+    } catch {
+      setSchedulePreview("");
+      setScheduleError("Invalid schedule expression");
+    }
+  }, []);
+
+  const update = useApiMutation({
+    mutationFn: () =>
+      api.updateJob(id, {
+        name: name.trim(),
+        schedule: schedule.trim(),
+        ...(isWorkflow ? {} : { prompt: prompt.trim() }),
+        deliver,
+        enabled,
+      }),
+    successMessage: "Job updated",
+    onSuccess: () => {
+      onOpenChange(false);
+      qc.invalidateQueries({ queryKey: ["cron"] });
+    },
+  });
+
+  return (
+    <Sheet open={open} onOpenChange={onOpenChange}>
+      <SheetContent>
+        <SheetHeader>
+          <SheetTitle className="font-mono text-[11px] uppercase tracking-marker">
+            Edit Job — {id.slice(0, 8)}
+          </SheetTitle>
+        </SheetHeader>
+        <SheetBody>
+          <div className="space-y-4">
+            <div>
+              <label className="mb-1 block font-mono text-[10px] uppercase tracking-marker text-ink-muted">
+                Name
+              </label>
+              <input
+                type="text"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                className="w-full border border-rule bg-bg px-3 py-1.5 font-mono text-[12px] text-ink focus:border-oxide-edge focus:outline-none"
+              />
+            </div>
+
+            <div>
+              <label className="mb-1 block font-mono text-[10px] uppercase tracking-marker text-ink-muted">
+                Schedule
+              </label>
+              <ScheduleBuilder
+                value={schedule}
+                onChange={(v) => {
+                  setSchedule(v);
+                  validateSchedule(v);
+                }}
+                preview={schedulePreview}
+                error={scheduleError}
+              />
+            </div>
+
+            {!isWorkflow && (
+              <div>
+                <label className="mb-1 block font-mono text-[10px] uppercase tracking-marker text-ink-muted">
+                  Prompt
+                </label>
+                <textarea
+                  value={prompt}
+                  onChange={(e) => setPrompt(e.target.value)}
+                  rows={4}
+                  className="w-full resize-y border border-rule bg-bg px-3 py-1.5 font-mono text-[12px] text-ink focus:border-oxide-edge focus:outline-none"
+                />
+              </div>
+            )}
+
+            {isWorkflow && (
+              <div>
+                <label className="mb-1 block font-mono text-[10px] uppercase tracking-marker text-ink-muted">
+                  Workflow
+                </label>
+                <p className="rounded border border-oxide/30 bg-oxide-wash px-3 py-1.5 font-mono text-[12px] text-oxide">
+                  {job.workflow}
+                </p>
+              </div>
+            )}
+
+            <div>
+              <label className="mb-1 block font-mono text-[10px] uppercase tracking-marker text-ink-muted">
+                Deliver
+              </label>
+              <select
+                value={deliver}
+                onChange={(e) => setDeliver(e.target.value)}
+                className="w-full border border-rule bg-bg px-3 py-1.5 font-mono text-[12px] text-ink focus:border-oxide-edge focus:outline-none"
+              >
+                <option value="origin">Origin</option>
+                <option value="discord">Discord</option>
+                <option value="telegram">Telegram</option>
+                <option value="slack">Slack</option>
+                <option value="email">Email</option>
+              </select>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <input
+                type="checkbox"
+                checked={enabled}
+                onChange={(e) => setEnabled(e.target.checked)}
+                className="accent-oxide"
+              />
+              <label className="font-mono text-[11px] text-ink-2">Enabled</label>
+            </div>
+          </div>
+        </SheetBody>
+        <SheetFooter>
+          <Button
+            variant="ghost"
+            onClick={() => onOpenChange(false)}
+            className="font-mono text-[11px]"
+          >
+            Cancel
+          </Button>
+          <Button
+            onClick={() => update.mutate()}
+            disabled={update.isPending || !schedule.trim()}
+            className="font-mono text-[11px]"
+          >
+            {update.isPending ? "Saving..." : "Save"}
+          </Button>
+        </SheetFooter>
+      </SheetContent>
+    </Sheet>
   );
 }
 
@@ -538,42 +761,36 @@ function CronCreateForm({ onCreated }: { onCreated: () => void }) {
           </div>
         )}
 
-        <div className="grid grid-cols-[1fr_120px_auto] items-end gap-3">
-          <div>
-            <input
-              type="text"
-              placeholder="0 9 * * * or 30m"
-              value={schedule}
-              onChange={(e) => {
-                setSchedule(e.target.value);
-                validateSchedule(e.target.value);
-              }}
-              className="w-full border border-rule bg-bg px-3 py-1.5 font-mono text-[12px] text-ink placeholder:text-ink-faint focus:border-oxide-edge focus:outline-none"
-            />
-            {schedulePreview && (
-              <p className="mt-1 font-mono text-[10px] text-success">
-                {schedulePreview}
-              </p>
-            )}
+        <div className="space-y-3">
+          <ScheduleBuilder
+            value={schedule}
+            onChange={(v) => {
+              setSchedule(v);
+              validateSchedule(v);
+            }}
+            preview={schedulePreview}
+            error={error && error.includes("cron") ? error : undefined}
+          />
+          <div className="flex items-end gap-3">
+            <select
+              value={deliver}
+              onChange={(e) => setDeliver(e.target.value)}
+              className="border border-rule bg-bg px-3 py-1.5 font-mono text-[12px] text-ink focus:border-oxide-edge focus:outline-none"
+            >
+              <option value="origin">Origin</option>
+              <option value="discord">Discord</option>
+              <option value="telegram">Telegram</option>
+              <option value="slack">Slack</option>
+              <option value="email">Email</option>
+            </select>
+            <Button
+              onClick={() => createMut.mutate()}
+              disabled={!canCreate || createMut.isPending}
+              className="whitespace-nowrap"
+            >
+              {createMut.isPending ? "Creating..." : "Create"}
+            </Button>
           </div>
-          <select
-            value={deliver}
-            onChange={(e) => setDeliver(e.target.value)}
-            className="border border-rule bg-bg px-3 py-1.5 font-mono text-[12px] text-ink focus:border-oxide-edge focus:outline-none"
-          >
-            <option value="origin">Origin</option>
-            <option value="discord">Discord</option>
-            <option value="telegram">Telegram</option>
-            <option value="slack">Slack</option>
-            <option value="email">Email</option>
-          </select>
-          <Button
-            onClick={() => createMut.mutate()}
-            disabled={!canCreate || createMut.isPending}
-            className="whitespace-nowrap"
-          >
-            {createMut.isPending ? "Creating..." : "Create"}
-          </Button>
         </div>
         {error && (
           <p className="font-mono text-[11px] text-destructive">{error}</p>
@@ -637,11 +854,25 @@ function JobsTable({
 /* ────────────────── Event Watchers ────────────────── */
 
 function EventWatchersSection({ watchers }: { watchers: EventWatcher[] }) {
-  if (watchers.length === 0) return null;
+  const [configOpen, setConfigOpen] = useState(false);
 
   return (
     <div>
-      <div className="responsive-table-wrap">
+      <div className="mb-3 flex items-center justify-end">
+        <button
+          onClick={() => setConfigOpen(true)}
+          className="flex items-center gap-1.5 font-mono text-[10px] uppercase tracking-marker text-ink-muted transition-colors hover:text-oxide"
+        >
+          <Settings size={12} /> Edit Configuration
+        </button>
+      </div>
+      <WatcherConfigDialog open={configOpen} onOpenChange={setConfigOpen} />
+      {watchers.length === 0 ? (
+        <p className="mt-4 font-mono text-[11px] uppercase tracking-marker text-ink-faint">
+          no event watchers active.
+        </p>
+      ) : null}
+      {watchers.length > 0 && <div className="responsive-table-wrap">
         <table className="w-full border-collapse font-mono text-[12px] tabular-nums text-ink">
           <thead>
             <tr>
@@ -703,6 +934,523 @@ function EventWatchersSection({ watchers }: { watchers: EventWatcher[] }) {
             ))}
           </tbody>
         </table>
+      </div>}
+    </div>
+  );
+}
+
+/* ────────────────── Harness Creator Sheet ────────────────── */
+
+type StepSpec = {
+  name: string;
+  type: "shell" | "http" | "file_write" | "event" | "python";
+  config: Record<string, string>;
+  timeout_s: number;
+  skip_on_error: boolean;
+};
+
+const EMPTY_STEP: StepSpec = {
+  name: "",
+  type: "shell",
+  config: { command: "" },
+  timeout_s: 60,
+  skip_on_error: false,
+};
+
+function HarnessCreatorSheet({
+  open,
+  onOpenChange,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+}) {
+  const qc = useQueryClient();
+  const [name, setName] = useState("");
+  const [triggerType, setTriggerType] = useState("cron");
+  const [steps, setSteps] = useState<StepSpec[]>([{ ...EMPTY_STEP }]);
+
+  const harnessId = name
+    .trim()
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-|-$/g, "");
+
+  const updateStep = (i: number, patch: Partial<StepSpec>) => {
+    setSteps((prev) => {
+      const next = [...prev];
+      next[i] = { ...next[i], ...patch };
+      // Reset config when type changes
+      if (patch.type && patch.type !== prev[i].type) {
+        const defaults: Record<string, Record<string, string>> = {
+          shell: { command: "" },
+          http: { url: "", method: "GET" },
+          file_write: { path: "", content: "" },
+          event: { event_type: "", data: "{}" },
+          python: { code: "" },
+        };
+        next[i].config = defaults[patch.type] ?? {};
+      }
+      return next;
+    });
+  };
+
+  const updateStepConfig = (i: number, key: string, val: string) => {
+    setSteps((prev) => {
+      const next = [...prev];
+      next[i] = { ...next[i], config: { ...next[i].config, [key]: val } };
+      return next;
+    });
+  };
+
+  const create = useApiMutation({
+    mutationFn: () =>
+      api.createHarness({
+        id: harnessId,
+        name: name.trim(),
+        trigger_type: triggerType,
+        steps,
+      }),
+    successMessage: `Harness "${harnessId}" created`,
+    onSuccess: () => {
+      onOpenChange(false);
+      setName("");
+      setSteps([{ ...EMPTY_STEP }]);
+      qc.invalidateQueries({ queryKey: ["workflows", "catalog"] });
+    },
+  });
+
+  const canCreate =
+    harnessId.length >= 3 &&
+    steps.length > 0 &&
+    steps.every((s) => s.name.trim());
+
+  return (
+    <Sheet open={open} onOpenChange={onOpenChange}>
+      <SheetContent className="overflow-y-auto">
+        <SheetHeader>
+          <SheetTitle className="font-mono text-[11px] uppercase tracking-marker">
+            Create Custom Harness
+          </SheetTitle>
+        </SheetHeader>
+        <SheetBody>
+          <div className="space-y-4">
+            {/* Name + ID */}
+            <div>
+              <label className="mb-1 block font-mono text-[10px] uppercase tracking-marker text-ink-muted">
+                Harness Name
+              </label>
+              <input
+                type="text"
+                placeholder="My Custom Workflow"
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                className="w-full border border-rule bg-bg px-3 py-1.5 font-mono text-[12px] text-ink placeholder:text-ink-faint focus:border-oxide-edge focus:outline-none"
+              />
+              {harnessId && (
+                <p className="mt-1 font-mono text-[10px] text-ink-faint">
+                  ID: <span className="text-oxide">{harnessId}</span>
+                </p>
+              )}
+            </div>
+
+            {/* Trigger type */}
+            <div>
+              <label className="mb-1 block font-mono text-[10px] uppercase tracking-marker text-ink-muted">
+                Trigger Type
+              </label>
+              <select
+                value={triggerType}
+                onChange={(e) => setTriggerType(e.target.value)}
+                className="w-full border border-rule bg-bg px-3 py-1.5 font-mono text-[12px] text-ink focus:border-oxide-edge focus:outline-none"
+              >
+                <option value="cron">Cron (scheduled)</option>
+                <option value="manual">Manual (on-demand)</option>
+              </select>
+            </div>
+
+            {/* Steps */}
+            <div>
+              <label className="mb-2 block font-mono text-[10px] uppercase tracking-marker text-ink-muted">
+                Steps ({steps.length})
+              </label>
+              {steps.map((step, i) => (
+                <div
+                  key={i}
+                  className="mb-3 border border-rule bg-bg p-3"
+                >
+                  <div className="mb-2 flex items-center justify-between">
+                    <span className="font-mono text-[9px] uppercase tracking-marker text-ink-faint">
+                      Step {i + 1}
+                    </span>
+                    {steps.length > 1 && (
+                      <button
+                        onClick={() =>
+                          setSteps((p) => p.filter((_, j) => j !== i))
+                        }
+                        className="font-mono text-[10px] text-ink-faint hover:text-danger"
+                      >
+                        Remove
+                      </button>
+                    )}
+                  </div>
+                  <div className="space-y-2">
+                    <input
+                      type="text"
+                      placeholder="step_name (snake_case)"
+                      value={step.name}
+                      onChange={(e) =>
+                        updateStep(i, { name: e.target.value })
+                      }
+                      className="w-full border border-rule bg-bg-alt px-2 py-1 font-mono text-[11px] text-ink placeholder:text-ink-faint focus:border-oxide-edge focus:outline-none"
+                    />
+                    <select
+                      value={step.type}
+                      onChange={(e) =>
+                        updateStep(i, {
+                          type: e.target.value as StepSpec["type"],
+                        })
+                      }
+                      className="w-full border border-rule bg-bg-alt px-2 py-1 font-mono text-[11px] text-ink focus:border-oxide-edge focus:outline-none"
+                    >
+                      <option value="shell">Shell Command</option>
+                      <option value="http">HTTP Request</option>
+                      <option value="file_write">File Write</option>
+                      <option value="event">Event Publish</option>
+                      <option value="python">Python (Advanced)</option>
+                    </select>
+
+                    {/* Type-specific config */}
+                    {step.type === "shell" && (
+                      <textarea
+                        placeholder="command to run"
+                        value={step.config.command ?? ""}
+                        onChange={(e) =>
+                          updateStepConfig(i, "command", e.target.value)
+                        }
+                        rows={2}
+                        className="w-full resize-y border border-rule bg-bg-alt px-2 py-1 font-mono text-[11px] text-ink placeholder:text-ink-faint focus:border-oxide-edge focus:outline-none"
+                      />
+                    )}
+                    {step.type === "http" && (
+                      <>
+                        <div className="flex gap-2">
+                          <select
+                            value={step.config.method ?? "GET"}
+                            onChange={(e) =>
+                              updateStepConfig(i, "method", e.target.value)
+                            }
+                            className="w-24 border border-rule bg-bg-alt px-2 py-1 font-mono text-[11px] text-ink focus:border-oxide-edge focus:outline-none"
+                          >
+                            <option value="GET">GET</option>
+                            <option value="POST">POST</option>
+                            <option value="PUT">PUT</option>
+                            <option value="DELETE">DELETE</option>
+                          </select>
+                          <input
+                            type="text"
+                            placeholder="https://api.example.com/data"
+                            value={step.config.url ?? ""}
+                            onChange={(e) =>
+                              updateStepConfig(i, "url", e.target.value)
+                            }
+                            className="flex-1 border border-rule bg-bg-alt px-2 py-1 font-mono text-[11px] text-ink placeholder:text-ink-faint focus:border-oxide-edge focus:outline-none"
+                          />
+                        </div>
+                        <textarea
+                          placeholder="request body (optional)"
+                          value={step.config.body ?? ""}
+                          onChange={(e) =>
+                            updateStepConfig(i, "body", e.target.value)
+                          }
+                          rows={2}
+                          className="w-full resize-y border border-rule bg-bg-alt px-2 py-1 font-mono text-[11px] text-ink placeholder:text-ink-faint focus:border-oxide-edge focus:outline-none"
+                        />
+                      </>
+                    )}
+                    {step.type === "file_write" && (
+                      <>
+                        <input
+                          type="text"
+                          placeholder="file path"
+                          value={step.config.path ?? ""}
+                          onChange={(e) =>
+                            updateStepConfig(i, "path", e.target.value)
+                          }
+                          className="w-full border border-rule bg-bg-alt px-2 py-1 font-mono text-[11px] text-ink placeholder:text-ink-faint focus:border-oxide-edge focus:outline-none"
+                        />
+                        <textarea
+                          placeholder="file content"
+                          value={step.config.content ?? ""}
+                          onChange={(e) =>
+                            updateStepConfig(i, "content", e.target.value)
+                          }
+                          rows={3}
+                          className="w-full resize-y border border-rule bg-bg-alt px-2 py-1 font-mono text-[11px] text-ink placeholder:text-ink-faint focus:border-oxide-edge focus:outline-none"
+                        />
+                      </>
+                    )}
+                    {step.type === "event" && (
+                      <>
+                        <input
+                          type="text"
+                          placeholder="event.type"
+                          value={step.config.event_type ?? ""}
+                          onChange={(e) =>
+                            updateStepConfig(i, "event_type", e.target.value)
+                          }
+                          className="w-full border border-rule bg-bg-alt px-2 py-1 font-mono text-[11px] text-ink placeholder:text-ink-faint focus:border-oxide-edge focus:outline-none"
+                        />
+                        <textarea
+                          placeholder='{"key": "value"}'
+                          value={step.config.data ?? "{}"}
+                          onChange={(e) =>
+                            updateStepConfig(i, "data", e.target.value)
+                          }
+                          rows={2}
+                          className="w-full resize-y border border-rule bg-bg-alt px-2 py-1 font-mono text-[11px] text-ink placeholder:text-ink-faint focus:border-oxide-edge focus:outline-none"
+                        />
+                      </>
+                    )}
+                    {step.type === "python" && (
+                      <>
+                        <div className="border border-warning/30 bg-warning/5 px-2 py-1 font-mono text-[9px] text-warning">
+                          Advanced: runs arbitrary Python in the gateway process
+                        </div>
+                        <textarea
+                          placeholder={'# ctx dict has outputs from previous steps\nitems = ctx.get("prev_step", {}).get("data", [])\nreturn {"count": len(items)}'}
+                          value={step.config.code ?? ""}
+                          onChange={(e) =>
+                            updateStepConfig(i, "code", e.target.value)
+                          }
+                          rows={5}
+                          className="w-full resize-y border border-rule bg-bg-alt px-2 py-1 font-mono text-[11px] text-ink placeholder:text-ink-faint focus:border-oxide-edge focus:outline-none"
+                        />
+                      </>
+                    )}
+
+                    {/* Timeout + skip */}
+                    <div className="flex items-center gap-3">
+                      <label className="flex items-center gap-1 font-mono text-[10px] text-ink-faint">
+                        Timeout:
+                        <input
+                          type="number"
+                          min={5}
+                          value={step.timeout_s}
+                          onChange={(e) =>
+                            updateStep(i, {
+                              timeout_s: parseInt(e.target.value, 10) || 60,
+                            })
+                          }
+                          className="w-16 border border-rule bg-bg-alt px-1 py-0.5 font-mono text-[10px] text-ink focus:border-oxide-edge focus:outline-none"
+                        />
+                        s
+                      </label>
+                      <label className="flex items-center gap-1 font-mono text-[10px] text-ink-faint">
+                        <input
+                          type="checkbox"
+                          checked={step.skip_on_error}
+                          onChange={(e) =>
+                            updateStep(i, {
+                              skip_on_error: e.target.checked,
+                            })
+                          }
+                          className="accent-oxide"
+                        />
+                        Skip on error
+                      </label>
+                    </div>
+                  </div>
+                </div>
+              ))}
+              <button
+                onClick={() => setSteps([...steps, { ...EMPTY_STEP }])}
+                className="font-mono text-[10px] text-ink-muted hover:text-oxide"
+              >
+                + Add step
+              </button>
+            </div>
+          </div>
+        </SheetBody>
+        <SheetFooter>
+          <Button
+            variant="ghost"
+            onClick={() => onOpenChange(false)}
+            className="font-mono text-[11px]"
+          >
+            Cancel
+          </Button>
+          <Button
+            onClick={() => create.mutate()}
+            disabled={!canCreate || create.isPending}
+            className="font-mono text-[11px]"
+          >
+            {create.isPending ? "Creating..." : "Create Harness"}
+          </Button>
+        </SheetFooter>
+      </SheetContent>
+    </Sheet>
+  );
+}
+
+/* ────────────────── Watcher Config Dialog ────────────────── */
+
+function WatcherConfigDialog({
+  open,
+  onOpenChange,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+}) {
+  const { data } = useQuery({
+    queryKey: ["dashboard", "config"],
+    queryFn: api.config,
+    enabled: open,
+  });
+
+  const cfg = data?.config ?? {};
+  const fw = (cfg.workflows as Record<string, any>)?.file_watcher ?? {};
+
+  const [paths, setPaths] = useState<string[]>([]);
+  const [excludes, setExcludes] = useState<string[]>([]);
+  const [debounce, setDebounce] = useState("2");
+
+  useEffect(() => {
+    if (open && fw) {
+      setPaths(Array.isArray(fw.paths) ? [...fw.paths] : []);
+      setExcludes(
+        Array.isArray(fw.exclude_dirs)
+          ? [...fw.exclude_dirs]
+          : typeof fw.exclude_dirs === "object"
+            ? Object.keys(fw.exclude_dirs)
+            : [],
+      );
+      setDebounce(String(fw.debounce_s ?? "2"));
+    }
+  }, [open, JSON.stringify(fw)]);
+
+  const save = useApiMutation({
+    mutationFn: () =>
+      api.putConfig({
+        "workflows.file_watcher.paths": paths.filter((p) => p.trim()),
+        "workflows.file_watcher.debounce_s": parseFloat(debounce) || 2,
+        "workflows.file_watcher.exclude_dirs": excludes.filter((e) => e.trim()),
+      }),
+    successMessage: "Watcher config saved. Restart gateway to apply.",
+    onSuccess: () => onOpenChange(false),
+  });
+
+  if (!open) return null;
+
+  return (
+    <div
+      className="fixed inset-0 z-[60] flex items-center justify-center bg-black/50"
+      onClick={() => onOpenChange(false)}
+    >
+      <div
+        className="w-full max-w-lg border border-rule bg-bg p-6"
+        onClick={(e) => e.stopPropagation()}
+      >
+        <h3 className="mb-2 font-mono text-[11px] uppercase tracking-marker text-ink-muted">
+          File Watcher Configuration
+        </h3>
+        <p className="mb-4 font-mono text-[10px] leading-relaxed text-ink-faint">
+          The file watcher monitors directories for changes and triggers the watch-and-notify workflow.
+          Debounce controls how long to wait after the last file change before triggering (prevents
+          rapid-fire triggers during bulk saves). Changes here require a gateway restart to take effect.
+        </p>
+
+        {/* Watched Paths */}
+        <div className="mb-4">
+          <label className="mb-1 block font-mono text-[10px] uppercase tracking-marker text-ink-faint">
+            Watched Paths
+          </label>
+          {paths.map((p, i) => (
+            <div key={i} className="mb-1 flex gap-1">
+              <input
+                type="text"
+                value={p}
+                onChange={(e) => {
+                  const next = [...paths];
+                  next[i] = e.target.value;
+                  setPaths(next);
+                }}
+                className="flex-1 border border-rule bg-bg px-2 py-1 font-mono text-[12px] text-ink focus:border-oxide-edge focus:outline-none"
+              />
+              <button
+                onClick={() => setPaths(paths.filter((_, j) => j !== i))}
+                className="px-2 font-mono text-[12px] text-ink-faint hover:text-danger"
+              >
+                -
+              </button>
+            </div>
+          ))}
+          <button
+            onClick={() => setPaths([...paths, ""])}
+            className="mt-1 font-mono text-[10px] text-ink-muted hover:text-oxide"
+          >
+            + Add path
+          </button>
+        </div>
+
+        {/* Exclude Dirs */}
+        <div className="mb-4">
+          <label className="mb-1 block font-mono text-[10px] uppercase tracking-marker text-ink-faint">
+            Exclude Directories
+          </label>
+          {excludes.map((e, i) => (
+            <div key={i} className="mb-1 flex gap-1">
+              <input
+                type="text"
+                value={e}
+                onChange={(ev) => {
+                  const next = [...excludes];
+                  next[i] = ev.target.value;
+                  setExcludes(next);
+                }}
+                className="flex-1 border border-rule bg-bg px-2 py-1 font-mono text-[12px] text-ink focus:border-oxide-edge focus:outline-none"
+              />
+              <button
+                onClick={() => setExcludes(excludes.filter((_, j) => j !== i))}
+                className="px-2 font-mono text-[12px] text-ink-faint hover:text-danger"
+              >
+                -
+              </button>
+            </div>
+          ))}
+          <button
+            onClick={() => setExcludes([...excludes, ""])}
+            className="mt-1 font-mono text-[10px] text-ink-muted hover:text-oxide"
+          >
+            + Add directory
+          </button>
+        </div>
+
+        {/* Debounce */}
+        <div className="mb-6">
+          <label className="mb-1 block font-mono text-[10px] uppercase tracking-marker text-ink-faint">
+            Debounce (seconds)
+          </label>
+          <input
+            type="number"
+            min={0.5}
+            step={0.5}
+            value={debounce}
+            onChange={(e) => setDebounce(e.target.value)}
+            className="w-24 border border-rule bg-bg px-2 py-1 font-mono text-[12px] text-ink focus:border-oxide-edge focus:outline-none"
+          />
+        </div>
+
+        <div className="flex justify-end gap-2">
+          <Button variant="ghost" onClick={() => onOpenChange(false)}>
+            Cancel
+          </Button>
+          <Button
+            onClick={() => save.mutate()}
+            disabled={save.isPending}
+          >
+            {save.isPending ? "Saving..." : "Save"}
+          </Button>
+        </div>
       </div>
     </div>
   );

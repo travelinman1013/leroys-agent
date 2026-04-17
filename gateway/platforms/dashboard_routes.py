@@ -2958,15 +2958,13 @@ class DashboardRoutes:
     async def handle_workflow_catalog(self, request: "web.Request") -> "web.Response":
         """GET /api/dashboard/workflows/catalog — available workflow definitions."""
         try:
-            from workflow.harnesses import get_harness
+            from workflow.harnesses import get_harness, is_builtin, _HARNESSES
 
             # Force lazy-load of all harnesses
             try:
                 get_harness("__force_load__")
             except KeyError:
                 pass
-
-            from workflow.harnesses import _HARNESSES
 
             catalog = []
             for wf_id, wf_def in sorted(_HARNESSES.items()):
@@ -2985,8 +2983,61 @@ class DashboardRoutes:
                     "trigger_meta": wf_def.trigger_meta,
                     "steps": steps,
                     "step_count": len(steps),
+                    "source": "builtin" if is_builtin(wf_def.id) else "custom",
                 })
             return _json_ok({"catalog": catalog})
+        except Exception as exc:
+            return _json_err(exc)
+
+    @require_dashboard_auth
+    async def handle_harness_create(self, request: "web.Request") -> "web.Response":
+        """POST /api/dashboard/workflows/create — generate a custom harness."""
+        try:
+            body = await request.json()
+            from workflow.harness_generator import write_harness
+            from workflow.harnesses import reload_harnesses
+
+            out_path = write_harness(body)
+            result = reload_harnesses()
+            return _json_ok({
+                "harness_id": body["id"],
+                "file_path": str(out_path),
+                "loaded": result["loaded"],
+                "custom": result["custom"],
+            })
+        except ValueError as exc:
+            return _json_err(exc, status=400)
+        except Exception as exc:
+            return _json_err(exc)
+
+    @require_dashboard_auth
+    async def handle_harness_reload(self, request: "web.Request") -> "web.Response":
+        """POST /api/dashboard/workflows/reload — re-scan custom harnesses."""
+        try:
+            from workflow.harnesses import reload_harnesses
+            result = reload_harnesses()
+            return _json_ok(result)
+        except Exception as exc:
+            return _json_err(exc)
+
+    @require_dashboard_auth
+    async def handle_harness_delete(self, request: "web.Request") -> "web.Response":
+        """DELETE /api/dashboard/workflows/{id} — delete a custom harness."""
+        try:
+            hid = request.match_info["id"]
+            from workflow.harnesses import is_builtin, reload_harnesses, _get_custom_dir
+
+            if is_builtin(hid):
+                return _json_err(ValueError(f"Cannot delete built-in harness '{hid}'"), status=400)
+
+            filename = hid.replace("-", "_") + ".py"
+            target = _get_custom_dir() / filename
+            if not target.is_file():
+                return _json_err(FileNotFoundError(f"Custom harness file not found: {filename}"), status=404)
+
+            target.unlink()
+            reload_harnesses()
+            return _json_ok({"deleted": hid})
         except Exception as exc:
             return _json_err(exc)
 
@@ -3310,6 +3361,9 @@ def register_dashboard_routes(
     # Phase 7 — Workflow inspectability
     app.router.add_get("/api/dashboard/workflows", routes.handle_workflow_runs)
     app.router.add_get("/api/dashboard/workflows/catalog", routes.handle_workflow_catalog)
+    app.router.add_post("/api/dashboard/workflows/create", routes.handle_harness_create)
+    app.router.add_post("/api/dashboard/workflows/reload", routes.handle_harness_reload)
+    app.router.add_delete("/api/dashboard/workflows/{id}", routes.handle_harness_delete)
     app.router.add_get("/api/dashboard/workflows/{id}", routes.handle_workflow_run_detail)
     app.router.add_get("/api/dashboard/watchers", routes.handle_event_watchers)
 

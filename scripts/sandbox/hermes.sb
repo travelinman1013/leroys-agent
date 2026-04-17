@@ -92,7 +92,8 @@
   (subpath "/private/var/folders"))
 (deny file-write*
   (literal "/Users/maxwell/.hermes/.env")                ;; .env is read-only even to hermes
-  (literal "/Users/maxwell/.hermes/config.yaml")         ;; config is read-at-startup only — block self-modification
+  ;; config.yaml writes are now allowed — guarded by CONFIG_MUTATION_ALLOWLIST
+  ;; + CONFIG_MUTATION_DENYLIST in hermes_cli/config.py (Python-level gate)
   (literal "/Users/maxwell/.hermes/hermes.sb"))          ;; sandbox profile — prevent self-weakening on restart
 
 ;; --- Network outbound ---

@@ -68,6 +68,7 @@ export type WorkflowCatalogEntry = {
   trigger_meta: Record<string, unknown>;
   steps: { index: number; name: string; timeout_s: number; skip_on_error: boolean }[];
   step_count: number;
+  source?: "builtin" | "custom";
 };
 
 export type EventWatcher = {
@@ -336,6 +337,12 @@ export const api = {
       method: "POST",
       body: JSON.stringify(body),
     }),
+
+  updateJob: (id: string, body: Record<string, unknown>) =>
+    apiFetch<{ job: Record<string, unknown> }>(
+      `/api/jobs/${encodeURIComponent(id)}`,
+      { method: "PATCH", body: JSON.stringify(body) },
+    ),
 
   deleteJob: (id: string) =>
     apiFetch<{ deleted: boolean }>(`/api/jobs/${encodeURIComponent(id)}`, {
@@ -811,6 +818,35 @@ export const api = {
 
   workflowCatalog: () =>
     apiFetch<{ catalog: WorkflowCatalogEntry[] }>("/api/dashboard/workflows/catalog"),
+
+  createHarness: (spec: {
+    id: string;
+    name: string;
+    trigger_type: string;
+    steps: Array<{
+      name: string;
+      type: "shell" | "http" | "file_write" | "event" | "python";
+      config: Record<string, string>;
+      timeout_s: number;
+      skip_on_error: boolean;
+    }>;
+  }) =>
+    apiFetch<{ harness_id: string; file_path: string }>(
+      "/api/dashboard/workflows/create",
+      { method: "POST", body: JSON.stringify(spec) },
+    ),
+
+  reloadHarnesses: () =>
+    apiFetch<{ loaded: string[]; custom: string[] }>(
+      "/api/dashboard/workflows/reload",
+      { method: "POST" },
+    ),
+
+  deleteHarness: (id: string) =>
+    apiFetch<{ deleted: string }>(
+      `/api/dashboard/workflows/${encodeURIComponent(id)}`,
+      { method: "DELETE" },
+    ),
 
   eventWatchers: () =>
     apiFetch<{ watchers: EventWatcher[] }>("/api/dashboard/watchers"),

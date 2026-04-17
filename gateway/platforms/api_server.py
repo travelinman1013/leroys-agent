@@ -1796,6 +1796,8 @@ class APIServerAdapter(BasePlatformAdapter):
             if repeat is not None and (not isinstance(repeat, int) or repeat < 1):
                 return web.json_response({"error": "Repeat must be a positive integer"}, status=400)
 
+            workflow = body.get("workflow")
+
             kwargs = {
                 "prompt": prompt,
                 "schedule": schedule,
@@ -1806,6 +1808,8 @@ class APIServerAdapter(BasePlatformAdapter):
                 kwargs["skills"] = skills
             if repeat is not None:
                 kwargs["repeat"] = repeat
+            if workflow:
+                kwargs["workflow"] = workflow
 
             job = self._cron_create(**kwargs)
             return web.json_response({"job": job})
