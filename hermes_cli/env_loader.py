@@ -36,9 +36,16 @@ def _sanitize_loaded_credentials() -> None:
 
 def _load_dotenv_with_fallback(path: Path, *, override: bool) -> None:
     try:
-        load_dotenv(dotenv_path=path, override=override, encoding="utf-8")
-    except UnicodeDecodeError:
-        load_dotenv(dotenv_path=path, override=override, encoding="latin-1")
+        try:
+            load_dotenv(dotenv_path=path, override=override, encoding="utf-8")
+        except UnicodeDecodeError:
+            load_dotenv(dotenv_path=path, override=override, encoding="latin-1")
+    except PermissionError:
+        # Seatbelt sandbox denies .env reads at the kernel level.  The
+        # wrapper at scripts/sandbox/hermes-gateway-sandboxed pre-loads
+        # the file OUTSIDE the sandbox, so env vars are already in
+        # os.environ by the time we get here.  Silently continue.
+        return
     # Strip non-ASCII characters from credential env vars that were just
     # loaded.  API keys must be pure ASCII since they're sent as HTTP
     # header values (httpx encodes headers as ASCII).  Non-ASCII chars
