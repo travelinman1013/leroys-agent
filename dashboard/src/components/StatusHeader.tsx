@@ -66,7 +66,7 @@ export function StatusHeader({ onTerminalToggle, onMobileMenuToggle }: StatusHea
           <span className="font-display text-[13px] font-bold tracking-marker text-ink">
             LEROYS
           </span>
-          <span className="hidden text-ink-faint sm:inline">v0.8.0 · operator's desk</span>
+          <span className="hidden text-ink-faint sm:inline">v0.10.0 · operator's desk</span>
         </div>
       </div>
 
