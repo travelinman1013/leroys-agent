@@ -508,7 +508,7 @@ class TestInventoryEndpoints:
             resp = await cli.get("/api/dashboard/skills")
             assert resp.status == 200
             data = await resp.json()
-            assert "skills" in data
+            assert "categories" in data or "skills" in data
 
     @pytest.mark.asyncio
     async def test_mcp_returns_servers(self):

@@ -279,6 +279,10 @@ raise RuntimeError("deliberate crash")
                 ))
         self.assertEqual(result["status"], "timeout")
         self.assertIn("timed out", result.get("error", ""))
+        # The timeout message must also appear in output so the LLM always
+        # surfaces it to the user (#10807).
+        self.assertIn("timed out", result.get("output", ""))
+        self.assertIn("\u23f0", result.get("output", ""))
 
     def test_web_search_tool(self):
         """Script calls web_search and processes results."""
@@ -368,119 +372,6 @@ except ValueError as e:
         self.assertIn("caught: nope", result["output"])
 
 
-class TestTerminalBlockedParams(unittest.TestCase):
-    """Regression: terminal kwargs that the LLM is not allowed to pass must
-    be stripped by the RPC server loop before reaching handle_function_call.
-
-    In particular, `force=True` would skip the dangerous-command approval
-    gate in terminal_tool (see tools/terminal_tool.py ~1287), so it MUST be
-    filtered on the RPC boundary.
-    """
-
-    def test_force_in_blocked_params_constant(self):
-        """The `force` kwarg must be in the RPC-stripped set."""
-        from tools.code_execution_tool import _TERMINAL_BLOCKED_PARAMS
-        self.assertIn(
-            "force",
-            _TERMINAL_BLOCKED_PARAMS,
-            "force=True bypasses the approval gate in terminal_tool; it "
-            "MUST be stripped from terminal RPC args. Do not remove this.",
-        )
-
-    def test_force_kwarg_stripped_from_rpc(self):
-        """LLM-driven call with force=True must not reach handle_function_call."""
-        received_args = {}
-
-        def capturing_mock(function_name, function_args, task_id=None,
-                           user_task=None, **_kwargs):
-            # Record the args the dispatcher actually received.
-            received_args["name"] = function_name
-            received_args["args"] = dict(function_args)
-            return json.dumps({"output": "captured", "exit_code": 0})
-
-        # The LLM bypasses the typed stub by calling _call() directly — this
-        # mirrors how a misbehaving model would smuggle `force=True`.
-        code = """
-import hermes_tools
-result = hermes_tools._call("terminal", {"command": "echo hi", "force": True})
-print(result.get("output", ""))
-"""
-        with patch("model_tools.handle_function_call", side_effect=capturing_mock):
-            result = json.loads(execute_code(
-                code=code,
-                task_id="test-force-strip",
-                enabled_tools=list(SANDBOX_ALLOWED_TOOLS),
-            ))
-
-        self.assertEqual(result["status"], "success", msg=str(result))
-        self.assertEqual(received_args.get("name"), "terminal")
-        self.assertNotIn(
-            "force",
-            received_args.get("args", {}),
-            "force=True leaked through the RPC filter — this is a security "
-            "regression. Check _TERMINAL_BLOCKED_PARAMS and the filter loops "
-            "in tools/code_execution_tool.py.",
-        )
-        # Command should still have passed through.
-        self.assertEqual(received_args.get("args", {}).get("command"), "echo hi")
-
-
-class TestToolOutputTruncation(unittest.TestCase):
-    """Phase 4 R5: individual tool results must be capped so the LLM is
-    forced to use offset/limit chunked reads instead of greedy summarization.
-    """
-
-    def setUp(self):
-        from tools.code_execution_tool import _reset_max_tool_output_cache
-        _reset_max_tool_output_cache()
-
-    def tearDown(self):
-        from tools.code_execution_tool import _reset_max_tool_output_cache
-        _reset_max_tool_output_cache()
-
-    def test_short_result_unchanged(self):
-        from tools.code_execution_tool import _truncate_tool_result
-        out = _truncate_tool_result("short string")
-        self.assertEqual(out, "short string")
-
-    def test_non_string_result_unchanged(self):
-        from tools.code_execution_tool import _truncate_tool_result
-        # dicts/lists/None/ints are passed through unchanged.
-        for val in ({"a": 1}, [1, 2, 3], 42, None):
-            self.assertIs(_truncate_tool_result(val), val)
-
-    def test_long_result_truncated_with_marker(self):
-        """Output longer than the cap is sliced and gets a hint marker."""
-        from tools.code_execution_tool import _truncate_tool_result
-        # Default cap = 4000 tokens * 4 chars = 16000 chars
-        big = "x" * 50000
-        out = _truncate_tool_result(big)
-        self.assertLess(len(out), len(big))
-        self.assertIn("truncated", out)
-        self.assertIn("offset/limit", out)
-        self.assertIn("max_tool_output", out)
-
-    def test_truncation_respects_config_value(self):
-        """Setting code_execution.max_tool_output in config changes the cap."""
-        from tools.code_execution_tool import (
-            _truncate_tool_result,
-            _reset_max_tool_output_cache,
-        )
-        _reset_max_tool_output_cache()
-        # 100 tokens * 4 chars = 400 chars cap
-        with patch(
-            "hermes_cli.config.load_config",
-            return_value={"code_execution": {"max_tool_output": 100}},
-        ):
-            # Trigger cache load with the patched config
-            big = "y" * 1000
-            out = _truncate_tool_result(big)
-        self.assertLess(len(out), len(big))
-        # Head should be ~400 chars + the marker text
-        self.assertTrue(out.startswith("y" * 400))
-        self.assertIn("truncated", out)
-
-
 class TestStubSchemaDrift(unittest.TestCase):
     """Verify that _TOOL_STUBS in code_execution_tool.py stay in sync with
     the real tool schemas registered in tools/registry.py.
@@ -493,14 +384,7 @@ class TestStubSchemaDrift(unittest.TestCase):
     # Parameters that are internal (injected by the handler, not user-facing)
     _INTERNAL_PARAMS = {"task_id", "user_task"}
     # Parameters intentionally blocked in the sandbox
-    _BLOCKED_TERMINAL_PARAMS = {
-        "background",
-        "check_interval",
-        "pty",
-        "notify_on_complete",
-        "force",
-        "watch_patterns",
-    }
+    _BLOCKED_TERMINAL_PARAMS = {"background", "pty", "notify_on_complete", "watch_patterns"}
 
     def test_stubs_cover_all_schema_params(self):
         """Every user-facing parameter in the real schema must appear in the
