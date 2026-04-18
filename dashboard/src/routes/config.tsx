@@ -75,14 +75,14 @@ const CATEGORIES: CategoryDef[] = [
     id: "inference",
     label: "Inference",
     fields: [
-      { key: "model.context_length", label: "Context length", type: "number", min: 0, max: 1048576, step: 1024, hint: "tokens · 0 = auto-detect", description: "Override the model's context window size in tokens. Set this when your local server defaults to a smaller window than the model supports (e.g. LM Studio defaults to 4096). 0 or empty means auto-detect from the server. Requires restart." },
-      { key: "model.temperature", label: "Temperature", type: "number", min: 0, max: 2, step: 0.1, hint: "0–2 · empty = model default", description: "Controls randomness. 0 is deterministic, higher values are more creative. Empty uses the model's built-in default. Only applies to custom/local providers — silently stripped for Anthropic Claude." },
-      { key: "model.top_p", label: "Top P", type: "number", min: 0, max: 1, step: 0.05, hint: "nucleus sampling", description: "Nucleus sampling: only consider tokens whose cumulative probability exceeds this threshold. Lower values produce more focused output. Stripped for Anthropic Claude." },
-      { key: "model.top_k", label: "Top K", type: "number", min: 0, max: 200, step: 1, hint: "0 = disabled", description: "Only sample from the top K most likely tokens. 0 disables top-k filtering. Stripped for Anthropic Claude." },
-      { key: "model.min_p", label: "Min P", type: "number", min: 0, max: 1, step: 0.05, hint: "llama.cpp / vLLM", description: "Minimum probability threshold relative to the top token. Tokens below this ratio are filtered out. Supported by llama.cpp and some OpenAI-compatible servers." },
-      { key: "model.frequency_penalty", label: "Frequency penalty", type: "number", min: -2, max: 2, step: 0.1, hint: "-2 to 2", description: "Penalizes tokens based on how frequently they appear so far. Positive values reduce repetition, negative values encourage it." },
-      { key: "model.presence_penalty", label: "Presence penalty", type: "number", min: -2, max: 2, step: 0.1, hint: "-2 to 2", description: "Penalizes tokens based on whether they have appeared at all. Positive values encourage topic diversity." },
-      { key: "model.repeat_penalty", label: "Repeat penalty", type: "number", min: 0, max: 2, step: 0.1, hint: "llama.cpp only", description: "llama.cpp repeat penalty over the last N tokens. 1.0 = no penalty. Higher values reduce repetition more aggressively. Only supported by llama-server and compatible backends." },
+      { key: "model.context_length", label: "Context length", type: "number", min: 0, max: 1048576, step: 1024, placeholder: "131072", hint: "tokens · 0 = auto-detect", description: "Override the model's context window size in tokens. Set this when your local server defaults to a smaller window than the model supports (e.g. LM Studio defaults to 4096). 0 or empty means auto-detect from the server. Requires restart." },
+      { key: "model.temperature", label: "Temperature", type: "number", min: 0, max: 2, step: 0.1, placeholder: "0.7", hint: "0–2 · empty = model default", description: "Controls randomness. 0 is deterministic, higher values are more creative. Empty uses the model's built-in default. Only applies to custom/local providers — silently stripped for Anthropic Claude." },
+      { key: "model.top_p", label: "Top P", type: "number", min: 0, max: 1, step: 0.05, placeholder: "0.95", hint: "nucleus sampling", description: "Nucleus sampling: only consider tokens whose cumulative probability exceeds this threshold. Lower values produce more focused output. Stripped for Anthropic Claude." },
+      { key: "model.top_k", label: "Top K", type: "number", min: 0, max: 200, step: 1, placeholder: "40", hint: "0 = disabled", description: "Only sample from the top K most likely tokens. 0 disables top-k filtering. Stripped for Anthropic Claude." },
+      { key: "model.min_p", label: "Min P", type: "number", min: 0, max: 1, step: 0.05, placeholder: "0.05", hint: "llama.cpp / vLLM", description: "Minimum probability threshold relative to the top token. Tokens below this ratio are filtered out. Supported by llama.cpp and some OpenAI-compatible servers." },
+      { key: "model.frequency_penalty", label: "Frequency penalty", type: "number", min: -2, max: 2, step: 0.1, placeholder: "0", hint: "-2 to 2", description: "Penalizes tokens based on how frequently they appear so far. Positive values reduce repetition, negative values encourage it." },
+      { key: "model.presence_penalty", label: "Presence penalty", type: "number", min: -2, max: 2, step: 0.1, placeholder: "0", hint: "-2 to 2", description: "Penalizes tokens based on whether they have appeared at all. Positive values encourage topic diversity." },
+      { key: "model.repeat_penalty", label: "Repeat penalty", type: "number", min: 0, max: 2, step: 0.1, placeholder: "1.0", hint: "llama.cpp only", description: "llama.cpp repeat penalty over the last N tokens. 1.0 = no penalty. Higher values reduce repetition more aggressively. Only supported by llama-server and compatible backends." },
     ],
   },
   {
@@ -1037,12 +1037,32 @@ function DynamicField({
           description={description}
         >
           <Input
-            type="number"
-            min={def.min}
-            max={def.max}
-            step={def.step}
+            type="text"
+            inputMode="decimal"
+            placeholder={def.placeholder}
             value={String(value ?? "")}
-            onChange={(e) => onChange(e.target.value === "" ? "" : Number(e.target.value))}
+            onChange={(e) => {
+              const raw = e.target.value;
+              // Allow empty, minus sign, trailing dot, and partial decimals while typing
+              if (raw === "" || raw === "-" || /^-?\d*\.?\d*$/.test(raw)) {
+                onChange(raw);
+              }
+            }}
+            onBlur={(e) => {
+              const raw = e.target.value;
+              if (raw === "" || raw === "-" || raw === ".") {
+                onChange("");
+                return;
+              }
+              const n = Number(raw);
+              if (!isNaN(n)) {
+                const clamped = Math.min(
+                  Math.max(n, def.min ?? -Infinity),
+                  def.max ?? Infinity,
+                );
+                onChange(clamped);
+              }
+            }}
             className="h-9 max-w-[140px]"
           />
         </Field>
