@@ -64,7 +64,6 @@ const CATEGORIES: CategoryDef[] = [
     fields: [
       { key: "model.provider", label: "Model provider", type: "select", optionsEndpoint: "providers", hint: "which provider serves the primary model", description: "Which provider serves the primary model. Built-in providers: openrouter, nous, anthropic, copilot, and more. Use 'custom' with a base_url for self-hosted or OpenAI-compatible endpoints." },
       { key: "model.default", label: "Model", type: "select", optionsEndpoint: "models", dependsOn: "model.provider", hint: "model identifier for the selected provider", placeholder: "claude-opus-4-6", description: "The primary LLM used for all conversations. This is the model identifier as known to the provider. Changing this affects all new sessions immediately." },
-      { key: "model.context_length", label: "Context length", type: "number", min: 0, max: 1048576, step: 1024, placeholder: "131072", hint: "tokens · 0 = auto-detect", description: "Override the model's context window size in tokens. Hermes uses this to decide when to compress context. Set this when auto-detection returns wrong values. 0 or empty means auto-detect. Requires restart." },
       { key: "fallback_providers", label: "Fallback providers", type: "list", hint: "comma-separated provider names", description: "Comma-separated list of providers to try if the primary fails. The agent tries each in order until one responds. Empty means no fallback — a primary failure ends the turn." },
       { key: "toolsets", label: "Toolsets", type: "list", hint: "comma-separated toolset names", description: "Which tool categories the agent can use. 'hermes-cli' is the default set. Adding toolsets grants more capabilities; removing them restricts what the agent can do." },
       { key: "file_read_max_chars", label: "File read max chars", type: "number", min: 1000, max: 500000, step: 1000, hint: "max chars per read_file call", description: "Maximum characters returned by a single read_file tool call. Higher values let the agent read larger files in one shot but consume more context. Lower values force chunked reads, which is safer for context budgets but slower." },
@@ -470,13 +469,6 @@ function ConfigPage() {
           .filter(Boolean);
       } else {
         mutations[f.key] = val;
-      }
-    }
-    // Context length: empty string → null (remove = auto-detect), explicit 0 → null
-    if ("model.context_length" in mutations) {
-      const raw = editing["model.context_length"];
-      if (raw === "" || raw === undefined || raw === 0) {
-        mutations["model.context_length"] = null;
       }
     }
     // Translate custom:NAME provider to model.provider=custom + model.base_url
