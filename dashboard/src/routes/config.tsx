@@ -62,8 +62,8 @@ const CATEGORIES: CategoryDef[] = [
     id: "general",
     label: "General",
     fields: [
-      { key: "model.default", label: "Model", type: "text", optionsEndpoint: "models", dependsOn: "model.provider", hint: "model identifier for the selected provider", placeholder: "claude-opus-4-6", description: "The primary LLM used for all conversations. This is the model identifier as known to the provider. Changing this affects all new sessions immediately." },
       { key: "model.provider", label: "Model provider", type: "select", optionsEndpoint: "providers", hint: "which provider serves the primary model", description: "Which provider serves the primary model. Built-in providers: openrouter, nous, anthropic, copilot, and more. Use 'custom' with a base_url for self-hosted or OpenAI-compatible endpoints." },
+      { key: "model.default", label: "Model", type: "select", optionsEndpoint: "models", dependsOn: "model.provider", hint: "model identifier for the selected provider", placeholder: "claude-opus-4-6", description: "The primary LLM used for all conversations. This is the model identifier as known to the provider. Changing this affects all new sessions immediately." },
       { key: "fallback_providers", label: "Fallback providers", type: "list", hint: "comma-separated provider names", description: "Comma-separated list of providers to try if the primary fails. The agent tries each in order until one responds. Empty means no fallback — a primary failure ends the turn." },
       { key: "toolsets", label: "Toolsets", type: "list", hint: "comma-separated toolset names", description: "Which tool categories the agent can use. 'hermes-cli' is the default set. Adding toolsets grants more capabilities; removing them restricts what the agent can do." },
       { key: "file_read_max_chars", label: "File read max chars", type: "number", min: 1000, max: 500000, step: 1000, hint: "max chars per read_file call", description: "Maximum characters returned by a single read_file tool call. Higher values let the agent read larger files in one shot but consume more context. Lower values force chunked reads, which is safer for context budgets but slower." },
@@ -328,8 +328,10 @@ function ConfigPage() {
   });
 
   const confirm = useConfirm();
+  const toast = useNotify();
 
   const [restartHint, setRestartHint] = useState<string[]>([]);
+  const [restarting, setRestarting] = useState(false);
   const [editing, setEditing] = useState<Record<string, unknown>>({});
   const [filter, setFilter] = useState("");
   const [activeCategory, setActiveCategory] = useState<string>("general");
@@ -353,6 +355,32 @@ function ConfigPage() {
       setEditing(state);
     }
   }, [cfg.data]);
+
+  // Poll gateway health after restart until it comes back
+  useEffect(() => {
+    if (!restarting) return;
+    let cancelled = false;
+    const poll = async () => {
+      // Wait for process to die before polling
+      await new Promise((r) => setTimeout(r, 2000));
+      while (!cancelled) {
+        try {
+          const r = await fetch("/api/dashboard/handshake");
+          if (!r.ok) throw new Error("not ready");
+          if (!cancelled) {
+            setRestarting(false);
+            cfg.refetch();
+            toast.success("Gateway back online");
+          }
+          return;
+        } catch {
+          await new Promise((r) => setTimeout(r, 2000));
+        }
+      }
+    };
+    poll();
+    return () => { cancelled = true; };
+  }, [restarting]);
 
   const save = useApiMutation({
     mutationFn: (mutations: Record<string, unknown>) =>
@@ -443,6 +471,7 @@ function ConfigPage() {
     if (ok) {
       restartGateway.mutate();
       setRestartHint([]);
+      setRestarting(true);
     }
   };
 
@@ -563,6 +592,14 @@ function ConfigPage() {
               >
                 RESTART GATEWAY
               </Button>
+            </div>
+          )}
+
+          {/* restarting overlay */}
+          {restarting && (
+            <div className="mx-10 mb-6 flex items-center gap-3 border border-ink-faint bg-bone px-4 py-3 font-mono text-[10px] uppercase tracking-marker text-ink-muted animate-pulse">
+              <span className="inline-block size-2 rounded-full bg-ink-muted" />
+              gateway restarting — waiting for reconnection…
             </div>
           )}
 
@@ -835,7 +872,7 @@ function DynamicField({
       );
 
     case "select": {
-      // Dynamic provider dropdown or static options
+      // Dynamic provider dropdown
       if (def.optionsEndpoint === "providers") {
         const providers = providerQuery.data?.providers ?? [];
         return (
@@ -850,6 +887,29 @@ function DynamicField({
                 <option key={p.id} value={p.id}>
                   {p.label}
                   {p.authenticated ? "" : " (not configured)"}
+                </option>
+              ))}
+            </Select>
+          </Field>
+        );
+      }
+      // Dynamic model dropdown
+      if (def.optionsEndpoint === "models") {
+        const models = modelQuery.data?.models ?? [];
+        const loading = modelQuery.isFetching;
+        return (
+          <Field label={label} hint={hint} description={description}>
+            <Select
+              value={String(value ?? "")}
+              onChange={(e) => onChange(e.target.value)}
+              className="max-w-[320px]"
+            >
+              <option value="">
+                {loading ? "Loading models\u2026" : "— select model —"}
+              </option>
+              {models.map((m) => (
+                <option key={m} value={m}>
+                  {m}
                 </option>
               ))}
             </Select>
@@ -899,34 +959,6 @@ function DynamicField({
     case "text":
     case "list":
     default: {
-      // Model suggestions via datalist when optionsEndpoint="models"
-      if (def.optionsEndpoint === "models") {
-        const listId = `dl-${def.key.replace(/\./g, "-")}`;
-        const suggestions = modelQuery.data?.models ?? [];
-        return (
-          <Field label={label} hint={hint} description={description}>
-            <Input
-              type="text"
-              list={suggestions.length > 0 ? listId : undefined}
-              placeholder={
-                modelQuery.isFetching
-                  ? "Loading models\u2026"
-                  : def.placeholder
-              }
-              value={String(value ?? "")}
-              onChange={(e) => onChange(e.target.value)}
-              className="h-9 max-w-[320px]"
-            />
-            {suggestions.length > 0 && (
-              <datalist id={listId}>
-                {suggestions.map((m) => (
-                  <option key={m} value={m} />
-                ))}
-              </datalist>
-            )}
-          </Field>
-        );
-      }
       return (
         <Field label={label} hint={hint} description={description}>
           <Input
