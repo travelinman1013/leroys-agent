@@ -74,3 +74,12 @@ class HermesBridge:
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )
+
+    def hard_reload(self) -> None:
+        """Reload the webview with a cache-busting URL."""
+        import webview
+        from desktop.menu import _cache_bust_url
+
+        window = webview.active_window()
+        if window:
+            window.load_url(_cache_bust_url(window.get_current_url()))
