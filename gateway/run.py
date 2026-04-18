@@ -990,18 +990,31 @@ class GatewayRunner:
                 from hermes_cli.config import load_config as _load_cfg
                 _model_cfg = (_load_cfg() or {}).get("model", {})
                 if isinstance(_model_cfg, dict):
-                    _INF_KEYS = (
-                        "temperature", "top_p", "top_k", "min_p",
-                        "frequency_penalty", "presence_penalty", "repeat_penalty",
+                    # Standard OpenAI API params — safe for all providers
+                    _STANDARD_KEYS = (
+                        "temperature", "top_p",
+                        "frequency_penalty", "presence_penalty",
                     )
+                    # Non-standard params — llama.cpp/vLLM only, via extra_body
+                    _EXTRA_KEYS = ("top_k", "min_p", "repeat_penalty")
                     _inf = {}
-                    for _k in _INF_KEYS:
+                    _extra = {}
+                    for _k in _STANDARD_KEYS:
                         _v = _model_cfg.get(_k)
                         if _v is not None and _v != "":
                             try:
                                 _inf[_k] = float(_v)
                             except (TypeError, ValueError):
                                 pass
+                    for _k in _EXTRA_KEYS:
+                        _v = _model_cfg.get(_k)
+                        if _v is not None and _v != "":
+                            try:
+                                _extra[_k] = float(_v)
+                            except (TypeError, ValueError):
+                                pass
+                    if _extra:
+                        _inf["extra_body"] = _extra
                     if _inf:
                         route["request_overrides"] = {
                             **_inf,
