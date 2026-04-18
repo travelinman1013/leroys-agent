@@ -1758,6 +1758,29 @@ class DashboardRoutes:
             return _json_err(exc)
 
     @require_dashboard_auth
+    async def handle_config_providers(self, request: "web.Request") -> "web.Response":
+        """Return available model providers with credential status."""
+        try:
+            from hermes_cli.models import list_available_providers
+            providers = await asyncio.to_thread(list_available_providers)
+            return _json_ok({"providers": providers})
+        except Exception as exc:
+            return _json_err(exc)
+
+    @require_dashboard_auth
+    async def handle_config_models(self, request: "web.Request") -> "web.Response":
+        """Return model catalog for a given provider."""
+        provider = request.query.get("provider", "")
+        if not provider:
+            return _json_err(ValueError("provider query param required"), 400)
+        try:
+            from hermes_cli.models import provider_model_ids
+            models = await asyncio.to_thread(provider_model_ids, provider)
+            return _json_ok({"models": models, "provider": provider})
+        except Exception as exc:
+            return _json_err(exc)
+
+    @require_dashboard_auth
     async def handle_security_paths(self, request: "web.Request") -> "web.Response":
         """Get or modify safe_roots and denied_paths.
 
@@ -3320,6 +3343,8 @@ def register_dashboard_routes(
     app.router.add_put("/api/dashboard/config", routes.handle_config_put)
     app.router.add_get("/api/dashboard/config/backups", routes.handle_config_backups)
     app.router.add_post("/api/dashboard/config/rollback", routes.handle_config_rollback)
+    app.router.add_get("/api/dashboard/config/providers", routes.handle_config_providers)
+    app.router.add_get("/api/dashboard/config/models", routes.handle_config_models)
     app.router.add_get("/api/dashboard/security/paths", routes.handle_security_paths)
     app.router.add_post("/api/dashboard/security/paths", routes.handle_security_paths)
     app.router.add_get("/api/dashboard/gateway/info", routes.handle_gateway_info)

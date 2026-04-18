@@ -741,6 +741,21 @@ export const api = {
       { method: "POST", body: JSON.stringify({ to: filename }) },
     ),
 
+  configProviders: () =>
+    apiFetch<{
+      providers: Array<{
+        id: string;
+        label: string;
+        aliases: string[];
+        authenticated: boolean;
+      }>;
+    }>("/api/dashboard/config/providers"),
+
+  configModels: (provider: string) =>
+    apiFetch<{ models: string[]; provider: string }>(
+      `/api/dashboard/config/models?provider=${encodeURIComponent(provider)}`,
+    ),
+
   gatewayInfo: () =>
     apiFetch<{
       pid: number;

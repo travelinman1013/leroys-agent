@@ -41,6 +41,10 @@ interface FieldDef {
   step?: number;
   placeholder?: string;
   dangerous?: boolean;
+  /** Fetch dropdown options from an API endpoint instead of static options */
+  optionsEndpoint?: "providers" | "models";
+  /** Config key whose current value drives the options fetch (cascade) */
+  dependsOn?: string;
 }
 
 interface CategoryDef {
@@ -58,8 +62,8 @@ const CATEGORIES: CategoryDef[] = [
     id: "general",
     label: "General",
     fields: [
-      { key: "model.default", label: "Model", type: "text", hint: "default model (e.g. claude-opus-4-6)", placeholder: "claude-opus-4-6", description: "The primary LLM used for all conversations. This is the model identifier as known to the provider. Changing this affects all new sessions immediately." },
-      { key: "model.provider", label: "Model provider", type: "text", hint: "anthropic, openrouter, nous, custom, etc.", description: "Which provider serves the primary model. Built-in providers: openrouter, nous, anthropic, copilot, and more. Use 'custom' with a base_url for self-hosted or OpenAI-compatible endpoints." },
+      { key: "model.default", label: "Model", type: "text", optionsEndpoint: "models", dependsOn: "model.provider", hint: "model identifier for the selected provider", placeholder: "claude-opus-4-6", description: "The primary LLM used for all conversations. This is the model identifier as known to the provider. Changing this affects all new sessions immediately." },
+      { key: "model.provider", label: "Model provider", type: "select", optionsEndpoint: "providers", hint: "which provider serves the primary model", description: "Which provider serves the primary model. Built-in providers: openrouter, nous, anthropic, copilot, and more. Use 'custom' with a base_url for self-hosted or OpenAI-compatible endpoints." },
       { key: "fallback_providers", label: "Fallback providers", type: "list", hint: "comma-separated provider names", description: "Comma-separated list of providers to try if the primary fails. The agent tries each in order until one responds. Empty means no fallback — a primary failure ends the turn." },
       { key: "toolsets", label: "Toolsets", type: "list", hint: "comma-separated toolset names", description: "Which tool categories the agent can use. 'hermes-cli' is the default set. Adding toolsets grants more capabilities; removing them restricts what the agent can do." },
       { key: "file_read_max_chars", label: "File read max chars", type: "number", min: 1000, max: 500000, step: 1000, hint: "max chars per read_file call", description: "Maximum characters returned by a single read_file tool call. Higher values let the agent read larger files in one shot but consume more context. Lower values force chunked reads, which is safer for context budgets but slower." },
@@ -138,8 +142,8 @@ const CATEGORIES: CategoryDef[] = [
     id: "delegation",
     label: "Delegation",
     fields: [
-      { key: "delegation.model", label: "Model", type: "text", hint: "subagent model · empty = inherit parent", description: "Override the model used by delegate_task subagents. Empty means subagents inherit the parent's model. Use a cheaper/faster model here to save cost on delegated subtasks. Precedence: base_url > provider > parent provider." },
-      { key: "delegation.provider", label: "Provider", type: "text", hint: "subagent provider · empty = inherit", description: "Override the provider for subagents (e.g. 'openrouter', 'nous'). Empty means subagents use the same provider and credentials as the parent." },
+      { key: "delegation.model", label: "Model", type: "text", optionsEndpoint: "models", dependsOn: "delegation.provider", hint: "subagent model · empty = inherit parent", description: "Override the model used by delegate_task subagents. Empty means subagents inherit the parent's model. Use a cheaper/faster model here to save cost on delegated subtasks. Precedence: base_url > provider > parent provider." },
+      { key: "delegation.provider", label: "Provider", type: "select", optionsEndpoint: "providers", hint: "subagent provider · empty = inherit", description: "Override the provider for subagents (e.g. 'openrouter', 'nous'). Empty means subagents use the same provider and credentials as the parent." },
       { key: "delegation.base_url", label: "Base URL", type: "text", description: "Direct OpenAI-compatible endpoint for subagents. Takes precedence over the provider setting. Use this to point subagents at a local model server." },
       { key: "delegation.max_iterations", label: "Max iterations", type: "number", min: 1, max: 500, hint: "per-subagent budget", description: "Turn limit for each subagent, independent of the parent's budget. Higher values let subagents work longer on complex subtasks. Lower values prevent runaway delegations." },
       { key: "delegation.reasoning_effort", label: "Reasoning effort", type: "select", options: ["", "xhigh", "high", "medium", "low", "minimal", "none"], hint: "empty = inherit", description: "Reasoning effort level for subagents. Empty means inherit the parent's level. Lower effort is cheaper and faster but may reduce quality on complex subtasks." },
@@ -575,6 +579,7 @@ function ConfigPage() {
                     def={f}
                     value={editing[f.key]}
                     onChange={(v) => update(f.key, v)}
+                    editing={editing}
                   />
                 ))}
                 <SaveButton
@@ -781,14 +786,34 @@ function DynamicField({
   def,
   value,
   onChange,
+  editing,
 }: {
   def: FieldDef;
   value: unknown;
   onChange: (v: unknown) => void;
+  editing: Record<string, unknown>;
 }) {
   const label = def.dangerous ? `${def.label} ⚠` : def.label;
   const hint = def.hint;
   const description = def.description;
+
+  // Async provider list (used by select fields with optionsEndpoint="providers")
+  const providerQuery = useQuery({
+    queryKey: ["dashboard", "config", "providers"],
+    queryFn: () => api.configProviders(),
+    enabled: def.optionsEndpoint === "providers",
+    staleTime: 60_000,
+  });
+
+  // Async model list (used by text fields with optionsEndpoint="models")
+  const depValue = def.dependsOn ? String(editing[def.dependsOn] ?? "") : "";
+  const modelQuery = useQuery({
+    queryKey: ["dashboard", "config", "models", depValue],
+    queryFn: () => api.configModels(depValue),
+    enabled: def.optionsEndpoint === "models" && depValue !== "",
+    staleTime: 30_000,
+    placeholderData: (prev: { models: string[]; provider: string } | undefined) => prev,
+  });
 
   switch (def.type) {
     case "boolean":
@@ -809,7 +834,28 @@ function DynamicField({
         </Field>
       );
 
-    case "select":
+    case "select": {
+      // Dynamic provider dropdown or static options
+      if (def.optionsEndpoint === "providers") {
+        const providers = providerQuery.data?.providers ?? [];
+        return (
+          <Field label={label} hint={hint} description={description}>
+            <Select
+              value={String(value ?? "")}
+              onChange={(e) => onChange(e.target.value)}
+              className="max-w-[280px]"
+            >
+              <option value="">— select provider —</option>
+              {providers.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.label}
+                  {p.authenticated ? "" : " (not configured)"}
+                </option>
+              ))}
+            </Select>
+          </Field>
+        );
+      }
       return (
         <Field label={label} hint={hint} description={description}>
           <Select
@@ -825,6 +871,7 @@ function DynamicField({
           </Select>
         </Field>
       );
+    }
 
     case "number":
       return (
@@ -851,7 +898,35 @@ function DynamicField({
 
     case "text":
     case "list":
-    default:
+    default: {
+      // Model suggestions via datalist when optionsEndpoint="models"
+      if (def.optionsEndpoint === "models") {
+        const listId = `dl-${def.key.replace(/\./g, "-")}`;
+        const suggestions = modelQuery.data?.models ?? [];
+        return (
+          <Field label={label} hint={hint} description={description}>
+            <Input
+              type="text"
+              list={suggestions.length > 0 ? listId : undefined}
+              placeholder={
+                modelQuery.isFetching
+                  ? "Loading models\u2026"
+                  : def.placeholder
+              }
+              value={String(value ?? "")}
+              onChange={(e) => onChange(e.target.value)}
+              className="h-9 max-w-[320px]"
+            />
+            {suggestions.length > 0 && (
+              <datalist id={listId}>
+                {suggestions.map((m) => (
+                  <option key={m} value={m} />
+                ))}
+              </datalist>
+            )}
+          </Field>
+        );
+      }
       return (
         <Field label={label} hint={hint} description={description}>
           <Input
@@ -863,6 +938,7 @@ function DynamicField({
           />
         </Field>
       );
+    }
   }
 }
 
