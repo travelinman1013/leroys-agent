@@ -64,25 +64,12 @@ const CATEGORIES: CategoryDef[] = [
     fields: [
       { key: "model.provider", label: "Model provider", type: "select", optionsEndpoint: "providers", hint: "which provider serves the primary model", description: "Which provider serves the primary model. Built-in providers: openrouter, nous, anthropic, copilot, and more. Use 'custom' with a base_url for self-hosted or OpenAI-compatible endpoints." },
       { key: "model.default", label: "Model", type: "select", optionsEndpoint: "models", dependsOn: "model.provider", hint: "model identifier for the selected provider", placeholder: "claude-opus-4-6", description: "The primary LLM used for all conversations. This is the model identifier as known to the provider. Changing this affects all new sessions immediately." },
+      { key: "model.context_length", label: "Context length", type: "number", min: 0, max: 1048576, step: 1024, placeholder: "131072", hint: "tokens · 0 = auto-detect", description: "Override the model's context window size in tokens. Hermes uses this to decide when to compress context. Set this when auto-detection returns wrong values. 0 or empty means auto-detect. Requires restart." },
       { key: "fallback_providers", label: "Fallback providers", type: "list", hint: "comma-separated provider names", description: "Comma-separated list of providers to try if the primary fails. The agent tries each in order until one responds. Empty means no fallback — a primary failure ends the turn." },
       { key: "toolsets", label: "Toolsets", type: "list", hint: "comma-separated toolset names", description: "Which tool categories the agent can use. 'hermes-cli' is the default set. Adding toolsets grants more capabilities; removing them restricts what the agent can do." },
       { key: "file_read_max_chars", label: "File read max chars", type: "number", min: 1000, max: 500000, step: 1000, hint: "max chars per read_file call", description: "Maximum characters returned by a single read_file tool call. Higher values let the agent read larger files in one shot but consume more context. Lower values force chunked reads, which is safer for context budgets but slower." },
       { key: "timezone", label: "Timezone", type: "text", hint: "IANA format · e.g. America/Chicago · empty = server local", placeholder: "America/Chicago", description: "IANA timezone used for cron scheduling, timestamps, and time-aware responses. Empty means the server's local timezone is used." },
       { key: "prefill_messages_file", label: "Prefill messages file", type: "text", hint: "JSON few-shot priming file path", description: "Path to a JSON file containing [{role, content}] messages injected at the start of every API call. Used for few-shot priming. These messages are never saved to sessions or logs." },
-    ],
-  },
-  {
-    id: "inference",
-    label: "Inference",
-    fields: [
-      { key: "model.context_length", label: "Context length", type: "number", min: 0, max: 1048576, step: 1024, placeholder: "131072", hint: "tokens · 0 = auto-detect", description: "Override the model's context window size in tokens. Set this when your local server defaults to a smaller window than the model supports (e.g. LM Studio defaults to 4096). 0 or empty means auto-detect from the server. Requires restart." },
-      { key: "model.temperature", label: "Temperature", type: "number", min: 0, max: 2, step: 0.1, placeholder: "0.7", hint: "0–2 · empty = model default", description: "Controls randomness. 0 is deterministic, higher values are more creative. Empty uses the model's built-in default. Only applies to custom/local providers — silently stripped for Anthropic Claude." },
-      { key: "model.top_p", label: "Top P", type: "number", min: 0, max: 1, step: 0.05, placeholder: "0.95", hint: "nucleus sampling", description: "Nucleus sampling: only consider tokens whose cumulative probability exceeds this threshold. Lower values produce more focused output. Stripped for Anthropic Claude." },
-      { key: "model.top_k", label: "Top K", type: "number", min: 0, max: 200, step: 1, placeholder: "40", hint: "0 = disabled", description: "Only sample from the top K most likely tokens. 0 disables top-k filtering. Stripped for Anthropic Claude." },
-      { key: "model.min_p", label: "Min P", type: "number", min: 0, max: 1, step: 0.05, placeholder: "0.05", hint: "llama.cpp / vLLM", description: "Minimum probability threshold relative to the top token. Tokens below this ratio are filtered out. Supported by llama.cpp and some OpenAI-compatible servers." },
-      { key: "model.frequency_penalty", label: "Frequency penalty", type: "number", min: -2, max: 2, step: 0.1, placeholder: "0", hint: "-2 to 2", description: "Penalizes tokens based on how frequently they appear so far. Positive values reduce repetition, negative values encourage it." },
-      { key: "model.presence_penalty", label: "Presence penalty", type: "number", min: -2, max: 2, step: 0.1, placeholder: "0", hint: "-2 to 2", description: "Penalizes tokens based on whether they have appeared at all. Positive values encourage topic diversity." },
-      { key: "model.repeat_penalty", label: "Repeat penalty", type: "number", min: 0, max: 2, step: 0.1, placeholder: "1.0", hint: "llama.cpp only", description: "llama.cpp repeat penalty over the last N tokens. 1.0 = no penalty. Higher values reduce repetition more aggressively. Only supported by llama-server and compatible backends." },
     ],
   },
   {
@@ -485,17 +472,11 @@ function ConfigPage() {
         mutations[f.key] = val;
       }
     }
-    // Inference fields: empty string → null (remove from config), explicit 0 → keep
-    const INFERENCE_KEYS = new Set([
-      "model.context_length", "model.temperature", "model.top_p", "model.top_k",
-      "model.min_p", "model.frequency_penalty", "model.presence_penalty", "model.repeat_penalty",
-    ]);
-    for (const key of INFERENCE_KEYS) {
-      if (key in mutations) {
-        const raw = editing[key];
-        if (raw === "" || raw === undefined) {
-          mutations[key] = null;
-        }
+    // Context length: empty string → null (remove = auto-detect), explicit 0 → null
+    if ("model.context_length" in mutations) {
+      const raw = editing["model.context_length"];
+      if (raw === "" || raw === undefined || raw === 0) {
+        mutations["model.context_length"] = null;
       }
     }
     // Translate custom:NAME provider to model.provider=custom + model.base_url
@@ -672,13 +653,6 @@ function ConfigPage() {
                 id={activeCat.label.toUpperCase()}
                 count={String(activeCat.fields.length)}
               >
-                {activeCat.id === "inference" && (
-                  <p className="mb-4 font-mono text-[10px] uppercase tracking-marker text-ink-muted">
-                    Sampling parameters for local and OpenAI-compatible providers.
-                    Empty fields use the model default. Silently stripped for
-                    Anthropic Claude models.
-                  </p>
-                )}
                 {activeCat.fields.map((f) => (
                   <DynamicField
                     key={f.key}
