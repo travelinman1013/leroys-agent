@@ -87,3 +87,13 @@ llama-health:
 
 llama-metrics:
 	@curl -s http://127.0.0.1:1234/metrics
+
+# ── Desktop app (pywebview) ──────────────────────────────────────────
+desktop-install:
+	uv pip install --python venv/bin/python pywebview
+
+desktop-run:
+	venv/bin/python desktop/app.py
+
+desktop-dev:
+	venv/bin/python desktop/app.py --dev

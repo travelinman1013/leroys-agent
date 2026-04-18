@@ -6,6 +6,7 @@ import { TerminalPanel } from "@/components/TerminalPanel";
 import { useKeyboardShortcut } from "@/lib/useKeyboardShortcut";
 import { subscribeEvents } from "@/lib/api";
 import type { HermesEvent } from "@/lib/api";
+import { isDesktop, nativeNotify } from "@/lib/native";
 
 interface RouterContext {
   queryClient: QueryClient;
@@ -38,43 +39,52 @@ function RootLayout() {
     setNotifPerm("denied");
   }, []);
 
+  const desktop = isDesktop();
   const notifAsked = typeof localStorage !== "undefined" && localStorage.getItem("hermes-notif-asked") === "1";
-  const showNotifStrip = notifPerm === "default" && !notifAsked;
+  const showNotifStrip = !desktop && notifPerm === "default" && !notifAsked;
 
   // SSE listener for approval + budget notifications
   useEffect(() => {
-    if (notifPerm !== "granted") return;
+    if (!desktop && notifPerm !== "granted") return;
     const unsub = subscribeEvents(
       (event: HermesEvent) => {
-        if (!document.hidden) return; // Only notify when tab is unfocused
+        if (!desktop && !document.hidden) return; // Browser: only when tab unfocused
 
         if (event.type === "approval.requested") {
           const cmd = (event.data?.command as string) || "unknown";
-          try {
-            const n = new Notification("Approval needed", {
-              body: cmd.slice(0, 60),
-              tag: `approval-${event.data?.session_key ?? Date.now()}`,
-            });
-            n.onclick = () => { window.focus(); navigate({ to: "/approvals" }); };
-          } catch { /* Notification API unavailable */ }
+          if (desktop) {
+            nativeNotify("Approval needed", cmd.slice(0, 60));
+          } else {
+            try {
+              const n = new Notification("Approval needed", {
+                body: cmd.slice(0, 60),
+                tag: `approval-${event.data?.session_key ?? Date.now()}`,
+              });
+              n.onclick = () => { window.focus(); navigate({ to: "/approvals" }); };
+            } catch { /* Notification API unavailable */ }
+          }
         }
 
         if (event.type === "session.budget_exceeded") {
           const cost = (event.data?.estimated_cost as number)?.toFixed(2) ?? "?";
           const cap = (event.data?.budget_cap as number)?.toFixed(2) ?? "?";
-          try {
-            const n = new Notification("Budget exceeded", {
-              body: `$${cost} > $${cap} cap`,
-              tag: `budget-${event.data?.session_id ?? Date.now()}`,
-            });
-            n.onclick = () => { window.focus(); navigate({ to: "/desk" }); };
-          } catch { /* Notification API unavailable */ }
+          if (desktop) {
+            nativeNotify("Budget exceeded", `$${cost} > $${cap} cap`);
+          } else {
+            try {
+              const n = new Notification("Budget exceeded", {
+                body: `$${cost} > $${cap} cap`,
+                tag: `budget-${event.data?.session_id ?? Date.now()}`,
+              });
+              n.onclick = () => { window.focus(); navigate({ to: "/desk" }); };
+            } catch { /* Notification API unavailable */ }
+          }
         }
       },
       { replay: 0 },
     );
     return unsub;
-  }, [notifPerm, navigate]);
+  }, [desktop, notifPerm, navigate]);
 
   return (
     <div className="flex h-full flex-col bg-bg text-ink">
