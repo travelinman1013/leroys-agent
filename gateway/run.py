@@ -983,16 +983,48 @@ class GatewayRunner:
         }
         route = resolve_turn_route(user_message, getattr(self, "_smart_model_routing", {}), primary)
 
+        # --- Inference params from config → request_overrides (custom providers only) ---
+        _provider = route.get("provider", "") or ""
+        if _provider in ("custom", "") or _provider.startswith("custom:"):
+            try:
+                from hermes_cli.config import load_config as _load_cfg
+                _model_cfg = (_load_cfg() or {}).get("model", {})
+                if isinstance(_model_cfg, dict):
+                    _INF_KEYS = (
+                        "temperature", "top_p", "top_k", "min_p",
+                        "frequency_penalty", "presence_penalty", "repeat_penalty",
+                    )
+                    _inf = {}
+                    for _k in _INF_KEYS:
+                        _v = _model_cfg.get(_k)
+                        if _v is not None and _v != "":
+                            try:
+                                _inf[_k] = float(_v)
+                            except (TypeError, ValueError):
+                                pass
+                    if _inf:
+                        route["request_overrides"] = {
+                            **_inf,
+                            **(route.get("request_overrides") or {}),
+                        }
+            except Exception:
+                pass
+
         service_tier = getattr(self, "_service_tier", None)
         if not service_tier:
-            route["request_overrides"] = None
+            if not route.get("request_overrides"):
+                route["request_overrides"] = None
             return route
 
         try:
             overrides = resolve_fast_mode_overrides(route.get("model"))
         except Exception:
             overrides = None
-        route["request_overrides"] = overrides
+        if overrides:
+            route["request_overrides"] = {
+                **(route.get("request_overrides") or {}),
+                **overrides,
+            }
         return route
 
     async def _handle_adapter_fatal_error(self, adapter: BasePlatformAdapter) -> None:
@@ -1882,18 +1914,18 @@ class GatewayRunner:
         enabled_platform_count = 0
         startup_nonretryable_errors: list[str] = []
         startup_retryable_errors: list[str] = []
-        
+
         # Initialize and connect each configured platform
         for platform, platform_config in self.config.platforms.items():
             if not platform_config.enabled:
                 continue
             enabled_platform_count += 1
-            
+
             adapter = self._create_adapter(platform, platform_config)
             if not adapter:
                 logger.warning("No adapter available for %s", platform.value)
                 continue
-            
+
             # Set up message + fatal error handlers
             adapter.set_message_handler(self._handle_message)
             adapter.set_fatal_error_handler(self._handle_adapter_fatal_error)
@@ -8666,6 +8698,8 @@ class GatewayRunner:
                         agent._last_activity_ts = time.time()
                         agent._last_activity_desc = "starting new turn (cached)"
                         agent._api_call_count = 0
+                        # Update per-turn overrides so config changes take effect
+                        agent.request_overrides = dict(turn_route.get("request_overrides") or {})
                         logger.debug("Reusing cached agent for session %s", session_key)
 
             if agent is None:

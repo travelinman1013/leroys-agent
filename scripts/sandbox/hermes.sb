@@ -111,7 +111,8 @@
 ;; and verify Discord ACTUALLY connects (not just slash command sync — that
 ;; uses HTTP REST and may work even when the WebSocket gateway can't).
 (allow network-outbound
-  (remote tcp "localhost:1234")      ;; LLM inference (llama-server / LM Studio)
+  (remote tcp "localhost:1234")      ;; LLM inference (llama-server)
+  (remote tcp "localhost:1235")      ;; LLM inference (LM Studio)
   (remote tcp "localhost:9222")      ;; Chrome DevTools Protocol (browser tool)
   (remote tcp "localhost:4317")      ;; OpenTelemetry OTLP gRPC (R4 — opt-in)
   (remote tcp "localhost:4318")      ;; OpenTelemetry OTLP HTTP (R4 — opt-in)
