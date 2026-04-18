@@ -87,6 +87,10 @@ Requires external drive `the-eagle` mounted.
 - Sandbox TCP rules: use `(remote tcp ...)` NOT `(remote ip ...)` — ip form silently fails
 - TCP listeners need BOTH `network-bind` AND `network-inbound`
 
+## Skills
+
+When user types `/r-a-p`, ALWAYS use the Skill tool to invoke it (`Skill("r-a-p")`). Never self-implement the research-and-plan workflow from memory — the skill contains a specific multi-phase process that must be loaded and followed exactly.
+
 ## Granting Leroys New Permissions
 
 When Leroys needs access to a new localhost service (Docker container, local API, etc.):
