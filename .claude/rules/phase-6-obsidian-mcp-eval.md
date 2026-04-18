@@ -1,3 +1,8 @@
+---
+paths:
+  - "**/.hermes/config.yaml"
+  - "**/mcp/**"
+---
 # Phase 6 R3 — Obsidian MCP Evaluation
 
 ## Decision gate (2026-04-11)

@@ -1,3 +1,11 @@
+---
+paths:
+  - "scripts/sandbox/**"
+  - "tools/approval.py"
+  - "tools/file_tools.py"
+  - "tools/terminal_tool.py"
+  - "tools/code_execution_tool.py"
+---
 # Hermes Agent Capability Recon — 2026-04-09
 
 ## Test Results Summary

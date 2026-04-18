@@ -44,56 +44,33 @@ make llama-logs           # tail stderr log
 
 ## Local Inference: llama-server
 
-Direct llama.cpp server — bypasses LM Studio Electron overhead. Homebrew build 8680, Metal.
-Flags: `--flash-attn on`, `--parallel 1`, `--batch-size 2048`, `--ubatch-size 512`, `--metrics`, `--mmproj`.
+Direct llama.cpp server — Homebrew build 8680, Metal, `--flash-attn on`.
 Full config: `scripts/llama-server/com.llama-server.hermes.plist`
-
-**Benchmark** (2026-04-17, Gemma 4 26B-A4B Q8_0, M3 Ultra 192GB):
-Gen: 80.5 tok/s (+8.8% vs LM Studio) | Prompt eval: 1,497 tok/s (+134%) | Built-in prompt caching
 
 ### Model Swap (local)
 
-```bash
-# 1. Edit plist — change --model and --mmproj paths
-vi scripts/llama-server/com.llama-server.hermes.plist
-# 2. Restart llama-server
-make llama-restart
-# 3. Get model ID
-curl -s http://127.0.0.1:1234/v1/models | python3 -c "import json,sys; print(json.load(sys.stdin)['data'][0]['id'])"
-# 4. Update config.yaml — model.default + compression.summary_model
-vi ~/.hermes/config.yaml
-# 5. Restart gateway
-make gateway-restart
-```
+1. Edit plist — change `--model` and `--mmproj` paths
+2. `make llama-restart`
+3. Get model ID: `curl -s http://127.0.0.1:1234/v1/models | python3 -c "import json,sys; print(json.load(sys.stdin)['data'][0]['id'])"`
+4. Update `~/.hermes/config.yaml` — `model.default` + `compression.summary_model`
+5. `make gateway-restart`
 
 ### Provider Switching
 
-Local (llama-server):
-```yaml
-model:
-  default: <model-id>          # from /v1/models
-  provider: custom
-  base_url: http://127.0.0.1:1234/v1
-```
-`base_url` MUST be in config.yaml model section — `.env` `OPENAI_BASE_URL` alone is insufficient.
-
-Cloud (Anthropic):
-```yaml
-model:
-  default: claude-opus-4-6
-  provider: anthropic
-```
+Local: set `model.provider: custom` + `model.base_url: http://127.0.0.1:1234/v1` in config.yaml.
+Cloud: set `model.provider: anthropic` + `model.default: claude-opus-4-6`.
+`base_url` MUST be in config.yaml — `.env` `OPENAI_BASE_URL` alone is insufficient.
 Always: `make gateway-restart` after switching.
 
 ### Available Models (`/Volumes/the-eagle/maxwell-ext/lmstudio/models/`)
 
-| Model | Path | Size | Notes |
-|-------|------|------|-------|
-| Gemma 4 26B-A4B Q8_0 | `lmstudio-community/gemma-4-26B-A4B-it-GGUF/` | 25 GB | MoE, vision |
-| Gemma 4 31B Q8_0 | `lmstudio-community/gemma-4-31B-it-GGUF/` | ~31 GB | Dense, vision |
-| Qwen 3.6 35B-A3B Q8_0 | `unsloth/Qwen3.6-35B-A3B-GGUF/` | 34 GB | MoE, thinking, vision |
-| Qwen 3.5 9B Q8_0 | `lmstudio-community/Qwen3.5-9B-GGUF/` | ~9 GB | Dense, vision |
-| Qwen 3.5 35B-A3B Q8_0 | `lmstudio-community/Qwen3.5-35B-A3B-GGUF/` | 34 GB | MoE, vision |
+| Model | Size | Notes |
+|-------|------|-------|
+| Gemma 4 26B-A4B Q8_0 | 25 GB | MoE, vision |
+| Gemma 4 31B Q8_0 | ~31 GB | Dense, vision |
+| Qwen 3.6 35B-A3B Q8_0 | 34 GB | MoE, thinking, vision |
+| Qwen 3.5 9B Q8_0 | ~9 GB | Dense, vision |
+| Qwen 3.5 35B-A3B Q8_0 | 34 GB | MoE, vision |
 
 Each dir has `mmproj-*.gguf` for vision — update both `--model` and `--mmproj` in plist.
 Requires external drive `the-eagle` mounted.
@@ -109,3 +86,14 @@ Requires external drive `the-eagle` mounted.
 - Sandbox edits: run `scripts/sandbox/validate-profile.sh` BEFORE deploying
 - Sandbox TCP rules: use `(remote tcp ...)` NOT `(remote ip ...)` — ip form silently fails
 - TCP listeners need BOTH `network-bind` AND `network-inbound`
+
+## Granting Leroys New Permissions
+
+When Leroys needs access to a new localhost service (Docker container, local API, etc.):
+
+1. **Seatbelt profile** (`scripts/sandbox/hermes.sb`): add `(remote tcp "localhost:PORT")` to the `network-outbound` allow block
+2. **Deploy**: `cp scripts/sandbox/hermes.sb ~/.hermes/hermes.sb`
+3. **Validate**: `scripts/sandbox/validate-profile.sh`
+4. **Restart**: `make gateway-restart`
+5. **Update skill**: ensure `~/.hermes/skills/docker-container-interaction/SKILL.md` lists the new port, API details, and config path
+6. If the path jail blocks URLs in terminal commands, check `extract_tool_call_paths` in `tools/file_tools.py`

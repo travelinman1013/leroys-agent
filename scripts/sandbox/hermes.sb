@@ -117,6 +117,9 @@
   (remote tcp "localhost:4318")      ;; OpenTelemetry OTLP HTTP (R4 — opt-in)
   (remote tcp "localhost:6006")      ;; Arize Phoenix UI (R4 — opt-in)
   (remote tcp "localhost:8642")      ;; Hermes dashboard API (R2/R3)
+  (remote tcp "localhost:7878")      ;; Radarr API (mediamax)
+  (remote tcp "localhost:8989")      ;; Sonarr API (mediamax)
+  (remote tcp "localhost:6500")      ;; RDTClient API (mediamax)
   (remote tcp "*:443")              ;; HTTPS — Discord, GitHub, HuggingFace, etc.
   (remote tcp "*:80")               ;; HTTP — direct URL fetches
   (remote tcp "*:53")               ;; DNS over TCP (rare but supported)

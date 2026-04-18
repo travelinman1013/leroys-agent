@@ -1,3 +1,9 @@
+---
+paths:
+  - "workflow/**"
+  - "cron/**"
+  - "gateway/run.py"
+---
 # Phase 7 — Workflow Primitives Recon
 
 > **Branch**: `enhance/hermes-phase7-workflow-recon`

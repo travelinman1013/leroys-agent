@@ -1,3 +1,14 @@
+---
+paths:
+  - "gateway/platforms/dashboard_routes.py"
+  - "gateway/event_bus.py"
+  - "gateway/metrics.py"
+  - "hermes_state.py"
+  - "dashboard/**"
+  - "agent/otel.py"
+  - "cron/**"
+  - "workflow/**"
+---
 # Phase 6 R5 — Control-Plane Audit
 
 ## Purpose

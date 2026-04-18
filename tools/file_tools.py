@@ -282,8 +282,16 @@ def extract_tool_call_paths(
             # bare `~/` also match — without that, `ls /`, `cd /`, etc. would
             # slip through entirely. See module-level TOCTOU warning —
             # Seatbelt is the real defense.
+            #
+            # Skip URL-like strings (http://, https://, ftp://) — these are
+            # network addresses, not filesystem paths. Without this filter,
+            # "curl http://localhost:7878/api" would be rejected as a read
+            # of /localhost.
             import re as _re
-            for match in _re.findall(r'(?<![\w./])(/[\w./~\-]*|~/[\w./~\-]*)', cmd):
+            # First, strip out URLs so the path regex doesn't match them
+            _url_stripped = _re.sub(r'https?://[^\s"\']+', '', cmd)
+            _url_stripped = _re.sub(r'ftp://[^\s"\']+', '', _url_stripped)
+            for match in _re.findall(r'(?<![\w./])(/[\w./~\-]*|~/[\w./~\-]*)', _url_stripped):
                 out.append((match, "read"))
 
     return out
