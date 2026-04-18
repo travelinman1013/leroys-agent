@@ -41,6 +41,10 @@ interface FieldDef {
   step?: number;
   placeholder?: string;
   dangerous?: boolean;
+  /** Fetch dropdown options from an API endpoint instead of static options */
+  optionsEndpoint?: "providers" | "models";
+  /** Config key whose current value drives the options fetch (cascade) */
+  dependsOn?: string;
 }
 
 interface CategoryDef {
@@ -58,8 +62,8 @@ const CATEGORIES: CategoryDef[] = [
     id: "general",
     label: "General",
     fields: [
-      { key: "model.default", label: "Model", type: "text", hint: "default model (e.g. claude-opus-4-6)", placeholder: "claude-opus-4-6", description: "The primary LLM used for all conversations. This is the model identifier as known to the provider. Changing this affects all new sessions immediately." },
-      { key: "model.provider", label: "Model provider", type: "text", hint: "anthropic, openrouter, nous, custom, etc.", description: "Which provider serves the primary model. Built-in providers: openrouter, nous, anthropic, copilot, and more. Use 'custom' with a base_url for self-hosted or OpenAI-compatible endpoints." },
+      { key: "model.provider", label: "Model provider", type: "select", optionsEndpoint: "providers", hint: "which provider serves the primary model", description: "Which provider serves the primary model. Built-in providers: openrouter, nous, anthropic, copilot, and more. Use 'custom' with a base_url for self-hosted or OpenAI-compatible endpoints." },
+      { key: "model.default", label: "Model", type: "select", optionsEndpoint: "models", dependsOn: "model.provider", hint: "model identifier for the selected provider", placeholder: "claude-opus-4-6", description: "The primary LLM used for all conversations. This is the model identifier as known to the provider. Changing this affects all new sessions immediately." },
       { key: "fallback_providers", label: "Fallback providers", type: "list", hint: "comma-separated provider names", description: "Comma-separated list of providers to try if the primary fails. The agent tries each in order until one responds. Empty means no fallback — a primary failure ends the turn." },
       { key: "toolsets", label: "Toolsets", type: "list", hint: "comma-separated toolset names", description: "Which tool categories the agent can use. 'hermes-cli' is the default set. Adding toolsets grants more capabilities; removing them restricts what the agent can do." },
       { key: "file_read_max_chars", label: "File read max chars", type: "number", min: 1000, max: 500000, step: 1000, hint: "max chars per read_file call", description: "Maximum characters returned by a single read_file tool call. Higher values let the agent read larger files in one shot but consume more context. Lower values force chunked reads, which is safer for context budgets but slower." },
@@ -138,8 +142,8 @@ const CATEGORIES: CategoryDef[] = [
     id: "delegation",
     label: "Delegation",
     fields: [
-      { key: "delegation.model", label: "Model", type: "text", hint: "subagent model · empty = inherit parent", description: "Override the model used by delegate_task subagents. Empty means subagents inherit the parent's model. Use a cheaper/faster model here to save cost on delegated subtasks. Precedence: base_url > provider > parent provider." },
-      { key: "delegation.provider", label: "Provider", type: "text", hint: "subagent provider · empty = inherit", description: "Override the provider for subagents (e.g. 'openrouter', 'nous'). Empty means subagents use the same provider and credentials as the parent." },
+      { key: "delegation.model", label: "Model", type: "text", optionsEndpoint: "models", dependsOn: "delegation.provider", hint: "subagent model · empty = inherit parent", description: "Override the model used by delegate_task subagents. Empty means subagents inherit the parent's model. Use a cheaper/faster model here to save cost on delegated subtasks. Precedence: base_url > provider > parent provider." },
+      { key: "delegation.provider", label: "Provider", type: "select", optionsEndpoint: "providers", hint: "subagent provider · empty = inherit", description: "Override the provider for subagents (e.g. 'openrouter', 'nous'). Empty means subagents use the same provider and credentials as the parent." },
       { key: "delegation.base_url", label: "Base URL", type: "text", description: "Direct OpenAI-compatible endpoint for subagents. Takes precedence over the provider setting. Use this to point subagents at a local model server." },
       { key: "delegation.max_iterations", label: "Max iterations", type: "number", min: 1, max: 500, hint: "per-subagent budget", description: "Turn limit for each subagent, independent of the parent's budget. Higher values let subagents work longer on complex subtasks. Lower values prevent runaway delegations." },
       { key: "delegation.reasoning_effort", label: "Reasoning effort", type: "select", options: ["", "xhigh", "high", "medium", "low", "minimal", "none"], hint: "empty = inherit", description: "Reasoning effort level for subagents. Empty means inherit the parent's level. Lower effort is cheaper and faster but may reduce quality on complex subtasks." },
@@ -323,9 +327,17 @@ function ConfigPage() {
     queryFn: api.configBackups,
   });
 
+  const providersQuery = useQuery({
+    queryKey: ["dashboard", "config", "providers"],
+    queryFn: () => api.configProviders(),
+    staleTime: 60_000,
+  });
+
   const confirm = useConfirm();
+  const toast = useNotify();
 
   const [restartHint, setRestartHint] = useState<string[]>([]);
+  const [restarting, setRestarting] = useState(false);
   const [editing, setEditing] = useState<Record<string, unknown>>({});
   const [filter, setFilter] = useState("");
   const [activeCategory, setActiveCategory] = useState<string>("general");
@@ -346,9 +358,54 @@ function ConfigPage() {
           }
         }
       }
+      // Stash model.base_url for custom provider resolution
+      const rawBaseUrl = getNestedValue(c, "model.base_url");
+      if (typeof rawBaseUrl === "string" && rawBaseUrl) {
+        state["model.base_url"] = rawBaseUrl;
+      }
+      // Resolve custom provider back to custom:NAME by matching base_url
+      if (state["model.provider"] === "custom" && providersQuery.data) {
+        const baseUrl = String(state["model.base_url"] ?? "").trim().replace(/\/+$/, "");
+        if (baseUrl) {
+          const match = providersQuery.data.providers.find(
+            (p) => p.custom && p.base_url?.replace(/\/+$/, "") === baseUrl,
+          );
+          if (match) {
+            state["model.provider"] = match.id;
+          }
+        }
+      }
       setEditing(state);
     }
-  }, [cfg.data]);
+  }, [cfg.data, providersQuery.data]);
+
+  // Poll gateway health after restart until it comes back
+  useEffect(() => {
+    if (!restarting) return;
+    let cancelled = false;
+    const poll = async () => {
+      // Brief pause for process to die before polling
+      await new Promise((r) => setTimeout(r, 500));
+      let interval = 500;
+      while (!cancelled) {
+        try {
+          const r = await fetch("/api/dashboard/handshake");
+          if (!r.ok) throw new Error("not ready");
+          if (!cancelled) {
+            setRestarting(false);
+            cfg.refetch();
+            toast.success("Gateway back online");
+          }
+          return;
+        } catch {
+          await new Promise((r) => setTimeout(r, interval));
+          interval = Math.min(interval * 1.5, 2000);
+        }
+      }
+    };
+    poll();
+    return () => { cancelled = true; };
+  }, [restarting]);
 
   const save = useApiMutation({
     mutationFn: (mutations: Record<string, unknown>) =>
@@ -414,6 +471,15 @@ function ConfigPage() {
         mutations[f.key] = val;
       }
     }
+    // Translate custom:NAME provider to model.provider=custom + model.base_url
+    const providerVal = mutations["model.provider"];
+    if (typeof providerVal === "string" && providerVal.startsWith("custom:")) {
+      mutations["model.provider"] = "custom";
+      const stashedUrl = editing["model.base_url"];
+      if (typeof stashedUrl === "string" && stashedUrl) {
+        mutations["model.base_url"] = stashedUrl;
+      }
+    }
     if (Object.keys(mutations).length > 0) {
       save.mutate(mutations);
     }
@@ -424,7 +490,8 @@ function ConfigPage() {
   const isSpecial =
     activeCategory === "paths" ||
     activeCategory === "appearance" ||
-    activeCategory === "backups";
+    activeCategory === "backups" ||
+    activeCategory === "llama-server";
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const notify = useNotify();
@@ -439,6 +506,7 @@ function ConfigPage() {
     if (ok) {
       restartGateway.mutate();
       setRestartHint([]);
+      setRestarting(true);
     }
   };
 
@@ -562,6 +630,14 @@ function ConfigPage() {
             </div>
           )}
 
+          {/* restarting overlay */}
+          {restarting && (
+            <div className="mx-10 mb-6 flex items-center gap-3 border border-ink-faint bg-bone px-4 py-3 font-mono text-[10px] uppercase tracking-marker text-ink-muted animate-pulse">
+              <span className="inline-block size-2 rounded-full bg-ink-muted" />
+              gateway restarting — waiting for reconnection…
+            </div>
+          )}
+
           {/* active section content */}
           <div className="px-10 pb-16">
             {activeCat && !isSpecial && (
@@ -575,6 +651,8 @@ function ConfigPage() {
                     def={f}
                     value={editing[f.key]}
                     onChange={(v) => update(f.key, v)}
+                    editing={editing}
+                    onUpdate={update}
                   />
                 ))}
                 <SaveButton
@@ -635,6 +713,8 @@ function ConfigPage() {
                 </ul>
               </Section>
             )}
+
+            {activeCategory === "llama-server" && <LlamaServerSection />}
           </div>
         </div>
 
@@ -706,6 +786,14 @@ function ConfigPage() {
               active={activeCategory === "backups"}
               onClick={() => {
                 setActiveCategory("backups");
+                contentRef.current?.scrollTo({ top: 0 });
+              }}
+            />
+            <SidebarItem
+              label="llama-server"
+              active={activeCategory === "llama-server"}
+              onClick={() => {
+                setActiveCategory("llama-server");
                 contentRef.current?.scrollTo({ top: 0 });
               }}
             />
@@ -781,14 +869,36 @@ function DynamicField({
   def,
   value,
   onChange,
+  editing,
+  onUpdate,
 }: {
   def: FieldDef;
   value: unknown;
   onChange: (v: unknown) => void;
+  editing: Record<string, unknown>;
+  onUpdate?: (key: string, v: unknown) => void;
 }) {
   const label = def.dangerous ? `${def.label} ⚠` : def.label;
   const hint = def.hint;
   const description = def.description;
+
+  // Async provider list (used by select fields with optionsEndpoint="providers")
+  const providerQuery = useQuery({
+    queryKey: ["dashboard", "config", "providers"],
+    queryFn: () => api.configProviders(),
+    enabled: def.optionsEndpoint === "providers",
+    staleTime: 60_000,
+  });
+
+  // Async model list (used by text fields with optionsEndpoint="models")
+  const depValue = def.dependsOn ? String(editing[def.dependsOn] ?? "") : "";
+  const modelQuery = useQuery({
+    queryKey: ["dashboard", "config", "models", depValue],
+    queryFn: () => api.configModels(depValue),
+    enabled: def.optionsEndpoint === "models" && depValue !== "",
+    staleTime: 30_000,
+    placeholderData: (prev: { models: string[]; provider: string } | undefined) => prev,
+  });
 
   switch (def.type) {
     case "boolean":
@@ -809,7 +919,61 @@ function DynamicField({
         </Field>
       );
 
-    case "select":
+    case "select": {
+      // Dynamic provider dropdown
+      if (def.optionsEndpoint === "providers") {
+        const providers = providerQuery.data?.providers ?? [];
+        return (
+          <Field label={label} hint={hint} description={description}>
+            <Select
+              value={String(value ?? "")}
+              onChange={(e) => {
+                const id = e.target.value;
+                onChange(id);
+                // Stash base_url for custom providers so saveCategory can write it
+                if (id.startsWith("custom:") && onUpdate) {
+                  const match = providers.find((p) => p.id === id);
+                  if (match?.base_url) {
+                    onUpdate("model.base_url", match.base_url);
+                  }
+                }
+              }}
+              className="max-w-[280px]"
+            >
+              <option value="">— select provider —</option>
+              {providers.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.label}
+                  {p.authenticated ? "" : " (not configured)"}
+                </option>
+              ))}
+            </Select>
+          </Field>
+        );
+      }
+      // Dynamic model dropdown
+      if (def.optionsEndpoint === "models") {
+        const models = modelQuery.data?.models ?? [];
+        const loading = modelQuery.isFetching;
+        return (
+          <Field label={label} hint={hint} description={description}>
+            <Select
+              value={String(value ?? "")}
+              onChange={(e) => onChange(e.target.value)}
+              className="max-w-[320px]"
+            >
+              <option value="">
+                {loading ? "Loading models\u2026" : "— select model —"}
+              </option>
+              {models.map((m) => (
+                <option key={m} value={m}>
+                  {m}
+                </option>
+              ))}
+            </Select>
+          </Field>
+        );
+      }
       return (
         <Field label={label} hint={hint} description={description}>
           <Select
@@ -825,6 +989,7 @@ function DynamicField({
           </Select>
         </Field>
       );
+    }
 
     case "number":
       return (
@@ -838,12 +1003,32 @@ function DynamicField({
           description={description}
         >
           <Input
-            type="number"
-            min={def.min}
-            max={def.max}
-            step={def.step}
+            type="text"
+            inputMode="decimal"
+            placeholder={def.placeholder}
             value={String(value ?? "")}
-            onChange={(e) => onChange(Number(e.target.value))}
+            onChange={(e) => {
+              const raw = e.target.value;
+              // Allow empty, minus sign, trailing dot, and partial decimals while typing
+              if (raw === "" || raw === "-" || /^-?\d*\.?\d*$/.test(raw)) {
+                onChange(raw);
+              }
+            }}
+            onBlur={(e) => {
+              const raw = e.target.value;
+              if (raw === "" || raw === "-" || raw === ".") {
+                onChange("");
+                return;
+              }
+              const n = Number(raw);
+              if (!isNaN(n)) {
+                const clamped = Math.min(
+                  Math.max(n, def.min ?? -Infinity),
+                  def.max ?? Infinity,
+                );
+                onChange(clamped);
+              }
+            }}
             className="h-9 max-w-[140px]"
           />
         </Field>
@@ -851,7 +1036,7 @@ function DynamicField({
 
     case "text":
     case "list":
-    default:
+    default: {
       return (
         <Field label={label} hint={hint} description={description}>
           <Input
@@ -863,6 +1048,7 @@ function DynamicField({
           />
         </Field>
       );
+    }
   }
 }
 
@@ -1218,6 +1404,50 @@ function SecurityPathsSection({
         changes require gateway restart · seatbelt profile is a separate
         kernel-level layer
       </p>
+    </Section>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// llama-server — read-only plist display
+// ---------------------------------------------------------------------------
+
+function LlamaServerSection() {
+  const q = useQuery({
+    queryKey: ["dashboard", "llama-server"],
+    queryFn: () => api.llamaServerInfo(),
+    staleTime: 30_000,
+  });
+
+  const settings = q.data?.settings ?? [];
+  const found = q.data?.found ?? false;
+
+  return (
+    <Section id="LLAMA-SERVER" count={String(settings.length)}>
+      <p className="mb-4 font-mono text-[10px] uppercase tracking-marker text-ink-muted">
+        Read-only view of the active llama-server plist configuration.
+        To change these settings, edit the plist at{" "}
+        <code className="text-ink">scripts/llama-server/</code> and run{" "}
+        <code className="text-ink">make llama-restart</code>.
+      </p>
+
+      {!found && (
+        <p className="font-mono text-[10px] uppercase tracking-marker text-ink-faint">
+          no llama-server plist found
+        </p>
+      )}
+
+      {settings.map((s) => (
+        <div
+          key={s.flag}
+          className="flex items-baseline justify-between border-b border-rule/40 py-2"
+        >
+          <span className="font-mono text-[11px] text-ink">{s.flag}</span>
+          <span className="font-mono text-[11px] text-ink-muted tabular-nums max-w-[60%] truncate text-right">
+            {s.value}
+          </span>
+        </div>
+      ))}
     </Section>
   );
 }

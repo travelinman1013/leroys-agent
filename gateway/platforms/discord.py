@@ -1948,17 +1948,25 @@ class DiscordAdapter(BasePlatformAdapter):
             logger.warning("Discord auto-register from COMMAND_REGISTRY failed: %s", e)
 
         # Register skills under a single /skill command group with category
-        # subcommand groups.  This uses 1 top-level slot instead of N,
-        # supporting up to 25 categories × 25 skills = 625 skills.
+        # subcommand groups.  This uses 1 top-level slot instead of N.
+        # Descriptions and counts are capped to stay under Discord's
+        # 8000-char command group serialization limit.
         self._register_skill_group(tree)
+
+    # Discord serializes the entire /skill command group as JSON for upload.
+    # The hard limit is 8000 chars — exceed it and sync fails with HTTP 400
+    # error 50035.  Cap descriptions and entry counts to stay under budget.
+    _SKILL_DESC_MAX = 50
+    _SKILL_MAX_PER_CATEGORY = 5
+    _SKILL_MAX_CATEGORIES = 15
 
     def _register_skill_group(self, tree) -> None:
         """Register a ``/skill`` command group with category subcommand groups.
 
         Skills are organized by their directory category under ``SKILLS_DIR``.
         Each category becomes a subcommand group; root-level skills become
-        direct subcommands.  Discord supports 25 subcommand groups × 25
-        subcommands each = 625 skills — well beyond the old 100-command cap.
+        direct subcommands.  Descriptions and counts are capped to stay
+        under Discord's 8000-char command group serialization limit.
         """
         try:
             from hermes_cli.commands import discord_skill_commands_by_category
@@ -1975,6 +1983,11 @@ class DiscordAdapter(BasePlatformAdapter):
 
             if not categories and not uncategorized:
                 return
+
+            def _cap_desc(desc: str, fallback: str) -> str:
+                d = desc or fallback
+                mx = self._SKILL_DESC_MAX
+                return d[:mx - 3] + "..." if len(d) > mx else d
 
             skill_group = discord.app_commands.Group(
                 name="skill",
@@ -1993,13 +2006,17 @@ class DiscordAdapter(BasePlatformAdapter):
             for discord_name, description, cmd_key in uncategorized:
                 cmd = discord.app_commands.Command(
                     name=discord_name,
-                    description=description or f"Run the {discord_name} skill",
+                    description=_cap_desc(description, f"Run {discord_name}"),
                     callback=_make_handler(cmd_key),
                 )
                 skill_group.add_command(cmd)
 
-            # ── Category subcommand groups ──
+            # ── Category subcommand groups (capped) ──
+            cat_count = 0
             for cat_name in sorted(categories):
+                if cat_count >= self._SKILL_MAX_CATEGORIES:
+                    hidden += len(categories[cat_name])
+                    continue
                 cat_desc = f"{cat_name.replace('-', ' ').title()} skills"
                 if len(cat_desc) > 100:
                     cat_desc = cat_desc[:97] + "..."
@@ -2008,25 +2025,31 @@ class DiscordAdapter(BasePlatformAdapter):
                     description=cat_desc,
                     parent=skill_group,
                 )
-                for discord_name, description, cmd_key in categories[cat_name]:
+                entries = categories[cat_name]
+                if len(entries) > self._SKILL_MAX_PER_CATEGORY:
+                    hidden += len(entries) - self._SKILL_MAX_PER_CATEGORY
+                    entries = entries[:self._SKILL_MAX_PER_CATEGORY]
+                for discord_name, description, cmd_key in entries:
                     cmd = discord.app_commands.Command(
                         name=discord_name,
-                        description=description or f"Run the {discord_name} skill",
+                        description=_cap_desc(description, f"Run {discord_name}"),
                         callback=_make_handler(cmd_key),
                     )
                     cat_group.add_command(cmd)
+                cat_count += 1
 
             tree.add_command(skill_group)
 
-            total = sum(len(v) for v in categories.values()) + len(uncategorized)
+            total = sum(min(len(v), self._SKILL_MAX_PER_CATEGORY)
+                        for v in categories.values()) + len(uncategorized)
             logger.info(
                 "[%s] Registered /skill group: %d skill(s) across %d categories"
                 " + %d uncategorized",
-                self.name, total, len(categories), len(uncategorized),
+                self.name, total, cat_count, len(uncategorized),
             )
             if hidden:
-                logger.warning(
-                    "[%s] %d skill(s) not registered (Discord subcommand limits)",
+                logger.info(
+                    "[%s] %d skill(s) not registered (Discord size limits)",
                     self.name, hidden,
                 )
         except Exception as exc:

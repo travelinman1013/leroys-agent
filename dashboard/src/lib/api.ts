@@ -741,6 +741,29 @@ export const api = {
       { method: "POST", body: JSON.stringify({ to: filename }) },
     ),
 
+  configProviders: () =>
+    apiFetch<{
+      providers: Array<{
+        id: string;
+        label: string;
+        aliases: string[];
+        authenticated: boolean;
+        base_url?: string;
+        custom?: boolean;
+      }>;
+    }>("/api/dashboard/config/providers"),
+
+  configModels: (provider: string) =>
+    apiFetch<{ models: string[]; provider: string }>(
+      `/api/dashboard/config/models?provider=${encodeURIComponent(provider)}`,
+    ),
+
+  llamaServerInfo: () =>
+    apiFetch<{
+      settings: Array<{ flag: string; value: string }>;
+      found: boolean;
+    }>("/api/dashboard/llama-server/info"),
+
   gatewayInfo: () =>
     apiFetch<{
       pid: number;

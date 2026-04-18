@@ -2958,6 +2958,9 @@ _COMMENTED_SECTIONS = """
 CONFIG_MUTATION_ALLOWLIST = frozenset({
     # Top-level scalars
     "model",
+    "model.*",
+    # Note: model.temperature etc. are NOT init-cached — they flow per-turn
+    # via request_overrides. Only model.context_length needs restart.
     "toolsets",
     "fallback_providers",
     "credential_pool_strategies",
@@ -3046,6 +3049,7 @@ _CONFIG_INIT_CACHED_KEYS = frozenset({
     "context.engine",
     "stt.provider",
     "stt.local.model",
+    "model.context_length",
 })
 
 # Maximum number of dated backups to retain in ~/.hermes/config_backups/

@@ -1758,6 +1758,130 @@ class DashboardRoutes:
             return _json_err(exc)
 
     @require_dashboard_auth
+    async def handle_config_providers(self, request: "web.Request") -> "web.Response":
+        """Return available model providers with credential status.
+
+        Appends named custom providers (from ``custom_providers`` list and
+        ``providers`` dict in config.yaml) so they appear as selectable
+        entries like ``custom:llama-server``.  Also synthesises an entry
+        from the current ``model.*`` config when the active provider is
+        ``custom`` and no named entry matches the active base_url.
+        """
+        try:
+            from hermes_cli.models import list_available_providers
+            from hermes_cli.config import get_compatible_custom_providers, load_config
+
+            providers = await asyncio.to_thread(list_available_providers)
+
+            # --- append named custom providers ---------------------------------
+            def _build_custom_entries() -> list:
+                entries = []
+                seen_urls: set = set()
+                for cp in get_compatible_custom_providers():
+                    name = cp.get("name", "").strip()
+                    base_url = cp.get("base_url", "").strip().rstrip("/")
+                    if not name or not base_url:
+                        continue
+                    cid = f"custom:{name}"
+                    # Extract host:port for the label
+                    try:
+                        from urllib.parse import urlparse
+                        parsed = urlparse(base_url)
+                        host_port = parsed.netloc or base_url
+                    except Exception:
+                        host_port = base_url
+                    entries.append({
+                        "id": cid,
+                        "label": f"{name} ({host_port})",
+                        "aliases": [],
+                        "authenticated": True,
+                        "base_url": base_url,
+                        "custom": True,
+                    })
+                    seen_urls.add(base_url.lower())
+
+                # Synthesise entry from active model.* config when provider=custom
+                cfg = load_config()
+                model_cfg = cfg.get("model", {})
+                if isinstance(model_cfg, dict) and model_cfg.get("provider") == "custom":
+                    active_url = str(model_cfg.get("base_url", "")).strip().rstrip("/")
+                    if active_url and active_url.lower() not in seen_urls:
+                        try:
+                            from urllib.parse import urlparse
+                            parsed = urlparse(active_url)
+                            host_port = parsed.netloc or active_url
+                        except Exception:
+                            host_port = active_url
+                        entries.append({
+                            "id": "custom:active",
+                            "label": f"Custom endpoint ({host_port})",
+                            "aliases": [],
+                            "authenticated": True,
+                            "base_url": active_url,
+                            "custom": True,
+                        })
+                return entries
+
+            custom_entries = await asyncio.to_thread(_build_custom_entries)
+            providers.extend(custom_entries)
+            return _json_ok({"providers": providers})
+        except Exception as exc:
+            return _json_err(exc)
+
+    @require_dashboard_auth
+    async def handle_config_models(self, request: "web.Request") -> "web.Response":
+        """Return model catalog for a given provider.
+
+        Handles ``custom:NAME`` prefixed providers by looking up the named
+        custom provider's ``base_url`` and probing its ``/v1/models``
+        endpoint directly, bypassing the global config base_url.
+        """
+        provider = request.query.get("provider", "")
+        if not provider:
+            return _json_err(ValueError("provider query param required"), 400)
+        try:
+            if provider.startswith("custom:"):
+                # Named custom provider — resolve base_url and probe it
+                from hermes_cli.config import get_compatible_custom_providers, load_config
+                from hermes_cli.models import fetch_api_models
+
+                custom_name = provider[len("custom:"):]
+
+                def _probe_named() -> list:
+                    base_url = ""
+                    api_key = ""
+                    if custom_name == "active":
+                        # Synthesised entry — use current model.* config
+                        cfg = load_config()
+                        model_cfg = cfg.get("model", {})
+                        if isinstance(model_cfg, dict):
+                            base_url = str(model_cfg.get("base_url", "")).strip()
+                            api_key = str(model_cfg.get("api_key", "")).strip()
+                    else:
+                        for cp in get_compatible_custom_providers():
+                            if cp.get("name", "").strip() == custom_name:
+                                base_url = cp.get("base_url", "").strip()
+                                api_key = cp.get("api_key", "").strip()
+                                break
+                    if not base_url:
+                        return []
+                    import os
+                    if not api_key:
+                        api_key = (
+                            os.getenv("CUSTOM_API_KEY", "")
+                            or os.getenv("OPENAI_API_KEY", "")
+                        )
+                    return fetch_api_models(api_key, base_url) or []
+
+                models = await asyncio.to_thread(_probe_named)
+            else:
+                from hermes_cli.models import provider_model_ids
+                models = await asyncio.to_thread(provider_model_ids, provider)
+            return _json_ok({"models": models, "provider": provider})
+        except Exception as exc:
+            return _json_err(exc)
+
+    @require_dashboard_auth
     async def handle_security_paths(self, request: "web.Request") -> "web.Response":
         """Get or modify safe_roots and denied_paths.
 
@@ -1951,15 +2075,15 @@ class DashboardRoutes:
     async def handle_gateway_restart(self, request: "web.Request") -> "web.Response":
         """Terminate the gateway process so launchd restarts it.
 
-        Sends SIGTERM to ourselves after a brief delay so the HTTP
-        response can flush first.  Launchd's KeepAlive respawns the
-        process automatically.
+        Uses SIGKILL for an immediate restart — no graceful drain,
+        no waiting.  Launchd's KeepAlive respawns the process
+        automatically.  This mirrors ``launchctl kickstart -k``.
         """
         import signal as _signal
 
         async def _delayed_kill() -> None:
             await asyncio.sleep(0.5)
-            os.kill(os.getpid(), _signal.SIGTERM)
+            os.kill(os.getpid(), _signal.SIGKILL)
 
         asyncio.ensure_future(_delayed_kill())
         return _json_ok({"restarting": True})
@@ -3144,6 +3268,45 @@ class DashboardRoutes:
         return val[:4] + "..." + val[-4:]
 
     @require_dashboard_auth
+    async def handle_llama_server_info(self, request: "web.Request") -> "web.Response":
+        """GET /api/dashboard/llama-server/info — parsed plist settings."""
+        try:
+            import plistlib
+
+            plist_path = (
+                Path(__file__).resolve().parents[2]
+                / "scripts"
+                / "llama-server"
+                / "com.llama-server.hermes.plist"
+            )
+            if not plist_path.is_file():
+                return _json_ok({"settings": [], "found": False})
+
+            def _parse() -> list:
+                with open(plist_path, "rb") as f:
+                    plist = plistlib.load(f)
+                args = plist.get("ProgramArguments", [])
+                settings = []
+                i = 1  # skip binary path
+                while i < len(args):
+                    arg = args[i]
+                    if arg.startswith("--"):
+                        if i + 1 < len(args) and not args[i + 1].startswith("--"):
+                            settings.append({"flag": arg, "value": args[i + 1]})
+                            i += 2
+                        else:
+                            settings.append({"flag": arg, "value": "enabled"})
+                            i += 1
+                    else:
+                        i += 1
+                return settings
+
+            settings = await asyncio.to_thread(_parse)
+            return _json_ok({"settings": settings, "found": True})
+        except Exception as exc:
+            return _json_err(exc)
+
+    @require_dashboard_auth
     async def handle_env(self, request: "web.Request") -> "web.Response":
         """GET /api/dashboard/env — env var inventory with redacted values."""
         try:
@@ -3320,6 +3483,8 @@ def register_dashboard_routes(
     app.router.add_put("/api/dashboard/config", routes.handle_config_put)
     app.router.add_get("/api/dashboard/config/backups", routes.handle_config_backups)
     app.router.add_post("/api/dashboard/config/rollback", routes.handle_config_rollback)
+    app.router.add_get("/api/dashboard/config/providers", routes.handle_config_providers)
+    app.router.add_get("/api/dashboard/config/models", routes.handle_config_models)
     app.router.add_get("/api/dashboard/security/paths", routes.handle_security_paths)
     app.router.add_post("/api/dashboard/security/paths", routes.handle_security_paths)
     app.router.add_get("/api/dashboard/gateway/info", routes.handle_gateway_info)
@@ -3368,6 +3533,7 @@ def register_dashboard_routes(
     app.router.add_get("/api/dashboard/watchers", routes.handle_event_watchers)
 
     # F16 — Keys & Environment Variables
+    app.router.add_get("/api/dashboard/llama-server/info", routes.handle_llama_server_info)
     app.router.add_get("/api/dashboard/env", routes.handle_env)
     app.router.add_post("/api/dashboard/env/reveal", routes.handle_env_reveal)
 
