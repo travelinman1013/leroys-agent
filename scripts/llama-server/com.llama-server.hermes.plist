@@ -1,0 +1,45 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.llama-server.hermes</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/opt/homebrew/bin/llama-server</string>
+        <string>--model</string>
+        <string>/Volumes/the-eagle/maxwell-ext/lmstudio/models/unsloth/Qwen3.6-35B-A3B-GGUF/Qwen3.6-35B-A3B-Q8_0.gguf</string>
+        <string>--mmproj</string>
+        <string>/Volumes/the-eagle/maxwell-ext/lmstudio/models/unsloth/Qwen3.6-35B-A3B-GGUF/mmproj-F32.gguf</string>
+        <string>--port</string>
+        <string>1234</string>
+        <string>--host</string>
+        <string>127.0.0.1</string>
+        <string>--ctx-size</string>
+        <string>262144</string>
+        <string>--n-gpu-layers</string>
+        <string>99</string>
+        <string>--flash-attn</string>
+        <string>on</string>
+        <string>--threads</string>
+        <string>24</string>
+        <string>--batch-size</string>
+        <string>2048</string>
+        <string>--metrics</string>
+        <string>--ubatch-size</string>
+        <string>512</string>
+        <string>--parallel</string>
+        <string>1</string>
+    </array>
+    <key>RunAtLoad</key>
+    <false/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>ThrottleInterval</key>
+    <integer>30</integer>
+    <key>StandardOutPath</key>
+    <string>/Users/maxwell/.hermes/logs/llama-server.stdout.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/maxwell/.hermes/logs/llama-server.stderr.log</string>
+</dict>
+</plist>

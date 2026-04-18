@@ -61,3 +61,29 @@ gateway-restart:
 
 gateway-logs:
 	tail -f ~/.hermes/logs/gateway.log
+
+# ── llama-server (local LLM inference) ────────────────────────────────
+llama-start:
+	@echo "Stopping LM Studio if running..."
+	-@osascript -e 'quit app "LM Studio"' 2>/dev/null || true
+	@sleep 2
+	@cp scripts/llama-server/com.llama-server.hermes.plist ~/Library/LaunchAgents/
+	launchctl bootstrap gui/$$(id -u) ~/Library/LaunchAgents/com.llama-server.hermes.plist
+	@echo "llama-server starting on port 1234. Check: make llama-health"
+
+llama-stop:
+	-launchctl bootout gui/$$(id -u)/com.llama-server.hermes
+	@echo "llama-server stopped"
+
+llama-restart: llama-stop
+	@sleep 2
+	$(MAKE) llama-start
+
+llama-logs:
+	tail -f ~/.hermes/logs/llama-server.stderr.log
+
+llama-health:
+	@curl -s http://127.0.0.1:1234/health | python3 -m json.tool
+
+llama-metrics:
+	@curl -s http://127.0.0.1:1234/metrics
