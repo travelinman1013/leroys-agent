@@ -21,6 +21,7 @@ from desktop.gateway_monitor import GatewayMonitor
 from desktop.menu import create_menu
 
 
+_ICON_PATH = str(Path(__file__).resolve().parent / "assets" / "Leroys.icns")
 GATEWAY_PORT = int(os.environ.get("HERMES_GATEWAY_PORT", "8642"))
 GATEWAY_URL = f"http://127.0.0.1:{GATEWAY_PORT}"
 DASHBOARD_URL = f"{GATEWAY_URL}/dashboard/"
@@ -120,6 +121,7 @@ def main():
         gui="cocoa",
         debug="--dev" in sys.argv,
         menu=create_menu(),
+        icon=_ICON_PATH,
     )
 
     monitor.stop()
