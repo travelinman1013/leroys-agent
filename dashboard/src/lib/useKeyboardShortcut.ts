@@ -5,15 +5,25 @@
 
 import { useEffect } from "react";
 
-export function useKeyboardShortcut(key: string, callback: () => void) {
+interface ShortcutOptions {
+  shift?: boolean;
+}
+
+export function useKeyboardShortcut(
+  key: string,
+  callback: () => void,
+  opts?: ShortcutOptions,
+) {
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if (e.key === key && (e.metaKey || e.ctrlKey)) {
+        if (opts?.shift && !e.shiftKey) return;
+        if (!opts?.shift && e.shiftKey) return;
         e.preventDefault();
         callback();
       }
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
-  }, [key, callback]);
+  }, [key, callback, opts?.shift]);
 }

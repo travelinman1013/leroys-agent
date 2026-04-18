@@ -13,6 +13,7 @@ declare global {
         get_system_theme(): Promise<string>;
         open_in_browser(url: string): void;
         open_in_finder(path: string): void;
+        hard_reload(): void;
       };
     };
   }
@@ -51,6 +52,15 @@ export async function gatewayStatus(): Promise<{
 } | null> {
   if (!isDesktop()) return null;
   return window.pywebview!.api.gateway_status();
+}
+
+/** Hard refresh — cache-busting reload on desktop, standard reload in browser. */
+export function hardRefresh(): void {
+  if (isDesktop()) {
+    window.pywebview!.api.hard_reload();
+  } else {
+    window.location.reload();
+  }
 }
 
 /** Open a URL in the default browser (desktop) or new tab (browser). */

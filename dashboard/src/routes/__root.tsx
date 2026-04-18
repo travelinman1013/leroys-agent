@@ -6,7 +6,7 @@ import { TerminalPanel } from "@/components/TerminalPanel";
 import { useKeyboardShortcut } from "@/lib/useKeyboardShortcut";
 import { subscribeEvents } from "@/lib/api";
 import type { HermesEvent } from "@/lib/api";
-import { isDesktop, nativeNotify } from "@/lib/native";
+import { isDesktop, nativeNotify, hardRefresh } from "@/lib/native";
 
 interface RouterContext {
   queryClient: QueryClient;
@@ -21,6 +21,7 @@ function RootLayout() {
   const [terminalOpen, setTerminalOpen] = useState(false);
   const toggleTerminal = useCallback(() => setTerminalOpen((o) => !o), []);
   useKeyboardShortcut("`", toggleTerminal);
+  useKeyboardShortcut("r", hardRefresh, { shift: true });
 
   // Browser notifications — managed at root so they fire on any route
   const [notifPerm, setNotifPerm] = useState(
