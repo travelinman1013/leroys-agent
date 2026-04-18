@@ -72,6 +72,20 @@ const CATEGORIES: CategoryDef[] = [
     ],
   },
   {
+    id: "inference",
+    label: "Inference",
+    fields: [
+      { key: "model.context_length", label: "Context length", type: "number", min: 0, max: 1048576, step: 1024, hint: "tokens · 0 = auto-detect", description: "Override the model's context window size in tokens. Set this when your local server defaults to a smaller window than the model supports (e.g. LM Studio defaults to 4096). 0 or empty means auto-detect from the server. Requires restart." },
+      { key: "model.temperature", label: "Temperature", type: "number", min: 0, max: 2, step: 0.1, hint: "0–2 · empty = model default", description: "Controls randomness. 0 is deterministic, higher values are more creative. Empty uses the model's built-in default. Only applies to custom/local providers — silently stripped for Anthropic Claude." },
+      { key: "model.top_p", label: "Top P", type: "number", min: 0, max: 1, step: 0.05, hint: "nucleus sampling", description: "Nucleus sampling: only consider tokens whose cumulative probability exceeds this threshold. Lower values produce more focused output. Stripped for Anthropic Claude." },
+      { key: "model.top_k", label: "Top K", type: "number", min: 0, max: 200, step: 1, hint: "0 = disabled", description: "Only sample from the top K most likely tokens. 0 disables top-k filtering. Stripped for Anthropic Claude." },
+      { key: "model.min_p", label: "Min P", type: "number", min: 0, max: 1, step: 0.05, hint: "llama.cpp / vLLM", description: "Minimum probability threshold relative to the top token. Tokens below this ratio are filtered out. Supported by llama.cpp and some OpenAI-compatible servers." },
+      { key: "model.frequency_penalty", label: "Frequency penalty", type: "number", min: -2, max: 2, step: 0.1, hint: "-2 to 2", description: "Penalizes tokens based on how frequently they appear so far. Positive values reduce repetition, negative values encourage it." },
+      { key: "model.presence_penalty", label: "Presence penalty", type: "number", min: -2, max: 2, step: 0.1, hint: "-2 to 2", description: "Penalizes tokens based on whether they have appeared at all. Positive values encourage topic diversity." },
+      { key: "model.repeat_penalty", label: "Repeat penalty", type: "number", min: 0, max: 2, step: 0.1, hint: "llama.cpp only", description: "llama.cpp repeat penalty over the last N tokens. 1.0 = no penalty. Higher values reduce repetition more aggressively. Only supported by llama-server and compatible backends." },
+    ],
+  },
+  {
     id: "agent",
     label: "Agent",
     fields: [
@@ -327,6 +341,12 @@ function ConfigPage() {
     queryFn: api.configBackups,
   });
 
+  const providersQuery = useQuery({
+    queryKey: ["dashboard", "config", "providers"],
+    queryFn: () => api.configProviders(),
+    staleTime: 60_000,
+  });
+
   const confirm = useConfirm();
   const toast = useNotify();
 
@@ -352,17 +372,35 @@ function ConfigPage() {
           }
         }
       }
+      // Stash model.base_url for custom provider resolution
+      const rawBaseUrl = getNestedValue(c, "model.base_url");
+      if (typeof rawBaseUrl === "string" && rawBaseUrl) {
+        state["model.base_url"] = rawBaseUrl;
+      }
+      // Resolve custom provider back to custom:NAME by matching base_url
+      if (state["model.provider"] === "custom" && providersQuery.data) {
+        const baseUrl = String(state["model.base_url"] ?? "").trim().replace(/\/+$/, "");
+        if (baseUrl) {
+          const match = providersQuery.data.providers.find(
+            (p) => p.custom && p.base_url?.replace(/\/+$/, "") === baseUrl,
+          );
+          if (match) {
+            state["model.provider"] = match.id;
+          }
+        }
+      }
       setEditing(state);
     }
-  }, [cfg.data]);
+  }, [cfg.data, providersQuery.data]);
 
   // Poll gateway health after restart until it comes back
   useEffect(() => {
     if (!restarting) return;
     let cancelled = false;
     const poll = async () => {
-      // Wait for process to die before polling
-      await new Promise((r) => setTimeout(r, 2000));
+      // Brief pause for process to die before polling
+      await new Promise((r) => setTimeout(r, 500));
+      let interval = 500;
       while (!cancelled) {
         try {
           const r = await fetch("/api/dashboard/handshake");
@@ -374,7 +412,8 @@ function ConfigPage() {
           }
           return;
         } catch {
-          await new Promise((r) => setTimeout(r, 2000));
+          await new Promise((r) => setTimeout(r, interval));
+          interval = Math.min(interval * 1.5, 2000);
         }
       }
     };
@@ -446,6 +485,28 @@ function ConfigPage() {
         mutations[f.key] = val;
       }
     }
+    // Inference fields: empty string → null (remove from config), explicit 0 → keep
+    const INFERENCE_KEYS = new Set([
+      "model.context_length", "model.temperature", "model.top_p", "model.top_k",
+      "model.min_p", "model.frequency_penalty", "model.presence_penalty", "model.repeat_penalty",
+    ]);
+    for (const key of INFERENCE_KEYS) {
+      if (key in mutations) {
+        const raw = editing[key];
+        if (raw === "" || raw === undefined) {
+          mutations[key] = null;
+        }
+      }
+    }
+    // Translate custom:NAME provider to model.provider=custom + model.base_url
+    const providerVal = mutations["model.provider"];
+    if (typeof providerVal === "string" && providerVal.startsWith("custom:")) {
+      mutations["model.provider"] = "custom";
+      const stashedUrl = editing["model.base_url"];
+      if (typeof stashedUrl === "string" && stashedUrl) {
+        mutations["model.base_url"] = stashedUrl;
+      }
+    }
     if (Object.keys(mutations).length > 0) {
       save.mutate(mutations);
     }
@@ -456,7 +517,8 @@ function ConfigPage() {
   const isSpecial =
     activeCategory === "paths" ||
     activeCategory === "appearance" ||
-    activeCategory === "backups";
+    activeCategory === "backups" ||
+    activeCategory === "llama-server";
 
   const fileInputRef = useRef<HTMLInputElement>(null);
   const notify = useNotify();
@@ -610,6 +672,13 @@ function ConfigPage() {
                 id={activeCat.label.toUpperCase()}
                 count={String(activeCat.fields.length)}
               >
+                {activeCat.id === "inference" && (
+                  <p className="mb-4 font-mono text-[10px] uppercase tracking-marker text-ink-muted">
+                    Sampling parameters for local and OpenAI-compatible providers.
+                    Empty fields use the model default. Silently stripped for
+                    Anthropic Claude models.
+                  </p>
+                )}
                 {activeCat.fields.map((f) => (
                   <DynamicField
                     key={f.key}
@@ -617,6 +686,7 @@ function ConfigPage() {
                     value={editing[f.key]}
                     onChange={(v) => update(f.key, v)}
                     editing={editing}
+                    onUpdate={update}
                   />
                 ))}
                 <SaveButton
@@ -677,6 +747,8 @@ function ConfigPage() {
                 </ul>
               </Section>
             )}
+
+            {activeCategory === "llama-server" && <LlamaServerSection />}
           </div>
         </div>
 
@@ -748,6 +820,14 @@ function ConfigPage() {
               active={activeCategory === "backups"}
               onClick={() => {
                 setActiveCategory("backups");
+                contentRef.current?.scrollTo({ top: 0 });
+              }}
+            />
+            <SidebarItem
+              label="llama-server"
+              active={activeCategory === "llama-server"}
+              onClick={() => {
+                setActiveCategory("llama-server");
                 contentRef.current?.scrollTo({ top: 0 });
               }}
             />
@@ -824,11 +904,13 @@ function DynamicField({
   value,
   onChange,
   editing,
+  onUpdate,
 }: {
   def: FieldDef;
   value: unknown;
   onChange: (v: unknown) => void;
   editing: Record<string, unknown>;
+  onUpdate?: (key: string, v: unknown) => void;
 }) {
   const label = def.dangerous ? `${def.label} ⚠` : def.label;
   const hint = def.hint;
@@ -879,7 +961,17 @@ function DynamicField({
           <Field label={label} hint={hint} description={description}>
             <Select
               value={String(value ?? "")}
-              onChange={(e) => onChange(e.target.value)}
+              onChange={(e) => {
+                const id = e.target.value;
+                onChange(id);
+                // Stash base_url for custom providers so saveCategory can write it
+                if (id.startsWith("custom:") && onUpdate) {
+                  const match = providers.find((p) => p.id === id);
+                  if (match?.base_url) {
+                    onUpdate("model.base_url", match.base_url);
+                  }
+                }
+              }}
               className="max-w-[280px]"
             >
               <option value="">— select provider —</option>
@@ -950,7 +1042,7 @@ function DynamicField({
             max={def.max}
             step={def.step}
             value={String(value ?? "")}
-            onChange={(e) => onChange(Number(e.target.value))}
+            onChange={(e) => onChange(e.target.value === "" ? "" : Number(e.target.value))}
             className="h-9 max-w-[140px]"
           />
         </Field>
@@ -1326,6 +1418,50 @@ function SecurityPathsSection({
         changes require gateway restart · seatbelt profile is a separate
         kernel-level layer
       </p>
+    </Section>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// llama-server — read-only plist display
+// ---------------------------------------------------------------------------
+
+function LlamaServerSection() {
+  const q = useQuery({
+    queryKey: ["dashboard", "llama-server"],
+    queryFn: () => api.llamaServerInfo(),
+    staleTime: 30_000,
+  });
+
+  const settings = q.data?.settings ?? [];
+  const found = q.data?.found ?? false;
+
+  return (
+    <Section id="LLAMA-SERVER" count={String(settings.length)}>
+      <p className="mb-4 font-mono text-[10px] uppercase tracking-marker text-ink-muted">
+        Read-only view of the active llama-server plist configuration.
+        To change these settings, edit the plist at{" "}
+        <code className="text-ink">scripts/llama-server/</code> and run{" "}
+        <code className="text-ink">make llama-restart</code>.
+      </p>
+
+      {!found && (
+        <p className="font-mono text-[10px] uppercase tracking-marker text-ink-faint">
+          no llama-server plist found
+        </p>
+      )}
+
+      {settings.map((s) => (
+        <div
+          key={s.flag}
+          className="flex items-baseline justify-between border-b border-rule/40 py-2"
+        >
+          <span className="font-mono text-[11px] text-ink">{s.flag}</span>
+          <span className="font-mono text-[11px] text-ink-muted tabular-nums max-w-[60%] truncate text-right">
+            {s.value}
+          </span>
+        </div>
+      ))}
     </Section>
   );
 }
