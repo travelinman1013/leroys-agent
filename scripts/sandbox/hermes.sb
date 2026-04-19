@@ -1,6 +1,6 @@
-;; Hermes gateway sandbox profile — Phase 4 R4 (Layer 2: kernel MACF via Seatbelt)
+;; Hermes gateway sandbox profile — Phase 4 R4+ (Layer 2: kernel MACF via Seatbelt)
 ;;
-;; Goal: clamp filesystem to needed paths; clamp network to LM Studio +
+;; Goal: clamp filesystem to needed paths; clamp network to localhost +
 ;; HTTPS outbound. User-specific (hardcoded paths for Maxwell's machine);
 ;; do not ship to other users without a path audit.
 ;;
@@ -69,6 +69,7 @@
   (subpath "/Users/maxwell/.claude-mem")                 ;; claude-mem ChromaDB (CC plugin dependency)
   (subpath "/Users/maxwell/.bun")                        ;; Bun runtime (CC spawns bun workers for plugins)
   (subpath "/Users/maxwell/.local/bin")                  ;; uv, uvx (CC spawns chroma-mcp via uv)
+  (subpath "/Volumes/the-eagle/maxwell-ext")             ;; external drive — models, media (read-only)
   (literal "/Users/maxwell/Library/LaunchAgents/ai.hermes.gateway.plist"))
 
 ;; --- Hard deny: credentials. Overrides the allow above by ordering. ---
@@ -111,17 +112,11 @@
 ;; and verify Discord ACTUALLY connects (not just slash command sync — that
 ;; uses HTTP REST and may work even when the WebSocket gateway can't).
 (allow network-outbound
-  (remote tcp "localhost:1234")      ;; LLM inference (llama-server)
-  (remote tcp "localhost:1235")      ;; LLM inference (LM Studio)
-  (remote tcp "localhost:9222")      ;; Chrome DevTools Protocol (browser tool)
-  (remote tcp "localhost:4317")      ;; OpenTelemetry OTLP gRPC (R4 — opt-in)
-  (remote tcp "localhost:4318")      ;; OpenTelemetry OTLP HTTP (R4 — opt-in)
-  (remote tcp "localhost:6006")      ;; Arize Phoenix UI (R4 — opt-in)
-  (remote tcp "localhost:8642")      ;; Hermes dashboard API (R2/R3)
-  (remote tcp "localhost:7878")      ;; Radarr API (mediamax)
-  (remote tcp "localhost:8989")      ;; Sonarr API (mediamax)
-  (remote tcp "localhost:6500")      ;; RDTClient API (mediamax)
-  (remote tcp "localhost:8096")      ;; Jellyfin media server API
+  ;; All localhost services — Maxwell's own machine.
+  ;; Known services: llama-server (:1234), LM Studio (:1235), CDP (:9222),
+  ;; OTLP gRPC/HTTP (:4317/:4318), Phoenix (:6006), Dashboard (:8642),
+  ;; Radarr (:7878), Sonarr (:8989), RDTClient (:6500), Jellyfin (:8096)
+  (remote tcp "localhost:*")
   (remote tcp "*:443")              ;; HTTPS — Discord, GitHub, HuggingFace, etc.
   (remote tcp "*:80")               ;; HTTP — direct URL fetches
   (remote tcp "*:53")               ;; DNS over TCP (rare but supported)

@@ -97,11 +97,18 @@ Specific skills:
 
 ## Granting Leroys New Permissions
 
-When Leroys needs access to a new localhost service (Docker container, local API, etc.):
+### New localhost service (network)
 
-1. **Seatbelt profile** (`scripts/sandbox/hermes.sb`): add `(remote tcp "localhost:PORT")` to the `network-outbound` allow block
-2. **Deploy**: `cp scripts/sandbox/hermes.sb ~/.hermes/hermes.sb`
-3. **Validate**: `scripts/sandbox/validate-profile.sh`
+Localhost outbound is open to all ports (`localhost:*` in Seatbelt profile).
+No sandbox edit, deploy, or restart needed for new localhost services.
+
+1. **Update skill**: ensure `~/.hermes/skills/<name>/SKILL.md` lists the port, API details, and config path
+
+### New filesystem path
+
+If Leroys needs to read/write a new directory:
+
+1. **Seatbelt profile** (`scripts/sandbox/hermes.sb`): add `(subpath "...")` to the appropriate `file-read*` or `file-write*` block
+2. **Deploy + validate**: `scripts/sandbox/validate-profile.sh && cp scripts/sandbox/hermes.sb ~/.hermes/hermes.sb`
+3. **Config**: add path to `security.safe_roots` in `~/.hermes/config.yaml`
 4. **Restart**: `make gateway-restart`
-5. **Update skill**: ensure `~/.hermes/skills/docker-container-interaction/SKILL.md` lists the new port, API details, and config path
-6. If the path jail blocks URLs in terminal commands, check `extract_tool_call_paths` in `tools/file_tools.py`
