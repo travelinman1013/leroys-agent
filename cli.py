@@ -4611,8 +4611,15 @@ class HermesCLI:
             model_list = provider_data.get("models", [])
             if not model_list:
                 try:
-                    from hermes_cli.models import provider_model_ids
-                    live = provider_model_ids(provider_data["slug"])
+                    if provider_data.get("is_user_defined") and provider_data.get("api_url"):
+                        from hermes_cli.models import fetch_api_models
+                        live = fetch_api_models(
+                            provider_data.get("api_key", ""),
+                            provider_data["api_url"],
+                        )
+                    else:
+                        from hermes_cli.models import provider_model_ids
+                        live = provider_model_ids(provider_data["slug"])
                     if live:
                         model_list = live
                 except Exception:

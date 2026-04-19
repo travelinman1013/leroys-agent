@@ -89,7 +89,11 @@ Requires external drive `the-eagle` mounted.
 
 ## Skills
 
-When user types `/r-a-p`, ALWAYS use the Skill tool to invoke it (`Skill("r-a-p")`). Never self-implement the research-and-plan workflow from memory — the skill contains a specific multi-phase process that must be loaded and followed exactly.
+**When the user types `/skill-name`, ALWAYS invoke it with the Skill tool first.** Never self-implement a skill's workflow from memory or description alone — the skill file contains the exact process, tools, and constraints that must be loaded into context before acting. A direct `/skill-name` invocation is a blocking requirement: call `Skill("skill-name")` BEFORE generating any other response.
+
+Specific skills:
+- `/r-a-p` — research-and-plan: multi-phase process with validation agents. `Skill("r-a-p")`
+- `/skill-trainer` — observe Leroys via Discord + dashboard API, generate hardened SKILL.md files. `Skill("skill-trainer")`
 
 ## Granting Leroys New Permissions
 

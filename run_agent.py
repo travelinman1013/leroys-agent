@@ -1419,7 +1419,20 @@ class AIAgent:
                                         file=sys.stderr,
                                     )
                     break
-        
+
+        # Check providers.<name>.context_length (user-defined endpoints)
+        if _config_context_length is None:
+            _user_providers = _agent_cfg.get("providers", {})
+            if isinstance(_user_providers, dict) and self.provider:
+                _up_entry = _user_providers.get(self.provider, {})
+                if isinstance(_up_entry, dict):
+                    _up_ctx = _up_entry.get("context_length")
+                    if _up_ctx is not None:
+                        try:
+                            _config_context_length = int(_up_ctx)
+                        except (TypeError, ValueError):
+                            pass
+
         # Select context engine: config-driven (like memory providers).
         # 1. Check config.yaml context.engine setting
         # 2. Check plugins/context_engine/<name>/ directory (repo-shipped)
@@ -1745,6 +1758,23 @@ class AIAgent:
             ("openrouter" in (self.base_url or "").lower() and "claude" in new_model.lower())
             or is_native_anthropic
         )
+
+        # ── Re-check provider-level context_length override ──
+        try:
+            from hermes_cli.config import load_config as _lc
+            _sw_cfg = _lc()
+            _sw_provs = _sw_cfg.get("providers", {})
+            if isinstance(_sw_provs, dict) and new_provider:
+                _sw_entry = _sw_provs.get(new_provider, {})
+                if isinstance(_sw_entry, dict):
+                    _sw_ctx = _sw_entry.get("context_length")
+                    if _sw_ctx is not None:
+                        try:
+                            self._config_context_length = int(_sw_ctx)
+                        except (TypeError, ValueError):
+                            pass
+        except Exception:
+            pass
 
         # ── Update context compressor ──
         if hasattr(self, "context_compressor") and self.context_compressor:

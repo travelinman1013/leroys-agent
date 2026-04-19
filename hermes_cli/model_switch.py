@@ -646,7 +646,42 @@ def switch_model(
     base_url = current_base_url
     api_mode = ""
 
-    if provider_changed or explicit_provider:
+    # For explicit user-defined providers, use their configured base_url and
+    # api_key directly.  resolve_runtime_provider() doesn't know about
+    # user-defined endpoints and would fall back to a cloud provider.
+    _explicit_pdef: Optional["ProviderDef"] = None
+    if explicit_provider:
+        _explicit_pdef = resolve_provider_full(
+            explicit_provider, user_providers, custom_providers,
+        )
+
+    # When user has configured this provider in config.yaml providers:,
+    # prefer their base_url over the models.dev default.
+    if _explicit_pdef and user_providers and isinstance(user_providers, dict):
+        _up_entry = user_providers.get(explicit_provider)
+        if isinstance(_up_entry, dict):
+            _up_base = _up_entry.get("base_url", "") or _up_entry.get("api", "") or _up_entry.get("url", "") or ""
+            if _up_base:
+                _explicit_pdef.base_url = _up_base
+                _explicit_pdef.source = "user-config"
+
+    if _explicit_pdef and _explicit_pdef.source == "user-config" and _explicit_pdef.base_url:
+        base_url = _explicit_pdef.base_url
+        # Resolve api_key: check config entry, then env vars, then fallback
+        _ep_key = ""
+        if user_providers and isinstance(user_providers, dict):
+            _ep_entry = user_providers.get(_explicit_pdef.id, {})
+            if isinstance(_ep_entry, dict):
+                _ep_key = _ep_entry.get("api_key", "") or ""
+        if not _ep_key and _explicit_pdef.api_key_env_vars:
+            import os
+            for _ev in _explicit_pdef.api_key_env_vars:
+                _ep_key = os.environ.get(_ev, "")
+                if _ep_key:
+                    break
+        api_key = _ep_key or "no-key-required"
+        api_mode = "chat_completions"
+    elif provider_changed or explicit_provider:
         try:
             runtime = resolve_runtime_provider(requested=target_provider)
             api_key = runtime.get("api_key", "")
@@ -1040,7 +1075,7 @@ def list_authenticated_providers(
             if not isinstance(ep_cfg, dict):
                 continue
             display_name = ep_cfg.get("name", "") or ep_name
-            api_url = ep_cfg.get("api", "") or ep_cfg.get("url", "") or ""
+            api_url = ep_cfg.get("base_url", "") or ep_cfg.get("api", "") or ep_cfg.get("url", "") or ""
             default_model = ep_cfg.get("default_model", "")
 
             # Build models list from both default_model and full models array
@@ -1054,18 +1089,31 @@ def list_authenticated_providers(
                     if m and m not in models_list:
                         models_list.append(m)
 
-            # Try to probe /v1/models if URL is set (but don't block on it)
-            # For now just show what we know from config
+            # Probe /v1/models for live model discovery when config has no models
+            total_count = len(models_list)
+            if not models_list and api_url:
+                try:
+                    from hermes_cli.models import fetch_api_models
+                    ep_key = ep_cfg.get("api_key", "") or ""
+                    live_models = fetch_api_models(ep_key, api_url)
+                    if live_models:
+                        total_count = len(live_models)
+                        models_list = live_models[:max_models]
+                except Exception:
+                    pass
+
             results.append({
                 "slug": ep_name,
                 "name": display_name,
                 "is_current": ep_name == current_provider,
                 "is_user_defined": True,
                 "models": models_list,
-                "total_models": len(models_list) if models_list else 0,
+                "total_models": total_count,
                 "source": "user-config",
                 "api_url": api_url,
             })
+            seen_slugs.add(ep_name.lower())
+            seen_slugs.add(f"custom:{ep_name}".lower())
 
     # --- 4. Saved custom providers from config ---
     # Each ``custom_providers`` entry represents one model under a named

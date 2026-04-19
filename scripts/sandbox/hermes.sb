@@ -121,6 +121,7 @@
   (remote tcp "localhost:7878")      ;; Radarr API (mediamax)
   (remote tcp "localhost:8989")      ;; Sonarr API (mediamax)
   (remote tcp "localhost:6500")      ;; RDTClient API (mediamax)
+  (remote tcp "localhost:8096")      ;; Jellyfin media server API
   (remote tcp "*:443")              ;; HTTPS — Discord, GitHub, HuggingFace, etc.
   (remote tcp "*:80")               ;; HTTP — direct URL fetches
   (remote tcp "*:53")               ;; DNS over TCP (rare but supported)
